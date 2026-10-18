@@ -136,16 +136,32 @@ open question list in [`contract-design.md`](contract-design.md)
 - `examples/refusal/parse-error.chw` — the refusal fixture
   exercising `parse-error` through the conformance suite.
 
+**Delivered (Phase 1 → 2 remainder, C side):**
+
+- C-side behavioral roundtrip
+  (`tests/behavioral/c_behavior.py`): every corpus scenario
+  (`tests/behavioral/scenarios.json`, mirroring the 11 Python
+  scenarios op-for-op) is executed against BOTH the reference
+  model (`tools/sim/op_runner.py`) and a compiled C harness that
+  binds the generated c-header — block struct as the register
+  file, per-register view typedefs overlaid for field RMW,
+  RESET_* macros sourced at reset, packed DMA structs, and
+  `_Static_assert` offsets for every register and DMA field.
+  Traces must be identical line by line, refusals included.
+  Seeded-drift negative lanes prove the comparison catches a
+  wrong reset value and a wrong field position. The harness's
+  access-kind port is a test fixture, not generated; the SV
+  module remains the only generated device model.
+
 **Not yet delivered (Phase 1 remainder):**
 
-- Behavioral roundtrip: both roundtrips currently verify
-  structural / compile-time properties. The next step is to
-  run the same scenario sequence through the C header
-  accessors and the SystemVerilog module (via Verilator or
-  cocotb), and assert identical state to the reference
+- SV-side behavioral roundtrip: the SystemVerilog module must be
+  driven with the same corpus (`tests/behavioral/scenarios.json`
+  and `tools/sim/op_runner.py`'s trace shape are already
+  engine-agnostic for it) and compared against the reference
   model. This needs hardware-simulation tooling (Verilator or
-  cocotb are not in the reference environment); unless one
-  becomes available, it is the first Phase 2 item.
+  cocotb are not in the reference environment); the C-side pair
+  above is operational evidence for the criterion's C half.
 
 **Exit criteria (in progress):**
 
@@ -178,7 +194,7 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
 
 **Indicative duration:** 2–3 weeks.
 
-**Delivered into this repo (complete; the behavioral roundtrip remains and needs Verilator or cocotb):**
+**Delivered into this repo (complete; only the SV-side behavioral roundtrip remains, needing Verilator or cocotb):**
 
 - `cancho-hdl diff <base> <candidate>` (`tools/diff/diff.py`) —
   the semantic-diff JSON in `spec/diagnostics/README.md` §7,
@@ -324,8 +340,8 @@ A as a tool. The `hdl/` subtree from parent proposal §4 is
 | Phase | Status |
 |---|---|
 | 0 — Schema and decisions | **Done** |
-| 1 — Checker + first generators | **Code complete** (checker, both generators, simulator, textual parser, text formatter landed; only the behavioral roundtrip remains, which needs Verilator/cocotb — flagged to Phase 2) |
-| 2 — Full generators + diff + impact + report | **Code complete** (diff, impact, report, all five generators, all five roundtrip tests landed; the behavioral roundtrip still needs Verilator/cocotb — the only open item, shared with Phase 1) |
+| 1 — Checker + first generators | **Code complete** (checker, both generators, simulator, textual parser, text formatter landed; C-side behavioral roundtrip landed — only the SV side, needing Verilator/cocotb, remains, shared with Phase 2) |
+| 2 — Full generators + diff + impact + report | **Code complete** (diff, impact, report, all five generators, all five roundtrip tests, C-side behavioral roundtrip landed; only the SV-side behavioral roundtrip still needs Verilator/cocotb — the single open item) |
 | 3 — Demo + benchmark | Not started |
 | 4 — Stage B gate | Not started |
 

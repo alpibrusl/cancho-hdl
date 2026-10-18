@@ -101,11 +101,14 @@ verbatim, whose counts are derived from what actually ran, and
 which refuses itself with `evidence-over-claim` when a copy
 claims more than it checked.
 
-Not yet claimed: the behavioral roundtrip (drive the same
-scenarios through the C accessors and the SV module, compare to
-the reference model — needs Verilator or cocotb, flagged to
-Phase 2/3) and that the toolchain produces working hardware
-(trust boundary, never).
+The behavioral roundtrip now has its C half: every scenario in
+`tests/behavioral/scenarios.json` runs op-for-op through the generated
+c-header (compiled with gcc and clang) AND the reference model, and the
+traces — refusals included — must be identical; seeded-drift negative
+lanes prove the comparison can fail. Not yet claimed: the SV half of
+that same criterion (the SystemVerilog module driven by the same
+corpus — needs Verilator or cocotb, flagged to Phase 2/3) and that the
+toolchain produces working hardware (trust boundary, never).
 
 ## What it does today
 
@@ -188,6 +191,7 @@ $ python3 scripts/run_gate.py
 == devicetree roundtrip (§4 structural + dtc when available) ==
 == cancho-binding roundtrip (§3 palette + DEVICE no-setter) ==
 == svd roundtrip (§6 XSD + access mapping + comment lane) ==
+== C-side behavioral roundtrip (generated header vs reference model) ==
 == GATE PASSED ==
 ```
 
@@ -198,10 +202,13 @@ every schema-level rule has a Static-tier analogue, and the
 conformance suite is the proof. The reference model backstops
 the same rules at runtime, with the same code/subject contract.
 The roundtrip suite tests the generators' outputs structurally
-today (the C header compiles, the SV module decodes); the next
-step is the behavioral roundtrip, which will drive the same
-scenarios through the generated C header and the SystemVerilog
-module and assert that both agree with the simulator.
+today (the C header compiles, the SV module decodes). The
+behavioral roundtrip's C half is landed — `tests/behavioral/`
+drives every scenario op-for-op through the compiled generated C
+header and the reference model and asserts identical traces;
+the remaining step is the SV half, which will drive the same
+corpus through the generated SystemVerilog module and needs a
+simulator (Verilator/cocotb).
 
 ## What a change means
 
