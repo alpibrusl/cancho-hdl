@@ -1,0 +1,10 @@
+{
+  "file": "examples/refusal/parse-error.chw",
+  "expect": [
+    {
+      "code": "parse-error",
+      "subject": { "kind": "Ir" },
+      "message_contains": "expected ':' after the register offset"
+    }
+  ]
+}

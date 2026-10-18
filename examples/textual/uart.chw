@@ -1,0 +1,36 @@
+register-block UartRegs @ 0x4000_0000, width 32, little-endian {
+
+    register CTRL @ 0x00 : RW, reset 0x0000_0000 {
+        field ENABLE   : bits [0]
+        field PARITY   : bits [1..2] enum { None=0, Even=1, Odd=2 }
+        field BAUD_DIV : bits [8..15] constraint nonzero when ENABLE == 1
+    }
+
+    register IER @ 0x08 : RW, reset 0x0000_0000 {
+        field RX_EN : bits [0]
+        field TX_EN : bits [1]
+    }
+
+    register ISR @ 0x0c : RO, volatile {
+        field RX : bits [0]
+        field TX : bits [1]
+    }
+
+    register ICR @ 0x10 : WO {
+        field RX : bits [0]
+        field TX : bits [1]
+    }
+
+    register STATUS @ 0x04 : RO, volatile, polling {
+        field TX_BUSY  : bits [0]
+        field RX_READY : bits [1]
+    }
+
+    interrupt rx_ready from STATUS.RX_READY {
+        number 5
+        source @ STATUS.RX_READY
+        enable @ IER.RX_EN
+        status @ ISR.RX
+        clear  : W1C @ ICR.RX
+    }
+}

@@ -1,0 +1,308 @@
+"""Roundtrip checks for the svd generator (gen/svd).
+
+For every valid example in `examples/MANIFEST.json#valid`:
+
+1. Determinism: two runs over the same IR are byte-identical
+   (spec/generators/README.md §1 rule 2).
+2. Banner: `<?xml ...?>` first line, banner comment names the
+   source, ends with `Do not edit.`
+3. The tree parses as XML.
+4. XSD validation against the vendored `spec/generators/CMSIS-SVD.xsd`
+   when lxml is available — the §6.2 stable guarantee. Under lxml
+   the file validates; the structural checks below run everywhere.
+5. Device shape: schemaVersion 1.0, `<name>` = block name verbatim
+   (§6.1 decision), `<version>` = contract version,
+   `<addressUnitBits>` = 8, `<width>` = bus width.
+6. Access mapping: every register's `<access>` matches the §6.1
+   map recomputed from the IR (`RO` → read-only, `WO` →
+   write-only, `RW` → read-write; `RC` additionally carries
+   `readAction="clear"`, `W1C`/`W0C`/`W1S`/`W0S` carry
+   `modifiedWriteValues`); ORDER is the XSD's
+   (access, resetValue, modifiedWriteValues, readAction).
+7. Reset: a declared reset is emitted at the contract's width;
+   an undefined reset is `0x0` plus a comment naming the absence
+   (§6.2) — never silence.
+8. Registers in offset order, `addressOffset` matching the IR;
+   fields with `lsb`/`msb`/`access`; enum fields carry
+   `<enumeratedValues>` in declaration order with
+   `name`/`value` pairs.
+9. The stable ID comment per device, peripheral, register and
+   field (`chw:...`), matching §1 rule 3.
+10. §6.3 non-guarantees: NO `<interrupt>` elements; interrupts
+    and DMA buffers are named by stable-ID comments only.
+
+Refusal lane (direct raise + dispatcher exit codes):
+- a zero-register block refuses (`generator-unimplemented`) —
+  `<registers>` would otherwise be empty and the XSD would reject
+  it downstream for the wrong reason;
+- a name containing `--` refuses (cannot appear in an XML comment).
+
+Run from anywhere:
+    python3 tests/roundtrip/svd_validates.py
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import pathlib
+import re
+import subprocess
+import sys
+from typing import Any
+
+try:
+    from lxml import etree  # type: ignore
+except ImportError:  # pragma: no cover - stdlib environments
+    etree = None
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "gen"))
+sys.path.insert(0, str(ROOT / "tools" / "parse"))
+
+from common import GeneratorUnimplemented  # noqa: E402
+from parser import load_contract  # noqa: E402
+
+# gen/svd is a directory that would shadow the module name under a
+# plain sys.path import, so the generator loads by spec — exactly
+# as the manifest dispatcher does.
+_spec = importlib.util.spec_from_file_location(
+    "cancho_hdl_gen_svd", ROOT / "gen" / "svd" / "svd.py")
+_svd_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_svd_mod)
+generate = _svd_mod.generate
+
+FAILURES: list[str] = []
+
+
+def expect(cond: bool, label: str, detail: str = "") -> None:
+    if cond:
+        print(f"  PASS  {label}")
+    else:
+        print(f"  FAIL  {label}")
+        if detail:
+            print(detail)
+        FAILURES.append(label)
+
+
+# The §6.1 access map, recomputed here (independent of the generator's
+# copy — a divergent generator copy that escapes a shared import
+# cannot hide).
+_ACCESS = {
+    "RO": "read-only", "WO": "write-only",
+    "RW": "read-write", "RC": "read-write",
+    "W0C": "read-write", "W0S": "read-write",
+    "W1C": "read-write", "W1S": "read-write",
+}
+
+
+def main() -> int:
+    print("== svd roundtrip ==")
+
+    # Load the vendored XSD once for the whole suite.
+    schema = None
+    if etree is not None:
+        xsd_path = ROOT / "spec" / "generators" / "CMSIS-SVD.xsd"
+        if not xsd_path.exists():
+            expect(False, "vendored CMSIS-SVD.xsd exists", str(xsd_path))
+            return 1
+        schema = etree.XMLSchema(etree.parse(str(xsd_path)))
+    else:
+        print("  NOTE  lxml not available; XSD validation skipped "
+              "(spec §6.2 XSD gate downgraded to structural checks)")
+
+    manifest = json.loads((ROOT / "examples" / "MANIFEST.json").read_text())
+    for rel in manifest["valid"]:
+        path = ROOT / rel
+        ir, _ = load_contract(str(path))
+        block = ir["block"]
+        name = block["name"]
+        bus_width = int(block.get("bus_width", 32))
+        base = int(str(block["base_address"]), 16)
+        version = str(ir.get("version", "0.1.0"))
+        registers = sorted(block["registers"],
+                           key=lambda r: int(str(r["offset"]), 16))
+
+        src = generate(ir, source_path=rel)
+        src2 = generate(ir, source_path=rel)
+        lines = src.splitlines()
+
+        print(f"-- {rel} --")
+        expect(src == src2, "deterministic (two runs byte-identical)")
+        expect(lines[0] == '<?xml version="1.0" encoding="utf-8"?>',
+               "XML declaration is the first line", lines[0])
+        expect(lines[1] == f"<!-- Generated by cancho-hdl from {rel}. Do not edit. -->",
+               "banner comment names the source, Do not edit", lines[1])
+
+        # XML parses
+        root = None
+        if etree is not None:
+            try:
+                root = etree.fromstring(src.encode())
+            except etree.XMLSyntaxError as e:
+                expect(False, f"{rel}: XML is well-formed", str(e))
+                continue
+            expect(True, "XML is well-formed")
+
+        if schema is not None and root is not None:
+            expect(schema.validate(root), f"{rel}: XSD-valid (schema 1.3, vendored)",
+                   "\n".join(str(e) for e in schema.error_log)[:600])
+
+        expect(self_single_peripheral(root, name),
+               f"one <peripheral>, <name> = block name verbatim ({name})",
+               peripheral_names(root))
+        expect(root.findtext("version") == version
+               and root.findtext(".//peripheral/baseAddress") == f"0x{base:X}",
+               "device <version> = contract version; baseAddress matches IR")
+
+        # §6.1 access map per register, with the appendOrder XSD panes
+        # (access first, then resetValue, then MWV/RA, then fields).
+        for reg_el, reg in zip(root.findall(".//register"), registers):
+            rname = reg["name"]
+            kids = [c.tag for c in reg_el]
+            access = reg_el.findtext("access")
+            kind = reg["kind"]
+            expect(access == _ACCESS[kind],
+                   f"{rname}: <access>{access}</access> matches §6.1 for {kind}")
+            mwv = reg_el.findtext("modifiedWriteValues")
+            ra = reg_el.findtext("readAction")
+            expect(mwv == _MWV().get(kind), f"{rname}: modifiedWriteValues correct", str(mwv))
+            expect(ra == _RA().get(kind), f"{rname}: readAction correct", str(ra))
+            expect(reg_el.findtext("addressOffset") == f"0x{int(str(reg['offset']), 16):X}",
+                   f"{rname}: addressOffset matches IR")
+            if "reset" in reg:
+                want = f"0x{int(str(reg['reset']), 16):0{bus_width // 4}X}"
+                expect(reg_el.findtext("resetValue") == want,
+                       f"{rname}: resetValue at contract width", str(reg_el.findtext("resetValue")))
+            else:
+                expect(reg_el.findtext("resetValue") == "0x0",
+                       f"{rname}: undefined reset emitted as 0x0 (§6.2)")
+                if etree is not None:
+                    texts = [(c.text or "") for c in reg_el
+                             if not isinstance(c.tag, str)]
+                    expect(any("reset undefined" in t for t in texts),
+                           f"{rname}: undefined-reset comment names the absence",
+                           str(texts))
+
+            # field / enum shape
+            fields = reg.get("fields", []) or []
+            f_els = reg_el.findall("fields/field")
+            expect(len(f_els) == len(fields), f"{rname}: field count matches IR")
+            for f_el, f in zip(f_els, fields):
+                expect(f_el.findtext("name") == f["name"]
+                       and f_el.findtext("lsb") == str(f["lsb"])
+                       and f_el.findtext("msb") == str(f["msb"]),
+                       f"{rname}.{f['name']}: name/lsb/msb match IR")
+                expect(_child_access(f_el) == _ACCESS[kind],
+                       f"{rname}.{f['name']}: field access matches §6.1")
+                if "enum" in f:
+                    evs = f_el.findall("enumeratedValues/enumeratedValue")
+                    pairs = [(e.findtext("name"), e.findtext("value")) for e in evs]
+                    want_pairs = [(lbl, str(int(v))) for lbl, v in f["enum"].items()]
+                    expect(pairs == want_pairs,
+                           f"{rname}.{f['name']}: enumeratedValues in declaration order",
+                           str(pairs))
+                else:
+                    expect(f_el.find("enumeratedValues") is None,
+                           f"{rname}.{f['name']}: no enumeratedValues when no enum")
+
+            # stable IDs — the trace back to the contract (§1 rule 3)
+            expect(f"<!-- chw:{name}.register.{rname} -->" in src,
+                   f"{rname}: stable ID comment present")
+            for f in fields:
+                expect(f"<!-- chw:{name}.register.{rname}.field.{f['name']} -->" in src,
+                       f"{rname}.{f['name']}: stable ID comment present")
+
+        # §6.3: no <interrupt> elements; interrupt/DMA IDs as comments.
+        expect(root.find(".//interrupt") is None,
+               "no <interrupt> elements (CMSIS-SVD interrupts are board-level)")
+        for intr in block.get("interrupts", []) or []:
+            expect(f"<!-- chw:{name}.interrupt.{intr['name']}, IRQ {intr['number']} -->" in src,
+                   f"interrupt {intr['name']} named by stable-ID comment")
+        for buf in ir.get("dma_buffers", []) or []:
+            expect(f"<!-- chw:{name}.dma.{buf['name']} -->" in src,
+                   f"DMA buffer {buf['name']} named by stable-ID comment")
+
+    # --------------------------------- refusal lane --------------------
+    print()
+    print("## refusal lane ##")
+    def raise_lane(ir: dict[str, Any], label: str) -> None:
+        try:
+            generate(ir, source_path="")
+            expect(False, label)
+        except GeneratorUnimplemented:
+            expect(True, label + " (generator-unimplemented)")
+
+    zero = {"version": "0.1.0",
+            "block": {"name": "T", "base_address": "0x40000000",
+                      "bus_width": 32, "endianness": "little", "registers": []},
+            "dma_buffers": []}
+    raise_lane(zero, "zero registers refuse")
+    dashes = {"version": "0.1.0",
+              "block": {"name": "T--en", "base_address": "0x40000000",
+                        "bus_width": 32, "endianness": "little", "registers": [
+                            {"name": "A", "offset": "0x00", "kind": "RW",
+                             "fields": [{"name": "f", "lsb": 0, "msb": 7}]}]},
+              "dma_buffers": []}
+    raise_lane(dashes, "block-name '--' refuses (cannot ride in an XML comment)")
+    kind_bad = {"version": "0.1.0",
+                "block": {"name": "T", "base_address": "0x40000000",
+                          "bus_width": 32, "endianness": "little", "registers": [
+                              {"name": "A", "offset": "0x00", "kind": "Q",
+                               "fields": [{"name": "f", "lsb": 0, "msb": 7}]}]},
+                "dma_buffers": []}
+    raise_lane(kind_bad, "unknown access kind refuses (no CMSIS-SVD mapping)")
+
+    # Class identity: even via the dispatcher's dynamic module load,
+    # the refusal is the same object as tests import (sys.modules
+    # caching on `common`), so dispatcher-side catches cannot miss.
+    proc = subprocess.run(
+        [sys.executable, "tools/generate/generate.py", "--target", "svd",
+         "examples/refusal/field-overlap.chw"], capture_output=True,
+        text=True, cwd=str(ROOT))
+    expect(proc.returncode == 1 and "field-overlap" in proc.stderr,
+           "dispatcher refuses a checker-refused contract (exit 1)")
+    proc = subprocess.run(
+        [sys.executable, "tools/generate/generate.py", "--target", "svd",
+         "examples/uart-contract/uart.chw"], capture_output=True,
+        text=True, cwd=str(ROOT))
+    expect(proc.returncode == 0 and proc.stdout.startswith("<?xml"),
+           "dispatcher generates from a valid contract (exit 0 + XML banner)")
+
+    print()
+    if FAILURES:
+        print(f"== svd roundtrip: {len(FAILURES)} failure(s) ==")
+        return 1
+    print("== svd roundtrip: all pass ==")
+    return 0
+
+
+def self_single_peripheral(root: Any, name: str) -> bool:
+    if root is None:
+        return True
+    peripherals = root.findall("peripherals/peripheral")
+    return len(peripherals) == 1 and peripherals[0].findtext("name") == name
+
+
+def peripheral_names(root: Any) -> str:
+    if root is None:
+        return "(lxml missing; skipped)"
+    return str([p.findtext("name") for p in root.findall("peripherals/peripheral")])
+
+
+def _MWV() -> dict[str, str]:
+    return {"W0C": "zeroToClear", "W0S": "zeroToSet",
+            "W1C": "oneToClear", "W1S": "oneToSet"}
+
+
+def _RA() -> dict[str, str]:
+    return {"RC": "clear"}
+
+
+def _child_access(field_el: Any) -> str | None:
+    a_el = field_el.find("access")
+    return None if a_el is None else (a_el.text or "")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

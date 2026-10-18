@@ -1,0 +1,22 @@
+# Build artifacts
+/target/
+**/Cargo.lock.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Tooling
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Phase 0 only: nothing is generated yet
+# Phase 1 will add /gen-out/, /tmp/
+
+# gitguardian
+.gitleaks/
+.gitguardian.yml

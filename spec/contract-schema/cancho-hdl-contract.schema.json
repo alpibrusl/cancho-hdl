@@ -1,0 +1,163 @@
+{
+  "$id": "https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cancho-hdl-contract",
+  "description": "Hardware Contract Layer source for cancho-hdl. One register block per file, plus optional DMA buffer layouts. See spec/contract-schema/README.md for the normative prose; this JSON Schema is the wire format Phase 1 reads.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "block"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Contract-schema version. Wire format is frozen at 0.1.0 until spec/contract-schema/README.md §5 questions are resolved."
+    },
+    "block": { "$ref": "#/$defs/RegisterBlock" },
+    "dma_buffers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/DmaBuffer" }
+    }
+  },
+  "$defs": {
+    "HexAddress": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]+$"
+    },
+    "Reset": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]+$"
+    },
+    "BusWidth": {
+      "type": "integer",
+      "enum": [8, 16, 32]
+    },
+    "Endianness": {
+      "type": "string",
+      "enum": ["little", "big"]
+    },
+    "AccessKind": {
+      "type": "string",
+      "enum": ["RO", "WO", "RW", "RC", "W1C", "W0C", "W1S", "W0S"]
+    },
+    "InterruptClearKind": {
+      "type": "string",
+      "enum": ["W1C", "W0C", "RC"]
+    },
+    "DmaOwner": {
+      "type": "string",
+      "enum": ["CPU", "DEVICE"]
+    },
+    "RegisterRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["register", "field"],
+      "properties": {
+        "register": { "type": "string", "minLength": 1 },
+        "field":    { "type": "string", "minLength": 1 }
+      }
+    },
+    "ClearRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["register", "field"],
+      "properties": {
+        "register": { "type": "string", "minLength": 1 },
+        "field":    { "type": "string", "minLength": 1 },
+        "kind":     { "$ref": "#/$defs/InterruptClearKind" }
+      }
+    },
+    "Field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "lsb", "msb"],
+      "properties": {
+        "name":       { "type": "string", "minLength": 1 },
+        "lsb":        { "type": "integer", "minimum": 0, "maximum": 31 },
+        "msb":        { "type": "integer", "minimum": 0, "maximum": 31 },
+        "enum": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "constraint": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Register": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "offset", "kind"],
+      "properties": {
+        "name":     { "type": "string", "minLength": 1 },
+        "offset":   { "$ref": "#/$defs/HexAddress" },
+        "kind":     { "$ref": "#/$defs/AccessKind" },
+        "reset":    { "$ref": "#/$defs/Reset" },
+        "volatile": { "type": "boolean" },
+        "polling":  { "type": "boolean" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Field" }
+        }
+      }
+    },
+    "Interrupt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name":   { "type": "string", "minLength": 1 },
+        "number": { "type": "integer", "minimum": 0 },
+        "source": { "$ref": "#/$defs/RegisterRef" },
+        "enable": { "$ref": "#/$defs/RegisterRef" },
+        "status": { "$ref": "#/$defs/RegisterRef" },
+        "clear":  { "$ref": "#/$defs/ClearRef" }
+      }
+    },
+    "RegisterBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "base_address", "bus_width", "endianness", "registers"],
+      "properties": {
+        "name":         { "type": "string", "minLength": 1 },
+        "base_address": { "$ref": "#/$defs/HexAddress" },
+        "bus_width":    { "$ref": "#/$defs/BusWidth" },
+        "endianness":   { "$ref": "#/$defs/Endianness" },
+        "registers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/Register" }
+        },
+        "interrupts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Interrupt" }
+        }
+      }
+    },
+    "DmaField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "offset", "owner"],
+      "properties": {
+        "name":        { "type": "string", "minLength": 1 },
+        "offset":      { "$ref": "#/$defs/HexAddress" },
+        "owner":       { "$ref": "#/$defs/DmaOwner" },
+        "align":       { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "coherent":    { "type": "boolean" },
+        "constraint":  { "type": "string", "minLength": 1 },
+        "written_as":  { "type": "integer", "minimum": 0 }
+      }
+    },
+    "DmaBuffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "fields"],
+      "properties": {
+        "name":   { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/DmaField" }
+        }
+      }
+    }
+  }
+}

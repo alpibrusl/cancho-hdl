@@ -1,0 +1,10 @@
+{
+  "file": "examples/refusal/dma-overlap.chw",
+  "expect": [
+    {
+      "code": "dma-overlap",
+      "subject": { "kind": "DmaField", "block": "BadDma", "buffer": "TxDescriptor", "name": "data_ptr" },
+      "message_contains": "overlaps next_ptr"
+    }
+  ]
+}

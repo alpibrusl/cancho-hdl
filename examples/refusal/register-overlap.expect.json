@@ -1,0 +1,10 @@
+{
+  "file": "examples/refusal/register-overlap.chw",
+  "expect": [
+    {
+      "code": "register-offset-duplicate",
+      "subject": { "kind": "Register", "block": "BadUart", "name": "A" },
+      "message_contains": "A and B share offset 0x00"
+    }
+  ]
+}

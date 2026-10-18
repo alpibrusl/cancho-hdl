@@ -1,0 +1,14 @@
+{
+  "version": "1",
+  "valid": [
+    "examples/uart-contract/uart.chw",
+    "examples/simple-dma/dma.chw"
+  ],
+  "textual_valid": [
+    "examples/textual/uart.chw",
+    "examples/textual/dma.chw"
+  ],
+  "refusal_dir": "examples/refusal/",
+  "refusal_glob": "*.chw",
+  "expect_glob": "*.expect.json"
+}

@@ -1,0 +1,25 @@
+# LICENSE
+
+EUPL-1.2 — same as the parent Cancho ecosystem.
+
+```
+                      EUROPEAN UNION PUBLIC LICENCE v. 1.2
+                      (EUPL © the European Union 2007, 2016)
+
+This European Union Public Licence (the "EUPL") applies to the
+Work or Software (as defined below) which is provided under this
+Licence. Any use of the Work, other than as authorised under this
+Licence, is prohibited (to the extent such use is covered by a
+right of the copyright holder of the Work).
+
+The Work is provided under this Licence on an "AS IS" basis and
+WITHOUT WARRANTY OF ANY KIND, either express or implied,
+including, without limitation, the warranties of
+merchantability, fitness for a particular purpose and
+noninfringement. The full text of the EUPL-1.2 is at
+https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12.
+```
+
+The full LICENSE file is copied from the parent Cancho
+repository at the first commit that includes source code (not
+this Phase-0 scaffold).

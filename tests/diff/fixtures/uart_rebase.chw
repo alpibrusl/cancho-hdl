@@ -1,0 +1,76 @@
+{
+  "$schema": "https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json",
+  "version": "0.1.0",
+  "block": {
+    "name": "UartRegs",
+    "base_address": "0x40000000",
+    "bus_width": 32,
+    "endianness": "little",
+    "registers": [
+      {
+        "name": "CTRL",
+        "offset": "0x08",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          { "name": "ENABLE",   "lsb": 0, "msb": 0 },
+          { "name": "PARITY",   "lsb": 1, "msb": 2,
+            "enum": { "None": 0, "Even": 1, "Odd": 2 } },
+          { "name": "BAUD_DIV", "lsb": 8, "msb": 19,
+            "constraint": "nonzero when ENABLE == 1" }
+        ]
+      },
+      {
+        "name": "IER",
+        "offset": "0x10",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          { "name": "RX_EN", "lsb": 0, "msb": 0 },
+          { "name": "TX_EN", "lsb": 1, "msb": 1 }
+        ]
+      },
+      {
+        "name": "ISR",
+        "offset": "0x14",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          { "name": "RX", "lsb": 0, "msb": 0 },
+          { "name": "TX", "lsb": 1, "msb": 1 }
+        ]
+      },
+      {
+        "name": "ICR",
+        "offset": "0x18",
+        "kind": "WO",
+        "fields": [
+          { "name": "RX", "lsb": 0, "msb": 0 },
+          { "name": "TX", "lsb": 1, "msb": 1 }
+        ]
+      },
+      {
+        "name": "STATUS",
+        "offset": "0x0c",
+        "kind": "RO",
+        "volatile": true,
+        "polling": true,
+        "fields": [
+          { "name": "TX_BUSY",  "lsb": 0, "msb": 0 },
+          { "name": "RX_READY", "lsb": 1, "msb": 1 }
+        ]
+      }
+    ],
+    "interrupts": [
+      {
+        "name": "rx_ready",
+        "number": 5,
+        "source": { "register": "STATUS", "field": "RX_READY" },
+        "enable": { "register": "IER",    "field": "RX_EN" },
+        "status": { "register": "ISR",    "field": "RX" },
+        "clear":  { "register": "ICR",    "field": "RX", "kind": "W1C" }
+      }
+    ]
+  },
+  "dma_buffers": []
+}

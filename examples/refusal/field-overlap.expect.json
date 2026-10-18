@@ -1,0 +1,10 @@
+{
+  "file": "examples/refusal/field-overlap.chw",
+  "expect": [
+    {
+      "code": "field-overlap",
+      "subject": { "kind": "Field", "block": "BadUart", "register": "CTRL", "name": "PARITY" },
+      "message_contains": "overlap with ENABLE"
+    }
+  ]
+}

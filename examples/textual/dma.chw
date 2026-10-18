@@ -1,0 +1,51 @@
+register-block DmaCtrl @ 0x4000_1000, width 32, little-endian {
+
+    register RING_BASE @ 0x00 : RW, reset 0x00000000 {
+        field ADDR : bits [0..31]
+    }
+
+    register RING_LEN @ 0x04 : RW, reset 0x00000000 {
+        field COUNT  : bits [0..15]
+        field ENABLE : bits [31..31]
+    }
+
+    register RING_HEAD @ 0x08 : RW {
+        field INDEX : bits [0..15]
+    }
+
+    register RING_TAIL @ 0x0c : RW {
+        field INDEX : bits [0..15]
+    }
+
+    register IRQ_STATUS @ 0x10 : W1C, volatile {
+        field DONE : bits [0..0]
+        field ERR  : bits [1..1]
+    }
+
+    register IRQ_ENABLE @ 0x14 : RW {
+        field DONE_EN : bits [0..0]
+        field ERR_EN  : bits [1..1]
+    }
+
+    interrupt tx_complete from IRQ_STATUS.DONE {
+        number 7
+        source @ IRQ_STATUS.DONE
+        status @ IRQ_STATUS.DONE
+        enable @ IRQ_ENABLE.DONE_EN
+        clear  @ IRQ_STATUS.DONE
+    }
+}
+
+dma-buffer TxDescriptor {
+    field next_ptr  : @0x00, owned by CPU,    aligned 8
+    field data_ptr  : @0x08, owned by CPU,    aligned 4, coherent false
+    field length    : @0x10, owned by CPU,    constraint length <= 4096
+    field done_flag : @0x14, owned by DEVICE, written as 1
+}
+
+dma-buffer RxDescriptor {
+    field next_ptr   : @0x00, owned by CPU,    aligned 8
+    field data_ptr   : @0x08, owned by DEVICE, aligned 4, coherent true
+    field length     : @0x10, owned by DEVICE, constraint length <= 4096
+    field error_flag : @0x14, owned by DEVICE
+}

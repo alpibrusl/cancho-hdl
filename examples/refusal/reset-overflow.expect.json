@@ -1,0 +1,10 @@
+{
+  "file": "examples/refusal/reset-overflow.chw",
+  "expect": [
+    {
+      "code": "reset-overflow",
+      "subject": { "kind": "Register", "block": "BadUart", "name": "CTRL" },
+      "message_contains": "reset 0x1FFFFFFFF does not fit in bus_width 32"
+    }
+  ]
+}

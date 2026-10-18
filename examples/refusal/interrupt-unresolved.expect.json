@@ -1,0 +1,25 @@
+{
+  "file": "examples/refusal/interrupt-unresolved.chw",
+  "expect": [
+    {
+      "code": "interrupt-source-unresolved",
+      "subject": { "kind": "InterruptLinkage", "block": "BadUart", "interrupt": "rx_ready", "role": "source" },
+      "message_contains": "STATUS.DOES_NOT_EXIST does not exist"
+    },
+    {
+      "code": "interrupt-enable-unresolved",
+      "subject": { "kind": "InterruptLinkage", "block": "BadUart", "interrupt": "rx_ready", "role": "enable" },
+      "message_contains": "IER.RX_EN does not exist"
+    },
+    {
+      "code": "interrupt-status-unresolved",
+      "subject": { "kind": "InterruptLinkage", "block": "BadUart", "interrupt": "rx_ready", "role": "status" },
+      "message_contains": "ISR.RX does not exist"
+    },
+    {
+      "code": "interrupt-clear-unresolved",
+      "subject": { "kind": "InterruptLinkage", "block": "BadUart", "interrupt": "rx_ready", "role": "clear" },
+      "message_contains": "ICR.RX does not exist"
+    }
+  ]
+}

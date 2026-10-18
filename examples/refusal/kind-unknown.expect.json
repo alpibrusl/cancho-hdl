@@ -1,0 +1,15 @@
+{
+  "file": "examples/refusal/kind-unknown.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": { "kind": "Ir", "path": "examples/refusal/kind-unknown.chw" },
+      "message_contains": "'WTF' is not one of"
+    },
+    {
+      "code": "register-kind-unknown",
+      "subject": { "kind": "Register", "block": "BadUart", "name": "CTRL" },
+      "message_contains": "kind 'WTF' is not a known access kind"
+    }
+  ]
+}

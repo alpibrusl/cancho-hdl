@@ -1,0 +1,15 @@
+{
+  "file": "examples/refusal/bus-width-invalid.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": { "kind": "Ir", "path": "examples/refusal/bus-width-invalid.chw" },
+      "message_contains": "64 is not one of [8, 16, 32]"
+    },
+    {
+      "code": "block-bus-width-invalid",
+      "subject": { "kind": "RegisterBlock", "name": "BadUart" },
+      "message_contains": "bus_width 64 must be 8, 16, or 32"
+    }
+  ]
+}

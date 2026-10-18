@@ -1,0 +1,96 @@
+{
+  "$schema": "https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json",
+  "version": "0.1.0",
+  "block": {
+    "name": "DmaCtrl",
+    "base_address": "0x40001000",
+    "bus_width": 32,
+    "endianness": "little",
+    "registers": [
+      {
+        "name": "RING_BASE",
+        "offset": "0x00",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          { "name": "ADDR", "lsb": 0, "msb": 31 }
+        ]
+      },
+      {
+        "name": "RING_LEN",
+        "offset": "0x04",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          { "name": "COUNT", "lsb": 0, "msb": 15 },
+          { "name": "ENABLE", "lsb": 31, "msb": 31 }
+        ]
+      },
+      {
+        "name": "RING_HEAD",
+        "offset": "0x08",
+        "kind": "RW",
+        "fields": [
+          { "name": "INDEX", "lsb": 0, "msb": 15 }
+        ]
+      },
+      {
+        "name": "RING_TAIL",
+        "offset": "0x0C",
+        "kind": "RW",
+        "fields": [
+          { "name": "INDEX", "lsb": 0, "msb": 15 }
+        ]
+      },
+      {
+        "name": "IRQ_STATUS",
+        "offset": "0x10",
+        "kind": "W1C",
+        "volatile": true,
+        "fields": [
+          { "name": "DONE", "lsb": 0, "msb": 0 },
+          { "name": "ERR",  "lsb": 1, "msb": 1 }
+        ]
+      },
+      {
+        "name": "IRQ_ENABLE",
+        "offset": "0x14",
+        "kind": "RW",
+        "fields": [
+          { "name": "DONE_EN", "lsb": 0, "msb": 0 },
+          { "name": "ERR_EN",  "lsb": 1, "msb": 1 }
+        ]
+      }
+    ],
+    "interrupts": [
+      {
+        "name": "tx_complete",
+        "number": 7,
+        "source": { "register": "IRQ_STATUS", "field": "DONE" },
+        "status": { "register": "IRQ_STATUS", "field": "DONE" },
+        "enable": { "register": "IRQ_ENABLE", "field": "DONE_EN" },
+        "clear":  { "register": "IRQ_STATUS", "field": "DONE" }
+      }
+    ]
+  },
+  "dma_buffers": [
+    {
+      "name": "TxDescriptor",
+      "fields": [
+        { "name": "next_ptr",  "offset": "0x00", "owner": "CPU",    "align": 8 },
+        { "name": "data_ptr",  "offset": "0x08", "owner": "CPU",    "align": 4, "coherent": false },
+        { "name": "length",    "offset": "0x10", "owner": "CPU",    "constraint": "length <= 4096" },
+        { "name": "done_flag", "offset": "0x14", "owner": "DEVICE", "written_as": 1 }
+      ]
+    },
+    {
+      "name": "RxDescriptor",
+      "fields": [
+        { "name": "next_ptr",   "offset": "0x00", "owner": "CPU",    "align": 8 },
+        { "name": "data_ptr",   "offset": "0x08", "owner": "DEVICE", "align": 4, "coherent": true },
+        { "name": "length",     "offset": "0x10", "owner": "DEVICE", "constraint": "length <= 4096" },
+        { "name": "error_flag", "offset": "0x14", "owner": "DEVICE" }
+      ]
+    }
+  ]
+}

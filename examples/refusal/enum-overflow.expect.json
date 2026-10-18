@@ -1,0 +1,10 @@
+{
+  "file": "examples/refusal/enum-overflow.chw",
+  "expect": [
+    {
+      "code": "field-enum-overflow",
+      "subject": { "kind": "Field", "block": "BadUart", "register": "CTRL", "name": "PARITY" },
+      "message_contains": "enum value 7 does not fit in 2 bits"
+    }
+  ]
+}

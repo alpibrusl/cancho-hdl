@@ -1,0 +1,5 @@
+register-block ParseFail @ 0x40002000, width 32, little-endian {
+    register CTRL @ 0x00 RW, reset 0x00000000 {
+        field ENABLE : bits [0]
+    }
+}

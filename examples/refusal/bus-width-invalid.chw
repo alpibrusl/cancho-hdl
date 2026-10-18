@@ -1,0 +1,13 @@
+{
+  "$schema": "https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json",
+  "version": "0.1.0",
+  "block": {
+    "name": "BadUart",
+    "base_address": "0x40000000",
+    "bus_width": 64,
+    "endianness": "little",
+    "registers": [
+      { "name": "CTRL", "offset": "0x00", "kind": "RW" }
+    ]
+  }
+}

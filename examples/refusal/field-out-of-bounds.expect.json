@@ -1,0 +1,15 @@
+{
+  "file": "examples/refusal/field-out-of-bounds.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": { "kind": "Ir", "path": "examples/refusal/field-out-of-bounds.chw" },
+      "message_contains": "63 is greater than the maximum of 31"
+    },
+    {
+      "code": "field-bounds-overflow",
+      "subject": { "kind": "Field", "block": "BadUart", "register": "CTRL", "name": "BIG" },
+      "message_contains": "msb 63 >= bus_width 32"
+    }
+  ]
+}
