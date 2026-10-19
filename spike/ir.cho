@@ -1,0 +1,243 @@
+module chw.ir;
+
+// ir.cho -- the contract IR as typed records, the shape the checker and every
+// generator will read (docs/cancho-port.md, "IR").
+//
+// Names and literals are not copied: each is a half-open byte span into the
+// source text, which outlives the IR. A span that is absent has start -1.
+// That makes the IR a plain value with no strings to own, which is the
+// answer the port gives to "string-building under linear ownership" for the
+// parse side; the printing side pays for it (json.cho).
+
+import std.vec;
+
+// `Register.field` as written in an interrupt linkage.
+pub struct Ref {
+    reg_s: int,
+    reg_e: int,
+    fld_s: int,
+    fld_e: int,
+}
+
+pub struct Entry {
+    name_s: int,
+    name_e: int,
+    value: int,
+}
+
+pub struct Field {
+    name_s: int,
+    name_e: int,
+    lsb: int,
+    msb: int,
+    has_enum: bool,
+    enum_first: int,
+    enum_n: int,
+    cons_s: int,
+    cons_e: int,
+}
+
+// `order` records the sequence in which the optional attributes were first
+// written, one base-8 digit each (1 reset, 2 volatile, 3 polling), because
+// the Python parser's JSON lists them in that order and the port must be
+// byte-identical to it.
+pub struct Reg {
+    name_s: int,
+    name_e: int,
+    off_s: int,
+    off_e: int,
+    kind_s: int,
+    kind_e: int,
+    reset_s: int,
+    reset_e: int,
+    volatile: bool,
+    polling: bool,
+    order: int,
+    first: int,
+    n: int,
+}
+
+// Interrupt keys after `source`, in first-written order (1 number, 2 enable,
+// 3 status, 4 clear), for the same reason.
+pub struct Intr {
+    name_s: int,
+    name_e: int,
+    number: int,
+    source: Ref,
+    enable: Ref,
+    status: Ref,
+    clear: Ref,
+    clear_kind_s: int,
+    clear_kind_e: int,
+    order: int,
+}
+
+// DMA attributes after `offset`, in first-written order (1 owner, 2 align,
+// 3 coherent, 4 written_as, 5 constraint).
+pub struct Dmaf {
+    name_s: int,
+    name_e: int,
+    off_s: int,
+    off_e: int,
+    owner_s: int,
+    owner_e: int,
+    align: int,
+    coherent: int,
+    written_as: int,
+    cons_s: int,
+    cons_e: int,
+    order: int,
+}
+
+pub struct Buf {
+    name_s: int,
+    name_e: int,
+    first: int,
+    n: int,
+}
+
+pub struct Block {
+    name_s: int,
+    name_e: int,
+    base_s: int,
+    base_e: int,
+    width: int,
+    big: bool,
+}
+
+pub res struct Ir {
+    block: Block,
+    regs: vec.Vec[Reg],
+    fields: vec.Vec[Field],
+    enums: vec.Vec[Entry],
+    intrs: vec.Vec[Intr],
+    bufs: vec.Vec[Buf],
+    dfields: vec.Vec[Dmaf],
+}
+
+pub fn no_ref() -> [] Ref {
+    return Ref { reg_s: 0 - 1, reg_e: 0, fld_s: 0 - 1, fld_e: 0 };
+}
+
+pub fn empty[&h](heap: &!h Heap) -> [heap] Ir {
+    let block = Block { name_s: 0, name_e: 0, base_s: 0, base_e: 0, width: 0, big: false };
+    let reg = Reg { name_s: 0, name_e: 0, off_s: 0, off_e: 0, kind_s: 0, kind_e: 0, reset_s: 0 - 1, reset_e: 0, volatile: false, polling: false, order: 0, first: 0, n: 0 };
+    let field = Field { name_s: 0, name_e: 0, lsb: 0, msb: 0, has_enum: false, enum_first: 0, enum_n: 0, cons_s: 0 - 1, cons_e: 0 };
+    let entry = Entry { name_s: 0, name_e: 0, value: 0 };
+    let intr = Intr { name_s: 0, name_e: 0, number: 0 - 1, source: no_ref(), enable: no_ref(), status: no_ref(), clear: no_ref(), clear_kind_s: 0 - 1, clear_kind_e: 0, order: 0 };
+    let buf = Buf { name_s: 0, name_e: 0, first: 0, n: 0 };
+    let dfield = Dmaf { name_s: 0, name_e: 0, off_s: 0, off_e: 0, owner_s: 0 - 1, owner_e: 0, align: 0 - 1, coherent: 0 - 1, written_as: 0 - 1, cons_s: 0 - 1, cons_e: 0, order: 0 };
+    return Ir { block: block, regs: vec.empty(heap, 8, reg), fields: vec.empty(heap, 16, field), enums: vec.empty(heap, 8, entry), intrs: vec.empty(heap, 4, intr), bufs: vec.empty(heap, 4, buf), dfields: vec.empty(heap, 8, dfield) };
+}
+
+pub fn drop[&h](heap: &!h Heap, ir: Ir) -> [heap] int {
+    let Ir { block, regs, fields, enums, intrs, bufs, dfields } = ir;
+    vec.drop(heap, regs);
+    vec.drop(heap, fields);
+    vec.drop(heap, enums);
+    vec.drop(heap, intrs);
+    vec.drop(heap, bufs);
+    vec.drop(heap, dfields);
+    return 0;
+}
+
+// One adder per table. Each takes the whole `Ir`, takes it apart, and hands
+// it back: the cost of a record store under linear ownership, paid six times
+// here and then never again by the callers.
+pub fn set_block(ir: Ir, b: Block) -> [] Ir {
+    let Ir { block, regs, fields, enums, intrs, bufs, dfields } = ir;
+    return Ir { block: b, regs: regs, fields: fields, enums: enums, intrs: intrs, bufs: bufs, dfields: dfields };
+}
+
+pub fn add_reg[&h](heap: &!h Heap, ir: Ir, r: Reg) -> [heap] Ir {
+    let Ir { block, regs, fields, enums, intrs, bufs, dfields } = ir;
+    return Ir { block: block, regs: vec.push(heap, regs, r), fields: fields, enums: enums, intrs: intrs, bufs: bufs, dfields: dfields };
+}
+
+pub fn add_field[&h](heap: &!h Heap, ir: Ir, f: Field) -> [heap] Ir {
+    let Ir { block, regs, fields, enums, intrs, bufs, dfields } = ir;
+    return Ir { block: block, regs: regs, fields: vec.push(heap, fields, f), enums: enums, intrs: intrs, bufs: bufs, dfields: dfields };
+}
+
+pub fn add_entry[&h](heap: &!h Heap, ir: Ir, e: Entry) -> [heap] Ir {
+    let Ir { block, regs, fields, enums, intrs, bufs, dfields } = ir;
+    return Ir { block: block, regs: regs, fields: fields, enums: vec.push(heap, enums, e), intrs: intrs, bufs: bufs, dfields: dfields };
+}
+
+pub fn add_intr[&h](heap: &!h Heap, ir: Ir, i: Intr) -> [heap] Ir {
+    let Ir { block, regs, fields, enums, intrs, bufs, dfields } = ir;
+    return Ir { block: block, regs: regs, fields: fields, enums: enums, intrs: vec.push(heap, intrs, i), bufs: bufs, dfields: dfields };
+}
+
+pub fn add_buf[&h](heap: &!h Heap, ir: Ir, b: Buf) -> [heap] Ir {
+    let Ir { block, regs, fields, enums, intrs, bufs, dfields } = ir;
+    return Ir { block: block, regs: regs, fields: fields, enums: enums, intrs: intrs, bufs: vec.push(heap, bufs, b), dfields: dfields };
+}
+
+pub fn add_dfield[&h](heap: &!h Heap, ir: Ir, d: Dmaf) -> [heap] Ir {
+    let Ir { block, regs, fields, enums, intrs, bufs, dfields } = ir;
+    return Ir { block: block, regs: regs, fields: fields, enums: enums, intrs: intrs, bufs: bufs, dfields: vec.push(heap, dfields, d) };
+}
+
+pub fn n_fields[&q](ir: &q Ir) -> [] int {
+    return vec.size(ir.fields);
+}
+
+pub fn n_enums[&q](ir: &q Ir) -> [] int {
+    return vec.size(ir.enums);
+}
+
+pub fn n_dfields[&q](ir: &q Ir) -> [] int {
+    return vec.size(ir.dfields);
+}
+
+// The text of entry `i` equals the span `a..b` of `src`; used for the
+// duplicate-enum-label refusal.
+pub fn entry_name_equals[&q, &r](ir: &q Ir, src: &r [byte], i: int, a: int, b: int) -> [] bool {
+    let e = vec.get(ir.enums, i);
+    return e.name_e - e.name_s == b - a && same_span(src, e.name_s, a, b - a);
+}
+
+fn same_span[&r](src: &r [byte], x: int, y: int, n: int) -> [] bool {
+    var k = 0;
+    while k < n {
+        if src[x + k] != src[y + k] {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
+}
+
+// Order digits: append a key if it has not been written yet.
+pub fn note(order: int, key: int) -> [] int {
+    var rest = order;
+    while rest > 0 {
+        if rest % 8 == key {
+            return order;
+        }
+        rest = rest / 8;
+    }
+    return order * 8 + key;
+}
+
+// How many keys, and the i-th (0-based, first-written first).
+pub fn order_len(order: int) -> [] int {
+    var n = 0;
+    var rest = order;
+    while rest > 0 {
+        n = n + 1;
+        rest = rest / 8;
+    }
+    return n;
+}
+
+pub fn order_at(order: int, i: int) -> [] int {
+    var drop = order_len(order) - 1 - i;
+    var rest = order;
+    while drop > 0 {
+        rest = rest / 8;
+        drop = drop - 1;
+    }
+    return rest % 8;
+}

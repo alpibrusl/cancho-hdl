@@ -1,0 +1,320 @@
+module chw.json;
+
+// json.cho -- print the IR as the JSON wire form, byte-identical to
+// `json.dumps(ir)` of the Python parser: `", "` and `": "` separators, keys in
+// insertion order, `ensure_ascii` escaping (docs/cancho-port.md, "Spike").
+//
+// The writer threads a `Buffer` and the heap through every call
+// (`out = buffer.append(heap, out, ...)`), which is the single largest source
+// of noise in the file and is measured in the design document.
+
+import std.buffer;
+import std.vec;
+import chw.ir as model;
+
+fn lit[&h](heap: &!h Heap, out: buffer.Buffer, text: &static [byte]) -> [heap] buffer.Buffer {
+    return buffer.append(heap, out, text);
+}
+
+fn num[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    return buffer.push_nat(heap, out, n);
+}
+
+fn hex_digit(n: int) -> [] int {
+    if n < 10 {
+        return '0' + n;
+    }
+    return 'a' + n - 10;
+}
+
+// `\u` + four lowercase hex digits, as `json.dumps` writes any escape.
+fn uescape[&h](heap: &!h Heap, out: buffer.Buffer, cp: int) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, "\\u");
+    o = buffer.push(heap, o, byte_of(hex_digit(cp / 4096 % 16)));
+    o = buffer.push(heap, o, byte_of(hex_digit(cp / 256 % 16)));
+    o = buffer.push(heap, o, byte_of(hex_digit(cp / 16 % 16)));
+    o = buffer.push(heap, o, byte_of(hex_digit(cp % 16)));
+    return o;
+}
+
+// A JSON string holding src[a..b], escaped the way `ensure_ascii` does:
+// `"` `\` and C0 controls, and every non-ASCII code point as `\uXXXX` (a
+// surrogate pair above U+FFFF). The source is UTF-8 by construction.
+fn quoted[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], a: int, b: int) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('"'));
+    var i = a;
+    while i < b {
+        let c = int_of(src[i]);
+        if c == '"' {
+            o = buffer.append(heap, o, "\\\"");
+        } else if c == '\\' {
+            o = buffer.append(heap, o, "\\\\");
+        } else if c == '\n' {
+            o = buffer.append(heap, o, "\\n");
+        } else if c == '\r' {
+            o = buffer.append(heap, o, "\\r");
+        } else if c == '\t' {
+            o = buffer.append(heap, o, "\\t");
+        } else if c == 8 {
+            o = buffer.append(heap, o, "\\b");
+        } else if c == 12 {
+            o = buffer.append(heap, o, "\\f");
+        } else if c < 32 {
+            o = uescape(heap, o, c);
+        } else if c < 128 {
+            o = buffer.push(heap, o, byte_of(c));
+        } else {
+            // Decode one UTF-8 sequence starting at i.
+            var extra = 0;
+            var cp = c;
+            if c >= 240 {
+                extra = 3;
+                cp = c % 8;
+            } else if c >= 224 {
+                extra = 2;
+                cp = c % 16;
+            } else {
+                extra = 1;
+                cp = c % 32;
+            }
+            var k = 1;
+            while k <= extra && i + k < b {
+                cp = cp * 64 + int_of(src[i + k]) % 64;
+                k = k + 1;
+            }
+            i = i + k - 1;
+            if cp >= 65536 {
+                let v = cp - 65536;
+                o = uescape(heap, o, 55296 + v / 1024);
+                o = uescape(heap, o, 56320 + v % 1024);
+            } else {
+                o = uescape(heap, o, cp);
+            }
+        }
+        i = i + 1;
+    }
+    return buffer.push(heap, o, byte_of('"'));
+}
+
+// A name: an identifier, so no escaping can be needed.
+fn name[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], a: int, b: int) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('"'));
+    o = buffer.append(heap, o, src[a..b]);
+    return buffer.push(heap, o, byte_of('"'));
+}
+
+// `0x4000_0000` -> `"0x40000000"`: underscores dropped, digits lowercased.
+fn hex[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], a: int, b: int) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, "\"0x");
+    var i = a + 2;
+    while i < b {
+        let c = int_of(src[i]);
+        if c != '_' {
+            if c >= 'A' && c <= 'F' {
+                o = buffer.push(heap, o, byte_of(c + 32));
+            } else {
+                o = buffer.push(heap, o, byte_of(c));
+            }
+        }
+        i = i + 1;
+    }
+    return buffer.push(heap, o, byte_of('"'));
+}
+
+fn ref_[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], x: model.Ref) -> [heap] buffer.Buffer {
+    var o = lit(heap, out, "{\"register\": ");
+    o = name(heap, o, src, x.reg_s, x.reg_e);
+    o = lit(heap, o, ", \"field\": ");
+    o = name(heap, o, src, x.fld_s, x.fld_e);
+    return lit(heap, o, "}");
+}
+
+fn field[&h, &r, &q](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], ir: &q model.Ir, f: model.Field) -> [heap] buffer.Buffer {
+    var o = lit(heap, out, "{\"name\": ");
+    o = name(heap, o, src, f.name_s, f.name_e);
+    o = lit(heap, o, ", \"lsb\": ");
+    o = num(heap, o, f.lsb);
+    o = lit(heap, o, ", \"msb\": ");
+    o = num(heap, o, f.msb);
+    if f.has_enum {
+        o = lit(heap, o, ", \"enum\": {");
+        var k = 0;
+        while k < f.enum_n {
+            let e = vec.get(ir.enums, f.enum_first + k);
+            if k > 0 {
+                o = lit(heap, o, ", ");
+            }
+            o = name(heap, o, src, e.name_s, e.name_e);
+            o = lit(heap, o, ": ");
+            o = num(heap, o, e.value);
+            k = k + 1;
+        }
+        o = lit(heap, o, "}");
+    }
+    if f.cons_s >= 0 {
+        o = lit(heap, o, ", \"constraint\": ");
+        o = quoted(heap, o, src, f.cons_s, f.cons_e);
+    }
+    return lit(heap, o, "}");
+}
+
+fn reg[&h, &r, &q](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], ir: &q model.Ir, x: model.Reg) -> [heap] buffer.Buffer {
+    var o = lit(heap, out, "{\"name\": ");
+    o = name(heap, o, src, x.name_s, x.name_e);
+    o = lit(heap, o, ", \"offset\": ");
+    o = hex(heap, o, src, x.off_s, x.off_e);
+    o = lit(heap, o, ", \"kind\": ");
+    o = name(heap, o, src, x.kind_s, x.kind_e);
+    var i = 0;
+    while i < model.order_len(x.order) {
+        let key = model.order_at(x.order, i);
+        if key == 1 {
+            o = lit(heap, o, ", \"reset\": ");
+            o = hex(heap, o, src, x.reset_s, x.reset_e);
+        } else if key == 2 {
+            o = lit(heap, o, ", \"volatile\": true");
+        } else {
+            o = lit(heap, o, ", \"polling\": true");
+        }
+        i = i + 1;
+    }
+    if x.n > 0 {
+        o = lit(heap, o, ", \"fields\": [");
+        var j = 0;
+        while j < x.n {
+            if j > 0 {
+                o = lit(heap, o, ", ");
+            }
+            o = field(heap, o, src, ir, vec.get(ir.fields, x.first + j));
+            j = j + 1;
+        }
+        o = lit(heap, o, "]");
+    }
+    return lit(heap, o, "}");
+}
+
+fn intr[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], x: model.Intr) -> [heap] buffer.Buffer {
+    var o = lit(heap, out, "{\"name\": ");
+    o = name(heap, o, src, x.name_s, x.name_e);
+    o = lit(heap, o, ", \"source\": ");
+    o = ref_(heap, o, src, x.source);
+    var i = 0;
+    while i < model.order_len(x.order) {
+        let key = model.order_at(x.order, i);
+        if key == 1 {
+            o = lit(heap, o, ", \"number\": ");
+            o = num(heap, o, x.number);
+        } else if key == 2 {
+            o = lit(heap, o, ", \"enable\": ");
+            o = ref_(heap, o, src, x.enable);
+        } else if key == 3 {
+            o = lit(heap, o, ", \"status\": ");
+            o = ref_(heap, o, src, x.status);
+        } else {
+            o = lit(heap, o, ", \"clear\": {");
+            if x.clear_kind_s >= 0 {
+                o = lit(heap, o, "\"kind\": ");
+                o = name(heap, o, src, x.clear_kind_s, x.clear_kind_e);
+                o = lit(heap, o, ", ");
+            }
+            o = lit(heap, o, "\"register\": ");
+            o = name(heap, o, src, x.clear.reg_s, x.clear.reg_e);
+            o = lit(heap, o, ", \"field\": ");
+            o = name(heap, o, src, x.clear.fld_s, x.clear.fld_e);
+            o = lit(heap, o, "}");
+        }
+        i = i + 1;
+    }
+    return lit(heap, o, "}");
+}
+
+fn dma_field[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], d: model.Dmaf) -> [heap] buffer.Buffer {
+    var o = lit(heap, out, "{\"name\": ");
+    o = name(heap, o, src, d.name_s, d.name_e);
+    o = lit(heap, o, ", \"offset\": ");
+    o = hex(heap, o, src, d.off_s, d.off_e);
+    var i = 0;
+    while i < model.order_len(d.order) {
+        let key = model.order_at(d.order, i);
+        if key == 1 {
+            o = lit(heap, o, ", \"owner\": ");
+            o = name(heap, o, src, d.owner_s, d.owner_e);
+        } else if key == 2 {
+            o = lit(heap, o, ", \"align\": ");
+            o = num(heap, o, d.align);
+        } else if key == 3 {
+            if d.coherent == 1 {
+                o = lit(heap, o, ", \"coherent\": true");
+            } else {
+                o = lit(heap, o, ", \"coherent\": false");
+            }
+        } else if key == 4 {
+            o = lit(heap, o, ", \"written_as\": ");
+            o = num(heap, o, d.written_as);
+        } else {
+            o = lit(heap, o, ", \"constraint\": ");
+            o = quoted(heap, o, src, d.cons_s, d.cons_e);
+        }
+        i = i + 1;
+    }
+    return lit(heap, o, "}");
+}
+
+pub fn render[&h, &r, &q](heap: &!h Heap, src: &r [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    var o = buffer.empty(heap, 1024);
+    o = lit(heap, o, "{\"$schema\": \"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\", \"version\": \"0.1.0\", \"block\": {\"name\": ");
+    o = name(heap, o, src, b.name_s, b.name_e);
+    o = lit(heap, o, ", \"base_address\": ");
+    o = hex(heap, o, src, b.base_s, b.base_e);
+    o = lit(heap, o, ", \"bus_width\": ");
+    o = num(heap, o, b.width);
+    if b.big {
+        o = lit(heap, o, ", \"endianness\": \"big\", \"registers\": [");
+    } else {
+        o = lit(heap, o, ", \"endianness\": \"little\", \"registers\": [");
+    }
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        if i > 0 {
+            o = lit(heap, o, ", ");
+        }
+        o = reg(heap, o, src, ir, vec.get(ir.regs, i));
+        i = i + 1;
+    }
+    o = lit(heap, o, "]");
+    if vec.size(ir.intrs) > 0 {
+        o = lit(heap, o, ", \"interrupts\": [");
+        var k = 0;
+        while k < vec.size(ir.intrs) {
+            if k > 0 {
+                o = lit(heap, o, ", ");
+            }
+            o = intr(heap, o, src, vec.get(ir.intrs, k));
+            k = k + 1;
+        }
+        o = lit(heap, o, "]");
+    }
+    o = lit(heap, o, "}, \"dma_buffers\": [");
+    var n = 0;
+    while n < vec.size(ir.bufs) {
+        let buf = vec.get(ir.bufs, n);
+        if n > 0 {
+            o = lit(heap, o, ", ");
+        }
+        o = lit(heap, o, "{\"name\": ");
+        o = name(heap, o, src, buf.name_s, buf.name_e);
+        o = lit(heap, o, ", \"fields\": [");
+        var j = 0;
+        while j < buf.n {
+            if j > 0 {
+                o = lit(heap, o, ", ");
+            }
+            o = dma_field(heap, o, src, vec.get(ir.dfields, buf.first + j));
+            j = j + 1;
+        }
+        o = lit(heap, o, "]}");
+        n = n + 1;
+    }
+    return lit(heap, o, "]}");
+}

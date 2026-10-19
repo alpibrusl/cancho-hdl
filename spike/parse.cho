@@ -1,0 +1,640 @@
+module chw.parse;
+
+// parse.cho -- recursive descent over the token tape, a port of `Parser` in
+// tools/parse/parser.py. Same grammar, same first-error-wins, same message
+// text, same error position (docs/cancho-port.md, "Spike").
+//
+// Two conventions carry the whole file, both forced by the language:
+//
+//  * No exceptions, so a refusal is STICKY. The first failure writes its
+//    message into the state slice and every later `expect_*` is a no-op; each
+//    loop tests `failed` in its condition so it stops. The Python parser
+//    raises `_ParseAbort`; this is the same behaviour spelled as data.
+//  * No `&mut self`, so the parser's state is an `[int]` slice every function
+//    borrows uniquely: cursor, failed flag, error position, and the message
+//    bytes themselves, one int per byte (the message must live somewhere a
+//    function that does not own a heap can write).
+//
+// State layout (`state_size()` ints):
+//   0 cursor   1 failed   2 error token   3 message length
+//   4 error line   5 error column   6 token count   7 writing
+//   8.. message bytes
+
+import std.bytes;
+import chw.lex as lx;
+import chw.ir as model;
+
+pub fn state_size() -> [] int {
+    return 8 + msg_cap();
+}
+
+fn msg_cap() -> [] int {
+    return 400;
+}
+
+pub fn failed[&p](st: &!p [int]) -> [] bool {
+    return st[1] == 1;
+}
+
+pub fn err_line[&p](st: &!p [int]) -> [] int {
+    return st[4];
+}
+
+pub fn err_col[&p](st: &!p [int]) -> [] int {
+    return st[5];
+}
+
+pub fn msg_len[&p](st: &!p [int]) -> [] int {
+    return st[3];
+}
+
+pub fn msg_byte[&p](st: &!p [int], i: int) -> [] int {
+    return st[8 + i];
+}
+
+// ---------------------------------------------------------------- cursor ---
+
+fn peek_at[&t, &p](toks: &t [lx.Tok], st: &!p [int], ahead: int) -> [] lx.Tok {
+    var j = st[0] + ahead;
+    if j > st[6] - 1 {
+        j = st[6] - 1;
+    }
+    return toks[j];
+}
+
+fn peek[&t, &p](toks: &t [lx.Tok], st: &!p [int]) -> [] lx.Tok {
+    return peek_at(toks, st, 0);
+}
+
+fn advance[&t, &p](toks: &t [lx.Tok], st: &!p [int]) -> [] int {
+    if peek(toks, st).kind != lx.k_eof() {
+        st[0] = st[0] + 1;
+    }
+    return 0;
+}
+
+// The token's text is `text`, whatever its kind (Python compares `.value`).
+fn is_text[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], text: &static [byte]) -> [] bool {
+    let t = peek(toks, st);
+    return t.kind != lx.k_eof() && bytes.equal(src[t.s..t.e], text);
+}
+
+fn is_p[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], text: &static [byte]) -> [] bool {
+    let t = peek(toks, st);
+    return t.kind == lx.k_punct() && bytes.equal(src[t.s..t.e], text);
+}
+
+fn is_eof[&t, &p](toks: &t [lx.Tok], st: &!p [int]) -> [] bool {
+    return peek(toks, st).kind == lx.k_eof();
+}
+
+fn tok_is[&r, &t](src: &r [byte], toks: &t [lx.Tok], idx: int, text: &static [byte]) -> [] bool {
+    let t = toks[idx];
+    return bytes.equal(src[t.s..t.e], text);
+}
+
+// `first-second` lexes as three tokens because `-` is its own punctuation.
+fn at_composite[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], first: &static [byte], second: &static [byte]) -> [] bool {
+    let t0 = peek_at(toks, st, 0);
+    let t1 = peek_at(toks, st, 1);
+    let t2 = peek_at(toks, st, 2);
+    return t0.kind == lx.k_ident() && bytes.equal(src[t0.s..t0.e], first) && t1.kind == lx.k_punct() && bytes.equal(src[t1.s..t1.e], "-") && t2.kind == lx.k_ident() && bytes.equal(src[t2.s..t2.e], second);
+}
+
+// ---------------------------------------------------------------- errors ---
+
+fn put[&p, &q](st: &!p [int], text: &q [byte]) -> [] int {
+    if st[7] != 1 {
+        return 0;
+    }
+    var i = 0;
+    while i < len(text) && st[3] < msg_cap() {
+        st[8 + st[3]] = int_of(text[i]);
+        st[3] = st[3] + 1;
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Open a refusal at token `at`. Only the first one is kept.
+fn fail_begin[&t, &p](toks: &t [lx.Tok], st: &!p [int], at: int) -> [] int {
+    if st[1] == 1 {
+        return 0;
+    }
+    st[1] = 1;
+    st[2] = at;
+    st[3] = 0;
+    st[4] = toks[at].line;
+    st[5] = toks[at].col;
+    st[7] = 1;
+    put(st, "parse error: ");
+    return 0;
+}
+
+// `, found 'x'.` or `, found end of file.`, using the token the refusal was
+// opened at, then close it.
+fn fail_end[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int]) -> [] int {
+    if st[7] != 1 {
+        return 0;
+    }
+    put(st, ", found ");
+    let t = toks[st[2]];
+    if t.kind == lx.k_eof() {
+        put(st, "end of file");
+    } else {
+        put(st, "'");
+        put(st, src[t.s..t.e]);
+        put(st, "'");
+    }
+    put(st, ".");
+    st[7] = 0;
+    return 0;
+}
+
+fn fail1[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], at: int, text: &static [byte]) -> [] int {
+    fail_begin(toks, st, at);
+    put(st, text);
+    return fail_end(src, toks, st);
+}
+
+fn fail_expected[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], at: int, what: &static [byte]) -> [] int {
+    fail_begin(toks, st, at);
+    put(st, "expected ");
+    put(st, what);
+    return fail_end(src, toks, st);
+}
+
+// ---------------------------------------------------------------- expects --
+
+fn expect_p[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], text: &static [byte], what: &static [byte]) -> [] int {
+    if failed(st) {
+        return 0;
+    }
+    if is_p(src, toks, st, text) {
+        return advance(toks, st);
+    }
+    return fail_expected(src, toks, st, st[0], what);
+}
+
+fn expect_w[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], text: &static [byte], what: &static [byte]) -> [] int {
+    if failed(st) {
+        return 0;
+    }
+    let t = peek(toks, st);
+    if t.kind == lx.k_ident() && bytes.equal(src[t.s..t.e], text) {
+        return advance(toks, st);
+    }
+    return fail_expected(src, toks, st, st[0], what);
+}
+
+// An identifier: answers its span (start, end); (0, 0) after a refusal.
+fn expect_ident[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], what: &static [byte]) -> [] (int, int) {
+    if failed(st) {
+        return (0, 0);
+    }
+    let t = peek(toks, st);
+    if t.kind != lx.k_ident() {
+        fail_expected(src, toks, st, st[0], what);
+        return (0, 0);
+    }
+    advance(toks, st);
+    return (t.s, t.e);
+}
+
+fn expect_hex[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int]) -> [] (int, int) {
+    if failed(st) {
+        return (0, 0);
+    }
+    let t = peek(toks, st);
+    if t.kind != lx.k_hex() {
+        fail_expected(src, toks, st, st[0], "a hex number like 0x1c");
+        return (0, 0);
+    }
+    advance(toks, st);
+    return (t.s, t.e);
+}
+
+// Python's `int()` is unbounded; cancho's `int` traps on overflow, so a
+// literal of more than 18 digits is a refusal here (a known difference,
+// docs/cancho-port.md "Known differences").
+fn expect_dec[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int]) -> [] int {
+    if failed(st) {
+        return 0;
+    }
+    let t = peek(toks, st);
+    if t.kind != lx.k_dec() {
+        fail_expected(src, toks, st, st[0], "a decimal number");
+        return 0;
+    }
+    if t.e - t.s > 18 {
+        fail1(src, toks, st, st[0], "a decimal number of more than 18 digits is outside what the port supports");
+        return 0;
+    }
+    var value = 0;
+    var i = t.s;
+    while i < t.e {
+        value = value * 10 + (int_of(src[i]) - '0');
+        i = i + 1;
+    }
+    advance(toks, st);
+    return value;
+}
+
+// ------------------------------------------------------------ productions --
+
+pub fn parse_file[&h, &r, &t, &p](heap: &!h Heap, src: &r [byte], toks: &t [lx.Tok], st: &!p [int], ir: model.Ir) -> [heap] model.Ir {
+    var out = ir;
+    var seen = false;
+    while !failed(st) && !is_eof(toks, st) {
+        if at_composite(src, toks, st, "register", "block") {
+            if seen {
+                fail1(src, toks, st, st[0], "a file may contain only one register-block");
+            } else {
+                st[0] = st[0] + 3;
+                out = parse_block(heap, src, toks, st, out);
+                seen = true;
+            }
+        } else if at_composite(src, toks, st, "dma", "buffer") {
+            st[0] = st[0] + 3;
+            out = parse_dma_buffer(heap, src, toks, st, out);
+        } else {
+            fail1(src, toks, st, st[0], "expected a 'register-block' or 'dma-buffer' declaration");
+        }
+    }
+    if !seen && !failed(st) {
+        fail1(src, toks, st, st[0], "a contract file must contain a 'register-block'");
+    }
+    return out;
+}
+
+fn parse_block[&h, &r, &t, &p](heap: &!h Heap, src: &r [byte], toks: &t [lx.Tok], st: &!p [int], ir: model.Ir) -> [heap] model.Ir {
+    var out = ir;
+    let (ns, ne) = expect_ident(src, toks, st, "a block name");
+    expect_p(src, toks, st, "@", "'@' before the base address");
+    let (bs, be) = expect_hex(src, toks, st);
+    expect_p(src, toks, st, ",", "',' before 'width'");
+    expect_w(src, toks, st, "width", "'width'");
+    let width = expect_dec(src, toks, st);
+    expect_p(src, toks, st, ",", "',' before the endianness");
+    let et = st[0];
+    let (es, ee) = expect_ident(src, toks, st, "an endianness ('little-endian' or 'big-endian')");
+    var big = false;
+    if !failed(st) {
+        let little = bytes.equal(src[es..ee], "little");
+        big = bytes.equal(src[es..ee], "big");
+        // `little-endian` is three tokens; bare `little` / `big` is accepted.
+        let t1 = peek_at(toks, st, 1);
+        if (little || big) && is_p(src, toks, st, "-") && t1.kind == lx.k_ident() && bytes.equal(src[t1.s..t1.e], "endian") {
+            st[0] = st[0] + 2;
+        }
+        if !little && !big {
+            fail_expected(src, toks, st, et, "'little-endian' or 'big-endian'");
+        }
+    }
+    expect_p(src, toks, st, "{", "'{' to open the block body");
+    out = model.set_block(out, model.Block { name_s: ns, name_e: ne, base_s: bs, base_e: be, width: width, big: big });
+
+    while !failed(st) && !is_p(src, toks, st, "}") {
+        if is_eof(toks, st) {
+            fail_expected(src, toks, st, st[0], "'}' to close the block");
+        } else if is_text(src, toks, st, "register") {
+            out = parse_register(heap, src, toks, st, out);
+        } else if is_text(src, toks, st, "interrupt") {
+            out = parse_interrupt(heap, src, toks, st, out);
+        } else {
+            fail1(src, toks, st, st[0], "expected 'register' or 'interrupt' inside the block");
+        }
+    }
+    advance(toks, st);
+    return out;
+}
+
+fn parse_register[&h, &r, &t, &p](heap: &!h Heap, src: &r [byte], toks: &t [lx.Tok], st: &!p [int], ir: model.Ir) -> [heap] model.Ir {
+    var out = ir;
+    expect_w(src, toks, st, "register", "'register'");
+    let (ns, ne) = expect_ident(src, toks, st, "a register name");
+    expect_p(src, toks, st, "@", "'@' before the offset");
+    let (os, oe) = expect_hex(src, toks, st);
+    expect_p(src, toks, st, ":", "':' after the register offset (before the access kind)");
+    let (ks, ke) = expect_ident(src, toks, st, "an access kind (RW, RO, WO, RC, W1C, W0C, W1S, W0S)");
+    var reset_s = 0 - 1;
+    var reset_e = 0;
+    var volatile = false;
+    var polling = false;
+    var order = 0;
+
+    while !failed(st) && is_p(src, toks, st, ",") {
+        advance(toks, st);
+        let at = st[0];
+        let (as_, ae) = expect_ident(src, toks, st, "a register attribute ('reset', 'volatile' or 'polling')");
+        if failed(st) {
+            // already refused
+        } else if bytes.equal(src[as_..ae], "reset") {
+            let (rs, re) = expect_hex(src, toks, st);
+            reset_s = rs;
+            reset_e = re;
+            order = model.note(order, 1);
+        } else if bytes.equal(src[as_..ae], "volatile") {
+            volatile = true;
+            order = model.note(order, 2);
+        } else if bytes.equal(src[as_..ae], "polling") {
+            polling = true;
+            order = model.note(order, 3);
+        } else {
+            fail_expected(src, toks, st, at, "a register attribute ('reset', 'volatile' or 'polling')");
+        }
+    }
+
+    var first = 0;
+    borrow out as &q in {
+        first = model.n_fields(q);
+    }
+    expect_p(src, toks, st, "{", "'{' to open the register body");
+    while !failed(st) && !is_p(src, toks, st, "}") {
+        if is_eof(toks, st) {
+            fail_expected(src, toks, st, st[0], "'}' to close the register");
+        } else if is_text(src, toks, st, "field") {
+            out = parse_field(heap, src, toks, st, out);
+        } else {
+            fail1(src, toks, st, st[0], "expected 'field' inside the register");
+        }
+    }
+    advance(toks, st);
+    var count = 0;
+    borrow out as &q in {
+        count = model.n_fields(q) - first;
+    }
+    return model.add_reg(heap, out, model.Reg { name_s: ns, name_e: ne, off_s: os, off_e: oe, kind_s: ks, kind_e: ke, reset_s: reset_s, reset_e: reset_e, volatile: volatile, polling: polling, order: order, first: first, n: count });
+}
+
+fn parse_field[&h, &r, &t, &p](heap: &!h Heap, src: &r [byte], toks: &t [lx.Tok], st: &!p [int], ir: model.Ir) -> [heap] model.Ir {
+    var out = ir;
+    expect_w(src, toks, st, "field", "'field'");
+    let (ns, ne) = expect_ident(src, toks, st, "a field name");
+    expect_p(src, toks, st, ":", "':' after the field name");
+    expect_w(src, toks, st, "bits", "'bits'");
+    expect_p(src, toks, st, "[", "'[' to open the bit range");
+    let lsb = expect_dec(src, toks, st);
+    var msb = lsb;
+    if !failed(st) && is_p(src, toks, st, "..") {
+        advance(toks, st);
+        msb = expect_dec(src, toks, st);
+    }
+    expect_p(src, toks, st, "]", "']' to close the bit range");
+
+    var has_enum = false;
+    var enum_first = 0;
+    var enum_n = 0;
+    borrow out as &q in {
+        enum_first = model.n_enums(q);
+    }
+    if !failed(st) && peek(toks, st).kind == lx.k_ident() && is_text(src, toks, st, "enum") {
+        advance(toks, st);
+        has_enum = true;
+        expect_p(src, toks, st, "{", "'{' to open the enum");
+        var first = true;
+        while !failed(st) && !is_p(src, toks, st, "}") {
+            if !first && is_p(src, toks, st, ",") {
+                advance(toks, st);
+            }
+            let lt = st[0];
+            let (ls, le) = expect_ident(src, toks, st, "an enum label");
+            expect_p(src, toks, st, "=", "'=' after the enum label");
+            let value = expect_dec(src, toks, st);
+            if !failed(st) {
+                var dup = false;
+                borrow out as &q in {
+                    var k = enum_first;
+                    while k < model.n_enums(q) {
+                        if model.entry_name_equals(q, src, k, ls, le) {
+                            dup = true;
+                        }
+                        k = k + 1;
+                    }
+                }
+                if dup {
+                    fail_begin(toks, st, lt);
+                    put(st, "duplicate enum label '");
+                    put(st, src[ls..le]);
+                    put(st, "'");
+                    fail_end(src, toks, st);
+                } else {
+                    out = model.add_entry(heap, out, model.Entry { name_s: ls, name_e: le, value: value });
+                    enum_n = enum_n + 1;
+                }
+            }
+            first = false;
+        }
+        if !failed(st) && is_p(src, toks, st, ",") {
+            advance(toks, st);
+        }
+        expect_p(src, toks, st, "}", "'}' to close the enum");
+    }
+
+    var cons_s = 0 - 1;
+    var cons_e = 0;
+    if !failed(st) && peek(toks, st).kind == lx.k_constraint() {
+        advance(toks, st);
+        let t = peek(toks, st);
+        if t.kind != lx.k_str() {
+            fail_expected(src, toks, st, st[0], "a constraint string after 'constraint' (free text ending at the end of the line)");
+        } else {
+            advance(toks, st);
+            cons_s = t.s;
+            cons_e = t.e;
+        }
+    }
+    return model.add_field(heap, out, model.Field { name_s: ns, name_e: ne, lsb: lsb, msb: msb, has_enum: has_enum, enum_first: enum_first, enum_n: enum_n, cons_s: cons_s, cons_e: cons_e });
+}
+
+// `@ Register . field`, answering the span of each name.
+fn parse_ref_tail[&r, &t, &p](src: &r [byte], toks: &t [lx.Tok], st: &!p [int], reg_what: &static [byte], at_what: &static [byte]) -> [] model.Ref {
+    expect_p(src, toks, st, "@", at_what);
+    let (rs, re) = expect_ident(src, toks, st, reg_what);
+    expect_p(src, toks, st, ".", "'.' between the register and the field");
+    let (fs, fe) = expect_ident(src, toks, st, "a field name");
+    return model.Ref { reg_s: rs, reg_e: re, fld_s: fs, fld_e: fe };
+}
+
+fn parse_interrupt[&h, &r, &t, &p](heap: &!h Heap, src: &r [byte], toks: &t [lx.Tok], st: &!p [int], ir: model.Ir) -> [heap] model.Ir {
+    expect_w(src, toks, st, "interrupt", "'interrupt'");
+    let (ns, ne) = expect_ident(src, toks, st, "an interrupt name");
+    let ft = st[0];
+    let (fs0, fe0) = expect_ident(src, toks, st, "'from' between the interrupt name and its source");
+    if !failed(st) && !bytes.equal(src[fs0..fe0], "from") {
+        fail_expected(src, toks, st, ft, "'from' after the interrupt name");
+    }
+    // The `from` reference has no `@`; it is the `source` unless a `source @`
+    // linkage names another.
+    let (rs, re) = expect_ident(src, toks, st, "a register name after 'from'");
+    expect_p(src, toks, st, ".", "'.' between the register and the field");
+    let (fs, fe) = expect_ident(src, toks, st, "a field name");
+    expect_p(src, toks, st, "{", "'{' to open the interrupt body");
+    var intr = model.Intr { name_s: ns, name_e: ne, number: 0 - 1, source: model.Ref { reg_s: rs, reg_e: re, fld_s: fs, fld_e: fe }, enable: model.no_ref(), status: model.no_ref(), clear: model.no_ref(), clear_kind_s: 0 - 1, clear_kind_e: 0, order: 0 };
+    while !failed(st) && !is_p(src, toks, st, "}") {
+        if is_eof(toks, st) {
+            fail_expected(src, toks, st, st[0], "'}' to close the interrupt");
+        } else if is_text(src, toks, st, "number") {
+            advance(toks, st);
+            intr = model.Intr { name_s: intr.name_s, name_e: intr.name_e, number: expect_dec(src, toks, st), source: intr.source, enable: intr.enable, status: intr.status, clear: intr.clear, clear_kind_s: intr.clear_kind_s, clear_kind_e: intr.clear_kind_e, order: model.note(intr.order, 1) };
+        } else if is_text(src, toks, st, "source") {
+            advance(toks, st);
+            let ref = parse_ref_tail(src, toks, st, "a register name", "'@' in a linkage");
+            intr = model.Intr { name_s: intr.name_s, name_e: intr.name_e, number: intr.number, source: ref, enable: intr.enable, status: intr.status, clear: intr.clear, clear_kind_s: intr.clear_kind_s, clear_kind_e: intr.clear_kind_e, order: intr.order };
+        } else if is_text(src, toks, st, "enable") {
+            advance(toks, st);
+            let ref = parse_ref_tail(src, toks, st, "a register name", "'@' in a linkage");
+            intr = model.Intr { name_s: intr.name_s, name_e: intr.name_e, number: intr.number, source: intr.source, enable: ref, status: intr.status, clear: intr.clear, clear_kind_s: intr.clear_kind_s, clear_kind_e: intr.clear_kind_e, order: model.note(intr.order, 2) };
+        } else if is_text(src, toks, st, "status") {
+            advance(toks, st);
+            let ref = parse_ref_tail(src, toks, st, "a register name", "'@' in a linkage");
+            intr = model.Intr { name_s: intr.name_s, name_e: intr.name_e, number: intr.number, source: intr.source, enable: intr.enable, status: ref, clear: intr.clear, clear_kind_s: intr.clear_kind_s, clear_kind_e: intr.clear_kind_e, order: model.note(intr.order, 3) };
+        } else if is_text(src, toks, st, "clear") {
+            advance(toks, st);
+            var ks = 0 - 1;
+            var ke = 0;
+            if is_p(src, toks, st, ":") {
+                advance(toks, st);
+                let (a, b) = expect_ident(src, toks, st, "a clear kind (W1C, W0C or RC)");
+                ks = a;
+                ke = b;
+            }
+            let ref = parse_ref_tail(src, toks, st, "a register name", "'@' in the 'clear' linkage");
+            intr = model.Intr { name_s: intr.name_s, name_e: intr.name_e, number: intr.number, source: intr.source, enable: intr.enable, status: intr.status, clear: ref, clear_kind_s: ks, clear_kind_e: ke, order: model.note(intr.order, 4) };
+        } else {
+            fail1(src, toks, st, st[0], "expected 'source', 'enable', 'status', 'clear' or 'number' inside the interrupt");
+        }
+        // Optional separator between linkage items.
+        if !failed(st) && (is_p(src, toks, st, ",") || is_p(src, toks, st, ";")) {
+            advance(toks, st);
+        }
+    }
+    advance(toks, st);
+    return model.add_intr(heap, ir, intr);
+}
+
+fn parse_dma_buffer[&h, &r, &t, &p](heap: &!h Heap, src: &r [byte], toks: &t [lx.Tok], st: &!p [int], ir: model.Ir) -> [heap] model.Ir {
+    var out = ir;
+    let (ns, ne) = expect_ident(src, toks, st, "a buffer name");
+    expect_p(src, toks, st, "{", "'{' to open the buffer body");
+    var first = 0;
+    borrow out as &q in {
+        first = model.n_dfields(q);
+    }
+    while !failed(st) && !is_p(src, toks, st, "}") {
+        if is_eof(toks, st) {
+            fail_expected(src, toks, st, st[0], "'}' to close the buffer");
+        } else if !is_text(src, toks, st, "field") {
+            fail1(src, toks, st, st[0], "expected 'field' inside the buffer");
+        } else {
+            out = parse_dma_field(heap, src, toks, st, out);
+        }
+    }
+    advance(toks, st);
+    var count = 0;
+    borrow out as &q in {
+        count = model.n_dfields(q) - first;
+    }
+    return model.add_buf(heap, out, model.Buf { name_s: ns, name_e: ne, first: first, n: count });
+}
+
+fn parse_dma_field[&h, &r, &t, &p](heap: &!h Heap, src: &r [byte], toks: &t [lx.Tok], st: &!p [int], ir: model.Ir) -> [heap] model.Ir {
+    expect_w(src, toks, st, "field", "'field'");
+    let (ns, ne) = expect_ident(src, toks, st, "a field name");
+    expect_p(src, toks, st, ":", "':' after the field name");
+    expect_p(src, toks, st, "@", "'@' before the offset");
+    let (os, oe) = expect_hex(src, toks, st);
+    var d = model.Dmaf { name_s: ns, name_e: ne, off_s: os, off_e: oe, owner_s: 0 - 1, owner_e: 0, align: 0 - 1, coherent: 0 - 1, written_as: 0 - 1, cons_s: 0 - 1, cons_e: 0, order: 0 };
+    while !failed(st) && is_p(src, toks, st, ",") {
+        advance(toks, st);
+        if is_text(src, toks, st, "owned") {
+            advance(toks, st);
+            let bt = st[0];
+            let (bs, be) = expect_ident(src, toks, st, "'by' after 'owned'");
+            if !failed(st) && !bytes.equal(src[bs..be], "by") {
+                fail_expected(src, toks, st, bt, "'by' after 'owned'");
+            }
+            let (ws, we) = expect_ident(src, toks, st, "an owner ('CPU' or 'DEVICE')");
+            d = with_owner(d, ws, we);
+        } else if is_text(src, toks, st, "aligned") {
+            advance(toks, st);
+            d = with_align(d, expect_dec(src, toks, st));
+        } else if is_text(src, toks, st, "coherent") {
+            advance(toks, st);
+            let bt = st[0];
+            let (bs, be) = expect_ident(src, toks, st, "a boolean after 'coherent'");
+            if !failed(st) {
+                if bytes.equal(src[bs..be], "true") {
+                    d = with_coherent(d, 1);
+                } else if bytes.equal(src[bs..be], "false") {
+                    d = with_coherent(d, 0);
+                } else {
+                    fail_expected(src, toks, st, bt, "'true' or 'false' after 'coherent'");
+                }
+            }
+        } else if is_text(src, toks, st, "written") {
+            advance(toks, st);
+            let at = st[0];
+            let (as_, ae) = expect_ident(src, toks, st, "'as' after 'written'");
+            if !failed(st) && !bytes.equal(src[as_..ae], "as") {
+                fail_expected(src, toks, st, at, "'as' after 'written'");
+            }
+            d = with_written(d, expect_dec(src, toks, st));
+        } else if is_text(src, toks, st, "constraint") {
+            advance(toks, st);
+            let t = peek(toks, st);
+            if t.kind != lx.k_str() {
+                fail_expected(src, toks, st, st[0], "a constraint string after 'constraint' (free text ending at the end of the line)");
+            } else {
+                advance(toks, st);
+                d = with_constraint(d, t.s, t.e);
+            }
+        } else {
+            fail_expected(src, toks, st, st[0], "a DMA attribute ('owned by', 'aligned', 'coherent', 'written as' or 'constraint')");
+        }
+    }
+    // Ownership is the property the whole DMA model rests on, so the text
+    // format must carry it.
+    if !failed(st) && d.owner_s < 0 {
+        fail_begin(toks, st, st[0]);
+        put(st, "missing 'owned by CPU' or 'owned by DEVICE' for field '");
+        put(st, src[ns..ne]);
+        put(st, "'; every DMA field must state its owner");
+        fail_end(src, toks, st);
+    }
+    return model.add_dfield(heap, ir, d);
+}
+
+// A DMA record with one attribute replaced; the attribute joins `order` the
+// first time it is written. Five near-identical constructors: the cost of a
+// struct that cannot be updated in place (docs/cancho-port.md, obstacles).
+fn with_owner(d: model.Dmaf, s: int, e: int) -> [] model.Dmaf {
+    return model.Dmaf { name_s: d.name_s, name_e: d.name_e, off_s: d.off_s, off_e: d.off_e, owner_s: s, owner_e: e, align: d.align, coherent: d.coherent, written_as: d.written_as, cons_s: d.cons_s, cons_e: d.cons_e, order: model.note(d.order, 1) };
+}
+
+fn with_align(d: model.Dmaf, v: int) -> [] model.Dmaf {
+    return model.Dmaf { name_s: d.name_s, name_e: d.name_e, off_s: d.off_s, off_e: d.off_e, owner_s: d.owner_s, owner_e: d.owner_e, align: v, coherent: d.coherent, written_as: d.written_as, cons_s: d.cons_s, cons_e: d.cons_e, order: model.note(d.order, 2) };
+}
+
+fn with_coherent(d: model.Dmaf, v: int) -> [] model.Dmaf {
+    return model.Dmaf { name_s: d.name_s, name_e: d.name_e, off_s: d.off_s, off_e: d.off_e, owner_s: d.owner_s, owner_e: d.owner_e, align: d.align, coherent: v, written_as: d.written_as, cons_s: d.cons_s, cons_e: d.cons_e, order: model.note(d.order, 3) };
+}
+
+fn with_written(d: model.Dmaf, v: int) -> [] model.Dmaf {
+    return model.Dmaf { name_s: d.name_s, name_e: d.name_e, off_s: d.off_s, off_e: d.off_e, owner_s: d.owner_s, owner_e: d.owner_e, align: d.align, coherent: d.coherent, written_as: v, cons_s: d.cons_s, cons_e: d.cons_e, order: model.note(d.order, 4) };
+}
+
+fn with_constraint(d: model.Dmaf, s: int, e: int) -> [] model.Dmaf {
+    return model.Dmaf { name_s: d.name_s, name_e: d.name_e, off_s: d.off_s, off_e: d.off_e, owner_s: d.owner_s, owner_e: d.owner_e, align: d.align, coherent: d.coherent, written_as: d.written_as, cons_s: s, cons_e: e, order: model.note(d.order, 5) };
+}
+
+// Prepare the state slice for `count` tokens.
+pub fn start[&p](st: &!p [int], count: int) -> [] int {
+    var i = 0;
+    while i < len(st) {
+        st[i] = 0;
+        i = i + 1;
+    }
+    st[6] = count;
+    return 0;
+}

@@ -1,0 +1,96 @@
+// test_chw.cho -- the port's unit tests, run with `cancho test`:
+//
+//     cancho test spike/test_chw.cho spike/lex.cho spike/ir.cho spike/parse.cho \
+//         spike/json.cho spike/front.cho --std
+//
+// Every expected answer below was taken from the Python parser (the oracle),
+// never from this port.
+//
+// Sources are embedded because a test may borrow only `Heap` and `Io`
+// (docs/testing.md §3): it has no `Fs`, so it cannot open a fixture. The
+// fixture-driven conformance run is a program, `conform.cho` in the design
+// (docs/cancho-port.md, "Conformance").
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.lex as lx;
+import chw.front;
+
+// `text` parses (or is refused) with exactly `want` as the whole answer.
+fn answers[&h, &t, &w](heap: &!h Heap, text: &t [byte], want: &w [byte], want_status: int) -> [heap] int {
+    let (out, status) = front.parse_chw(heap, "t.chw", text);
+    var same = status == want_status;
+    borrow out as &o in {
+        same = same && bytes.equal(buffer.bytes(o), want);
+    }
+    buffer.drop(heap, out);
+    return test.assert(same);
+}
+
+fn test_lex_counts_tokens[&h](heap: &!h Heap) -> [heap] int {
+    let text = "register R @ 0x1_F : RW { } // trailing\n";
+    let toks = box_slice(heap, len(text) + 2, lx.blank());
+    var count = 0;
+    borrow mut toks as &!w in {
+        count = lx.lex(text, contents(w));
+    }
+    unbox_slice(heap, toks);
+    // register R @ 0x1_F : RW { } eof
+    return test.assert_eq(count, 9);
+}
+
+fn test_constraint_claims_the_rest_of_the_line[&h](heap: &!h Heap) -> [heap] int {
+    let text = "constraint a <= b  // gone\nx";
+    let toks = box_slice(heap, len(text) + 2, lx.blank());
+    var count = 0;
+    var ok = false;
+    borrow mut toks as &!w in {
+        count = lx.lex(text, contents(w));
+        let t = contents(w)[1];
+        ok = t.kind == lx.k_str() && bytes.equal(text[t.s..t.e], "a <= b");
+    }
+    unbox_slice(heap, toks);
+    // constraint, str, x, eof
+    return test.assert(ok && count == 4);
+}
+
+fn test_minimal_block_prints_the_wire_form[&h](heap: &!h Heap) -> [heap] int {
+    return answers(heap, "register-block B @ 0x4000_0000, width 32, little-endian { register R @ 0x0C : RO, volatile { field F : bits [1..2] enum { A=0, B=1 } } }", "{\"$schema\": \"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\", \"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40000000\", \"bus_width\": 32, \"endianness\": \"little\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0c\", \"kind\": \"RO\", \"volatile\": true, \"fields\": [{\"name\": \"F\", \"lsb\": 1, \"msb\": 2, \"enum\": {\"A\": 0, \"B\": 1}}]}]}, \"dma_buffers\": []}\n", 0);
+}
+
+fn test_attributes_keep_first_written_order[&h](heap: &!h Heap) -> [heap] int {
+    return answers(heap, "register-block B @ 0x0, width 8, big { register R @ 0x0 : RW, polling, reset 0x1, volatile, polling { } }", "{\"$schema\": \"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\", \"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x0\", \"bus_width\": 8, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\", \"polling\": true, \"reset\": \"0x1\", \"volatile\": true}]}, \"dma_buffers\": []}\n", 0);
+}
+
+fn test_constraint_text_is_escaped[&h](heap: &!h Heap) -> [heap] int {
+    return answers(heap, "register-block B @ 0x0, width 8, big { register R @ 0x0 : RW { field F : bits [0] constraint say \"hi\" \\ x\t// c\n } }", "{\"$schema\": \"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\", \"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x0\", \"bus_width\": 8, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\", \"fields\": [{\"name\": \"F\", \"lsb\": 0, \"msb\": 0, \"constraint\": \"say \\\"hi\\\" \\\\ x\"}]}]}, \"dma_buffers\": []}\n", 0);
+}
+
+// The shipped fixture `examples/refusal/parse-error.chw`, inline.
+fn test_missing_colon_is_refused_where_python_refuses[&h](heap: &!h Heap) -> [heap] int {
+    return answers(heap, "register-block ParseFail @ 0x40002000, width 32, little-endian {\n    register CTRL @ 0x00 RW, reset 0x00000000 {\n        field ENABLE : bits [0]\n    }\n}\n", "error[parse-error]: parse error: expected ':' after the register offset (before the access kind), found 'RW'.  t.chw:2:26\n", 1);
+}
+
+fn test_first_error_wins[&h](heap: &!h Heap) -> [heap] int {
+    // Two faults; only the first is reported.
+    return answers(heap, "register-block B @ 0x0 width 8, little { register R @ 0x0 RW { } }", "error[parse-error]: parse error: expected ',' before 'width', found 'width'.  t.chw:1:24\n", 1);
+}
+
+fn test_duplicate_enum_label_is_refused[&h](heap: &!h Heap) -> [heap] int {
+    return answers(heap, "register-block B @ 0x0, width 8, big { register R @ 0x0 : RW { field F : bits [0] enum { A=0, A=1 } } }", "error[parse-error]: parse error: duplicate enum label 'A', found 'A'.  t.chw:1:95\n", 1);
+}
+
+fn test_dma_field_without_owner_is_refused[&h](heap: &!h Heap) -> [heap] int {
+    return answers(heap, "register-block B @ 0x0, width 8, big { }\ndma-buffer D { field a : @ 0x0 }", "error[parse-error]: parse error: missing 'owned by CPU' or 'owned by DEVICE' for field 'a'; every DMA field must state its owner, found '}'.  t.chw:2:32\n", 1);
+}
+
+fn test_oversize_decimal_is_refused_not_trapped[&h](heap: &!h Heap) -> [heap] int {
+    // Python's int() is unbounded; cancho's traps on overflow. The port
+    // refuses instead of crashing: "no input may reach a panic".
+    return answers(heap, "register-block B @ 0x0, width 99999999999999999999, big { }", "error[parse-error]: parse error: a decimal number of more than 18 digits is outside what the port supports, found '99999999999999999999'.  t.chw:1:31\n", 1);
+}
+
+fn test_empty_input_is_refused[&h](heap: &!h Heap) -> [heap] int {
+    return answers(heap, "", "error[parse-error]: parse error: a contract file must contain a 'register-block', found end of file.  t.chw:1:1\n", 1);
+}
