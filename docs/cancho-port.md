@@ -1589,11 +1589,11 @@ Fixtures (50 files: valid examples, refusals, `tests/stage1`, `tests/stage2`): s
 identical on **45**, and 5 known differences (3 are the checker's, already explained in 14.2; the other two are
 in 18.3). Seven of them generate a header, and **all seven compile** with `cc -std=c11 -Wall -Wextra -Werror`.
 
-Mutants (the 55,182 distinct inputs of `check_json.py`, plus 23 hand-made ones, **55,205**): 
+Mutants (the 55,182 distinct inputs of `check_json.py`, plus 27 hand-made ones (23 for the generator, 4 hostile and large), **55,209**): 
 
 | | inputs |
 |---|---:|
-| identical (stdout, stderr, exit status) | 47,785 (a header on 3,948, a refusal on 43,837) |
+| identical (stdout, stderr, exit status) | 47,789 (a header on 3,952, a refusal on 43,837) |
 | the two checkers differ in a class 14.2 explains | 1,192 |
 | cancho refuses a name the header cannot spell; Python's header does not compile | 338 |
 | cancho refuses a non-ASCII name (18.3, item 2) | 47 |
@@ -1610,7 +1610,7 @@ take 0.3 s each.
 ### 18.3 What the oracle found, and what was decided
 
 1. **The Python generator writes C that does not compile for names a contract may have.** The schema requires
-   a name to be a non-empty string; no rule requires an identifier. Of the 23 hand-made inputs, nine produced a
+   a name to be a non-empty string; no rule requires an identifier. Of the 23 hand-made inputs for the generator, nine produced a
    header with `generate.py` that gcc rejects: a register called `INT` (the member `int`), a field called
    `Register`, a DMA field called `while`, `A-B`, `x y`, a block called `9Blk` or `int`, a register called
    `A*/B` (the `*/` ends the comment that carries its stable ID, so what follows is code), and enum labels containing `*/` or `/*` (the second is a `-Wcomment` error). A block called `int` or a buffer called `for` compile (the suffix `_t` and the upper case save them), so they are not refused. An empty name is the checker's refusal, not the generator's.
