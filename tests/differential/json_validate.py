@@ -33,7 +33,20 @@ import sys
 import tempfile
 import threading
 
+import importlib.metadata
+
 import jsonschema
+
+# The port reproduces jsonschema 4.26's message wording ("[] should be non-empty"
+# where older releases say "[] is too short"; docs/cancho-port.md section 9.4).
+# Comparing against another release would report wording differences that are not
+# the port's, so refuse to run rather than compare against the wrong oracle.
+ORACLE_VERSION = "4.26.0"
+if importlib.metadata.version("jsonschema") != ORACLE_VERSION:
+    sys.exit(
+        f"json_validate.py needs jsonschema {ORACLE_VERSION} (found "
+        f"{importlib.metadata.version('jsonschema')}): pip install jsonschema=={ORACLE_VERSION}"
+    )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA = json.loads((ROOT / "spec/contract-schema/cancho-hdl-contract.schema.json").read_text())

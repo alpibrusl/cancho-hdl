@@ -560,7 +560,7 @@ keywords the file uses.
   ignores an unknown keyword, which would make a future `maxLength` silently
   unenforced. It is reported as code `internal` (a toolchain fault, not the
   user's input), and the run exits 2.
-* Messages follow `jsonschema` 4.26 word for word, with the instance quoted in
+* Messages follow `jsonschema` 4.26.0 word for word (the differential refuses to run against another release, and CI pins it: an older release words a minimum of 1 as `is too short`, which CI showed on its first run), with the instance quoted in
   Python's `repr` (`pyrepr.cho`): one message per keyword, two for `minLength`
   and `minItems` (`should be non-empty` when the minimum is 1, `is too short`
   otherwise) and two for `additionalProperties` (`was` / `were unexpected`, the
