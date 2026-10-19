@@ -1,0 +1,164 @@
+// test_schema.cho -- the structural validator (src/schema.cho, src/pyrepr.cho)
+// against a small schema that uses every keyword the interpreter implements.
+// Every expected record comes from `jsonschema` 4.26 run on the same schema and
+// document (tests/differential/json_validate.py does the same against the real
+// schema, at scale); none was taken from this port.
+//
+//     cancho test tests/unit/test_schema.cho tests/unit/support.cho src/*.cho --std
+//     (all of src/ except main.cho and conform.cho)
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.diag;
+import chw.load;
+import tsup;
+
+fn mini() -> [] &static [byte] {
+    return "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\",\"n\"],\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1,\"pattern\":\"^[a-c]+$\"},\"n\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":31},\"kind\":{\"enum\":[\"A\",\"B\",3,null,true]},\"list\":{\"type\":\"array\",\"minItems\":2,\"items\":{\"$ref\":\"#/$defs/item\"}},\"map\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"flag\":{\"type\":\"boolean\"}},\"$defs\":{\"item\":{\"type\":\"string\"}}}";
+}
+
+fn test_a_clean_document_has_no_records[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.clean(heap, mini(), "{\"name\":\"abc\",\"n\":5}");
+}
+
+fn test_a_missing_required_property_is_named[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\"}", "required", "", "'n' is a required property");
+}
+
+fn test_an_empty_string_breaks_minlength_and_the_pattern[&h](heap: &!h Heap) -> [heap] int {
+    let report = tsup.report_of(heap, mini(), "{\"name\":\"\",\"n\":5}");
+    var ok = false;
+    borrow report as &r in {
+        ok = diag.count(buffer.bytes(r)) == 2 && tsup.is_record(buffer.bytes(r), 0, "minLength", "/name", "'' should be non-empty") && tsup.is_record(buffer.bytes(r), 1, "pattern", "/name", "'' does not match '^[a-c]+$'");
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+fn test_a_value_below_the_minimum[&h](heap: &!h Heap) -> [heap] int {
+    let report = tsup.report_of(heap, mini(), "{\"name\":\"abd\",\"n\":-1}");
+    var ok = false;
+    borrow report as &r in {
+        ok = diag.count(buffer.bytes(r)) == 2 && tsup.is_record(buffer.bytes(r), 0, "pattern", "/name", "'abd' does not match '^[a-c]+$'") && tsup.is_record(buffer.bytes(r), 1, "minimum", "/n", "-1 is less than the minimum of 0");
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+fn test_a_value_above_the_maximum[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":32}", "maximum", "/n", "32 is greater than the maximum of 31");
+}
+
+fn test_a_fraction_is_not_an_integer[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":1.5}", "type", "/n", "1.5 is not of type 'integer'");
+}
+
+fn test_a_whole_float_is_an_integer[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.clean(heap, mini(), "{\"name\":\"abc\",\"n\":8.0}");
+}
+
+fn test_a_boolean_is_not_an_integer[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":true}", "type", "/n", "True is not of type 'integer'");
+}
+
+fn test_a_string_is_not_an_integer[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":\"5\"}", "type", "/n", "'5' is not of type 'integer'");
+}
+
+fn test_a_number_is_not_a_string[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":7,\"n\":5}", "type", "/name", "7 is not of type 'string'");
+}
+
+fn test_an_enum_miss_quotes_the_allowed_values[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"kind\":\"C\"}", "enum", "/kind", "'C' is not one of ['A', 'B', 3, None, True]");
+}
+
+fn test_enum_members_of_every_scalar_kind_match[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.clean(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"kind\":3}");
+}
+
+fn test_an_enum_matches_a_whole_float[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.clean(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"kind\":3.0}");
+}
+
+fn test_an_enum_matches_null[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.clean(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"kind\":null}");
+}
+
+fn test_an_enum_matches_true[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.clean(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"kind\":true}");
+}
+
+fn test_one_is_not_true_in_an_enum[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"kind\":1}", "enum", "/kind", "1 is not one of ['A', 'B', 3, None, True]");
+}
+
+fn test_a_container_is_quoted_whole[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"kind\":[1,\"a\",{\"b\":null}]}", "enum", "/kind", "[1, 'a', {'b': None}] is not one of ['A', 'B', 3, None, True]");
+}
+
+fn test_too_few_items[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"list\":[\"a\"]}", "minItems", "/list", "['a'] is too short");
+}
+
+fn test_items_are_checked_through_a_ref[&h](heap: &!h Heap) -> [heap] int {
+    let report = tsup.report_of(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"list\":[\"a\",1,\"c\",{}]}");
+    var ok = false;
+    borrow report as &r in {
+        ok = diag.count(buffer.bytes(r)) == 2 && tsup.is_record(buffer.bytes(r), 0, "type", "/list/1", "1 is not of type 'string'") && tsup.is_record(buffer.bytes(r), 1, "type", "/list/3", "{} is not of type 'string'");
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+fn test_an_additional_properties_schema_checks_each_extra[&h](heap: &!h Heap) -> [heap] int {
+    let report = tsup.report_of(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"map\":{\"x\":1,\"y\":\"s\",\"z\":2.5}}");
+    var ok = false;
+    borrow report as &r in {
+        ok = diag.count(buffer.bytes(r)) == 2 && tsup.is_record(buffer.bytes(r), 0, "type", "/map/y", "'s' is not of type 'integer'") && tsup.is_record(buffer.bytes(r), 1, "type", "/map/z", "2.5 is not of type 'integer'");
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+fn test_a_number_is_not_a_boolean[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"flag\":1}", "type", "/flag", "1 is not of type 'boolean'");
+}
+
+fn test_extra_properties_are_listed_sorted[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"zz\":1,\"yy\":2}", "additionalProperties", "", "Additional properties are not allowed ('yy', 'zz' were unexpected)");
+}
+
+fn test_one_extra_property_is_was_unexpected[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"zz\":1}", "additionalProperties", "", "Additional properties are not allowed ('zz' was unexpected)");
+}
+
+fn test_a_string_with_an_apostrophe_is_double_quoted[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"it's\",\"n\":5}", "pattern", "/name", "\"it's\" does not match '^[a-c]+$'");
+}
+
+fn test_a_string_with_double_quotes_and_a_newline[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"say \\\"hi\\\"\\n\",\"n\":5}", "pattern", "/name", "'say \"hi\"\\n' does not match '^[a-c]+$'");
+}
+
+fn test_both_quote_kinds_escape_the_apostrophe[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"it's \\\"x\\\"\",\"n\":5}", "pattern", "/name", "'it\\'s \"x\"' does not match '^[a-c]+$'");
+}
+
+fn test_non_ascii_is_kept_and_a_control_is_escaped[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, mini(), "{\"name\":\"\\u00e9\\ud83d\\ude00\\u0001\",\"n\":5}", "pattern", "/name", "'é😀\\x01' does not match '^[a-c]+$'");
+}
+
+fn test_an_escaped_key_is_the_key[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.clean(heap, mini(), "{\"na\\u006de\":\"abc\",\"n\":5}");
+}
+
+fn test_the_bounds_are_inclusive[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(tsup.clean(heap, mini(), "{\"name\":\"abc\",\"n\":0}") == 0);
+    return tsup.clean(heap, mini(), "{\"name\":\"abc\",\"n\":31}");
+}
+
+fn test_a_minimum_of_one_is_met_by_one_item_and_one_character[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.clean(heap, mini(), "{\"name\":\"a\",\"n\":1,\"list\":[\"x\",\"y\"]}");
+}

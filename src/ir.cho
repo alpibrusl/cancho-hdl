@@ -58,7 +58,11 @@ pub struct Reg {
 }
 
 // Interrupt keys after `source`, in first-written order (1 number, 2 enable,
-// 3 status, 4 clear), for the same reason.
+// 3 status, 4 clear), for the same reason. The text form always writes `source`
+// first and never records it; the JSON loader records it as key 5 where the
+// document wrote it, and the printer then prints it at that position. Key 6
+// says the `clear` object wrote its `kind` after `field` (the text form writes
+// it first).
 pub struct Intr {
     name_s: int,
     name_e: int,
@@ -96,6 +100,10 @@ pub struct Buf {
     n: int,
 }
 
+// `ver_s` and `sch_s` are -1 for "the constant the text form implies"
+// (version 0.1.0, the schema URI); a JSON document carries its own, which the
+// loader stores as spans. `has_schema` is false when the document has no
+// `$schema` key.
 pub struct Block {
     name_s: int,
     name_e: int,
@@ -103,6 +111,11 @@ pub struct Block {
     base_e: int,
     width: int,
     big: bool,
+    ver_s: int,
+    ver_e: int,
+    sch_s: int,
+    sch_e: int,
+    has_schema: bool,
 }
 
 pub res struct Ir {
@@ -120,7 +133,7 @@ pub fn no_ref() -> [] Ref {
 }
 
 pub fn empty[&h](heap: &!h Heap) -> [heap] Ir {
-    let block = Block { name_s: 0, name_e: 0, base_s: 0, base_e: 0, width: 0, big: false };
+    let block = Block { name_s: 0, name_e: 0, base_s: 0, base_e: 0, width: 0, big: false, ver_s: 0 - 1, ver_e: 0, sch_s: 0 - 1, sch_e: 0, has_schema: true };
     let reg = Reg { name_s: 0, name_e: 0, off_s: 0, off_e: 0, kind_s: 0, kind_e: 0, reset_s: 0 - 1, reset_e: 0, volatile: false, polling: false, order: 0, first: 0, n: 0 };
     let field = Field { name_s: 0, name_e: 0, lsb: 0, msb: 0, has_enum: false, enum_first: 0, enum_n: 0, cons_s: 0 - 1, cons_e: 0 };
     let entry = Entry { name_s: 0, name_e: 0, value: 0 };
@@ -219,6 +232,18 @@ pub fn note(order: int, key: int) -> [] int {
         rest = rest / 8;
     }
     return order * 8 + key;
+}
+
+// Has `key` been noted?
+pub fn has_key(order: int, key: int) -> [] bool {
+    var rest = order;
+    while rest > 0 {
+        if rest % 8 == key {
+            return true;
+        }
+        rest = rest / 8;
+    }
+    return false;
 }
 
 // How many keys, and the i-th (0-based, first-written first).

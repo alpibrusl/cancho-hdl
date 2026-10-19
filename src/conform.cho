@@ -1,0 +1,482 @@
+edition 6;
+
+module chw.conform;
+
+// conform.cho -- the stage-1 conformance runner (docs/cancho-port.md, 9.1).
+//
+// For every valid example and every refusal fixture it runs the product's own
+// loader and validator (`chw.load`) and compares the codes with the sidecar
+// (`*.expect.json`), the check `tools/check/conformance.py` makes for the
+// whole checker, restricted to the codes stage 1 owns (`parse-error`,
+// `schema-invalid`, `internal`). A sidecar entry with any other code is a
+// semantic rule (stage 2): it is counted and printed as DEFERRED, never as
+// passed.
+//
+// A fixture passes when every stage-1 entry is matched by a distinct emitted
+// record (same code, message containing `message_contains`; an optional
+// `keyword`, `line` and `column` in the entry pin the sub-tag and the span too)
+// and no emitted record is left over. A valid example passes when it loads
+// with an empty report.
+//
+// Files are read through a `Dir` handle on the repository root, so the runner
+// cannot read outside it. Exit: 0 all matched, 1 a mismatch, 2 the runner
+// itself could not run (a missing manifest, an unreadable sidecar).
+
+import std.buffer;
+import std.bytes;
+import std.dirs;
+import std.io as console;
+import std.json;
+import chw.diag;
+import chw.io as chwio;
+import chw.ir as model;
+import chw.load;
+
+// Tally slots.
+fn t_fixtures() -> [] int {
+    return 0;
+}
+
+fn t_fixtures_ok() -> [] int {
+    return 1;
+}
+
+fn t_entries() -> [] int {
+    return 2;
+}
+
+fn t_entries_ok() -> [] int {
+    return 3;
+}
+
+fn t_deferred() -> [] int {
+    return 4;
+}
+
+fn t_valid() -> [] int {
+    return 5;
+}
+
+fn t_valid_ok() -> [] int {
+    return 6;
+}
+
+fn t_broken() -> [] int {
+    return 7;
+}
+
+pub fn tally_size() -> [] int {
+    return 8;
+}
+
+fn pad[&h, &t](heap: &!h Heap, out: buffer.Buffer, text: &t [byte], width: int) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, text);
+    var n = len(text);
+    while n < width {
+        o = buffer.push(heap, o, byte_of(' '));
+        n = n + 1;
+    }
+    return o;
+}
+
+// The decoded string at `node`, in a box the caller frees. An empty box if it
+// is not a string.
+fn decoded[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], node: int) -> [heap] Box[[byte]] {
+    var n = json.string_length(src, tape, node);
+    if n < 0 {
+        n = 0;
+    }
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(src, tape, node, contents(w));
+    }
+    return tmp;
+}
+
+fn is_stage_one[&c](code: &c [byte]) -> [] bool {
+    return bytes.equal(code, "parse-error") || bytes.equal(code, "schema-invalid") || bytes.equal(code, "internal");
+}
+
+// Does the record `rec` satisfy the sidecar entry at `entry`?
+fn satisfies[&h, &r, &s, &t, &c](heap: &!h Heap, rec: &r [byte], src: &s [byte], tape: &t [int], entry: int, code: &c [byte]) -> [heap] bool {
+    if !bytes.equal(diag.code(rec), code) {
+        return false;
+    }
+    var ok = true;
+    let want = decoded(heap, src, tape, json.get(src, tape, entry, "message_contains"));
+    borrow want as &w in {
+        if bytes.find(diag.message(rec), contents(w)) < 0 {
+            ok = false;
+        }
+    }
+    unbox_slice(heap, want);
+    let kw = json.get(src, tape, entry, "keyword");
+    if json.is_string(tape, kw) {
+        let k = decoded(heap, src, tape, kw);
+        borrow k as &w in {
+            if !bytes.equal(diag.keyword(rec), contents(w)) {
+                ok = false;
+            }
+        }
+        unbox_slice(heap, k);
+    }
+    let line = json.get(src, tape, entry, "line");
+    if json.is_number(tape, line) && json.to_int(src, tape, line) != diag.line(rec) {
+        ok = false;
+    }
+    let col = json.get(src, tape, entry, "column");
+    if json.is_number(tape, col) && json.to_int(src, tape, col) != diag.column(rec) {
+        ok = false;
+    }
+    return ok;
+}
+
+// Compare the emitted `report` with the sidecar. The answer is the detail text
+// for the table (and, on a mismatch, one line per problem) and whether the
+// fixture matched; the tally counts entries.
+fn judge[&h, &r, &s, &t, &w](heap: &!h Heap, report: &r [byte], src: &s [byte], tape: &t [int], tally: &!w [int]) -> [heap] (buffer.Buffer, bool) {
+    let expect = json.get(src, tape, 0, "expect");
+    let n_rec = diag.count(report);
+    let used = box_slice(heap, n_rec + 1, 0);
+    var hit = 0;
+    var total = 0;
+    var deferred = 0;
+    var missing = buffer.empty(heap, 64);
+    var deferred_codes = buffer.empty(heap, 64);
+    var e = expect + 1;
+    var left = json.count(tape, expect);
+    while left > 0 {
+        let code = decoded(heap, src, tape, json.get(src, tape, e, "code"));
+        borrow code as &c in {
+            if is_stage_one(contents(c)) {
+                total = total + 1;
+                var found = 0 - 1;
+                var i = 0;
+                borrow mut used as &!u in {
+                    while i < n_rec && found < 0 {
+                        if contents(u)[i] == 0 && satisfies(heap, diag.record(report, i), src, tape, e, contents(c)) {
+                            found = i;
+                        }
+                        i = i + 1;
+                    }
+                    if found >= 0 {
+                        contents(u)[found] = 1;
+                    }
+                }
+                if found >= 0 {
+                    hit = hit + 1;
+                } else {
+                    missing = buffer.append(heap, missing, "\n      missing: ");
+                    missing = buffer.append(heap, missing, contents(c));
+                    let want = decoded(heap, src, tape, json.get(src, tape, e, "message_contains"));
+                    borrow want as &wv in {
+                        missing = buffer.append(heap, missing, " containing '");
+                        missing = buffer.append(heap, missing, contents(wv));
+                        missing = buffer.push(heap, missing, byte_of('\''));
+                    }
+                    unbox_slice(heap, want);
+                }
+            } else {
+                deferred = deferred + 1;
+                if deferred > 1 {
+                    deferred_codes = buffer.append(heap, deferred_codes, ", ");
+                }
+                deferred_codes = buffer.append(heap, deferred_codes, contents(c));
+            }
+        }
+        unbox_slice(heap, code);
+        e = json.skip(tape, e);
+        left = left - 1;
+    }
+    var extra = 0;
+    var i = 0;
+    borrow used as &u in {
+        while i < n_rec {
+            if contents(u)[i] == 0 {
+                extra = extra + 1;
+                missing = buffer.append(heap, missing, "\n      unexpected: ");
+                missing = buffer.append(heap, missing, diag.code(diag.record(report, i)));
+                missing = buffer.append(heap, missing, " ");
+                missing = buffer.append(heap, missing, diag.message(diag.record(report, i)));
+            }
+            i = i + 1;
+        }
+    }
+    unbox_slice(heap, used);
+    tally[t_entries()] = tally[t_entries()] + total;
+    tally[t_entries_ok()] = tally[t_entries_ok()] + hit;
+    tally[t_deferred()] = tally[t_deferred()] + deferred;
+    var out = buffer.append(heap, buffer.empty(heap, 96), "stage-1 ");
+    out = buffer.push_nat(heap, out, hit);
+    out = buffer.push(heap, out, byte_of('/'));
+    out = buffer.push_nat(heap, out, total);
+    out = buffer.append(heap, out, "  unexpected ");
+    out = buffer.push_nat(heap, out, extra);
+    if deferred > 0 {
+        out = buffer.append(heap, out, "  deferred to stage 2: ");
+        borrow deferred_codes as &d in {
+            out = buffer.append(heap, out, buffer.bytes(d));
+        }
+    }
+    borrow missing as &m in {
+        out = buffer.append(heap, out, buffer.bytes(m));
+    }
+    buffer.drop(heap, missing);
+    buffer.drop(heap, deferred_codes);
+    return (out, hit == total && extra == 0);
+}
+
+// `dir` + "/" + `name` + `suffix`, as a path under the root handle.
+fn path_of[&h, &a, &b](heap: &!h Heap, dir: &a [byte], name: &b [byte], suffix: &static [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, buffer.empty(heap, 64), dir);
+    o = buffer.push(heap, o, byte_of('/'));
+    o = buffer.append(heap, o, name);
+    return buffer.append(heap, o, suffix);
+}
+
+fn trim_slash[&a](path: &a [byte]) -> [] &a [byte] {
+    if len(path) > 0 && int_of(path[len(path) - 1]) == '/' {
+        return path[0..len(path) - 1];
+    }
+    return path;
+}
+
+// One valid example: it must load with an empty report.
+fn run_valid[&h, &i, &d, &s, &p, &w](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s load.Schema, path: &p [byte], tally: &!w [int]) -> [heap, io_write, dir_read, file_read] int {
+    let (text, got) = chwio.read_in(heap, root, path, buffer.empty(heap, 4096));
+    var line = buffer.empty(heap, 96);
+    tally[t_valid()] = tally[t_valid()] + 1;
+    if got < 0 {
+        line = buffer.append(heap, line, "  FAIL  ");
+        line = buffer.append(heap, line, path);
+        line = buffer.append(heap, line, "  could not be read\n");
+        tally[t_broken()] = tally[t_broken()] + 1;
+    } else {
+        borrow text as &t in {
+            let doc = load.load(heap, buffer.bytes(t), sch);
+            var refused = 0;
+            borrow doc as &dr in {
+                refused = diag.count(load.report(dr));
+            }
+            if refused == 0 {
+                line = buffer.append(heap, line, "  PASS  ");
+                line = buffer.append(heap, line, path);
+                line = buffer.append(heap, line, "  loads and validates clean\n");
+                tally[t_valid_ok()] = tally[t_valid_ok()] + 1;
+            } else {
+                line = buffer.append(heap, line, "  FAIL  ");
+                line = buffer.append(heap, line, path);
+                line = buffer.append(heap, line, "  valid example refused:\n");
+                borrow doc as &dr in {
+                    line = diag.render_all(heap, line, load.report(dr), path);
+                }
+            }
+            load.drop(heap, doc);
+        }
+    }
+    buffer.drop(heap, text);
+    borrow line as &l in {
+        buffer.write(io, l);
+    }
+    buffer.drop(heap, line);
+    return 0;
+}
+
+// One fixture `<dir>/<stem>.chw` with its sidecar.
+fn run_fixture[&h, &i, &d, &s, &p, &q, &w](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s load.Schema, fixture_dir: &p [byte], stem: &q [byte], tally: &!w [int]) -> [heap, io_write, dir_read, file_read] int {
+    let chw_path = path_of(heap, fixture_dir, stem, ".chw");
+    let side_path = path_of(heap, fixture_dir, stem, ".expect.json");
+    var chw = buffer.empty(heap, 4096);
+    var side = buffer.empty(heap, 1024);
+    var got_chw = 0 - 1;
+    var got_side = 0 - 1;
+    borrow chw_path as &cp in {
+        let (b, n) = chwio.read_in(heap, root, buffer.bytes(cp), chw);
+        chw = b;
+        got_chw = n;
+    }
+    borrow side_path as &sp in {
+        let (b, n) = chwio.read_in(heap, root, buffer.bytes(sp), side);
+        side = b;
+        got_side = n;
+    }
+    tally[t_fixtures()] = tally[t_fixtures()] + 1;
+    var line = pad(heap, buffer.empty(heap, 128), stem, 26);
+    var ok = false;
+    if got_chw < 0 || got_side < 0 {
+        line = buffer.append(heap, line, "FAIL  fixture or sidecar could not be read\n");
+        tally[t_broken()] = tally[t_broken()] + 1;
+    } else {
+        borrow side as &sb in {
+            let tape = box_slice(heap, json.tape_len(buffer.bytes(sb)), 0);
+            var nodes = 0;
+            borrow mut tape as &!tw in {
+                nodes = json.parse(buffer.bytes(sb), contents(tw));
+            }
+            if nodes < 0 {
+                line = buffer.append(heap, line, "FAIL  sidecar is not valid JSON\n");
+                tally[t_broken()] = tally[t_broken()] + 1;
+            } else {
+                borrow chw as &cb in {
+                    let doc = load.load(heap, buffer.bytes(cb), sch);
+                    borrow doc as &dr in {
+                        borrow tape as &tr in {
+                            let (detail, matched) = judge(heap, load.report(dr), buffer.bytes(sb), contents(tr), tally);
+                            ok = matched;
+                            if matched {
+                                line = buffer.append(heap, line, "PASS  ");
+                            } else {
+                                line = buffer.append(heap, line, "FAIL  ");
+                            }
+                            borrow detail as &dd in {
+                                line = buffer.append(heap, line, buffer.bytes(dd));
+                            }
+                            buffer.drop(heap, detail);
+                        }
+                    }
+                    line = buffer.push(heap, line, byte_of('\n'));
+                    load.drop(heap, doc);
+                }
+            }
+            unbox_slice(heap, tape);
+        }
+    }
+    if ok {
+        tally[t_fixtures_ok()] = tally[t_fixtures_ok()] + 1;
+    }
+    borrow line as &l in {
+        buffer.write(io, l);
+    }
+    buffer.drop(heap, line);
+    buffer.drop(heap, chw);
+    buffer.drop(heap, side);
+    buffer.drop(heap, chw_path);
+    buffer.drop(heap, side_path);
+    return 0;
+}
+
+// Every `<stem>.chw` of the directory `fixture_dir` (relative to `root`) that
+// has a sidecar, in bytewise order.
+fn run_directory[&h, &i, &d, &s, &p, &w](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s load.Schema, fixture_dir: &p [byte], tally: &!w [int]) -> [heap, io_write, dir_read, file_read] int {
+    match dirs.enter(root, fixture_dir) {
+        DirOpened::Ok(sub) => {
+            var held = sub;
+            borrow held as &sd in {
+                let names = dirs.list(heap, sd, 500);
+                borrow names as &n in {
+                    var k = 0;
+                    while k < dirs.count(n) {
+                        let name = dirs.name(n, k);
+                        if bytes.ends_with(name, ".chw") {
+                            run_fixture(heap, io, root, sch, fixture_dir, name[0..len(name) - 4], tally);
+                        }
+                        k = k + 1;
+                    }
+                }
+                dirs.drop(heap, names);
+            }
+            dir_close(held);
+        }
+        DirOpened::Failed(reason) => {
+            console.write_all(io, "  FAIL  cannot open the directory\n");
+            tally[t_broken()] = tally[t_broken()] + 1;
+        }
+    }
+    return 0;
+}
+
+// Run the whole suite. `fixture_dirs` are the extra directories (besides the
+// manifest's `refusal_dir`) of `.chw` + `.expect.json` pairs.
+pub fn run[&h, &i, &d, &s, &x](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s load.Schema, extra: &x [byte]) -> [heap, io_write, err_write, dir_read, file_read] int {
+    var tally = box_slice(heap, tally_size(), 0);
+    let (manifest, got) = chwio.read_in(heap, root, "examples/MANIFEST.json", buffer.empty(heap, 1024));
+    var status = 0;
+    if got < 0 {
+        console.error_all(io, "cannot read examples/MANIFEST.json beneath the root\n");
+        status = 2;
+    } else {
+        borrow manifest as &mb in {
+            let tape = box_slice(heap, json.tape_len(buffer.bytes(mb)), 0);
+            var nodes = 0;
+            borrow mut tape as &!tw in {
+                nodes = json.parse(buffer.bytes(mb), contents(tw));
+            }
+            if nodes < 0 {
+                console.error_all(io, "examples/MANIFEST.json is not valid JSON\n");
+                status = 2;
+            } else {
+                borrow mut tally as &!t in {
+                    console.write_all(io, "== stage-1 conformance: loader + structural validator ==\n\n## valid examples (must load and validate clean)\n");
+                    borrow tape as &tr in {
+                        run_paths(heap, io, root, sch, buffer.bytes(mb), contents(tr), "valid", contents(t));
+                        run_paths(heap, io, root, sch, buffer.bytes(mb), contents(tr), "textual_valid", contents(t));
+                        console.write_all(io, "\n## refusal fixtures (stage-1 codes must match, nothing unexpected)\n");
+                        let rd = decoded(heap, buffer.bytes(mb), contents(tr), json.get(buffer.bytes(mb), contents(tr), 0, "refusal_dir"));
+                        borrow rd as &rdv in {
+                            run_directory(heap, io, root, sch, trim_slash(contents(rdv)), contents(t));
+                        }
+                        unbox_slice(heap, rd);
+                    }
+                    if len(extra) > 0 {
+                        console.write_all(io, "\n## additional stage-1 fixtures\n");
+                        run_directory(heap, io, root, sch, trim_slash(extra), contents(t));
+                    }
+                }
+            }
+            unbox_slice(heap, tape);
+        }
+    }
+    buffer.drop(heap, manifest);
+    if status == 0 {
+        borrow tally as &t in {
+            status = summary(heap, io, contents(t));
+        }
+    }
+    unbox_slice(heap, tally);
+    return status;
+}
+
+fn run_paths[&h, &i, &d, &s, &m, &t, &w](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s load.Schema, manifest: &m [byte], tape: &t [int], key: &static [byte], tally: &!w [int]) -> [heap, io_write, dir_read, file_read] int {
+    let list = json.get(manifest, tape, 0, key);
+    var e = list + 1;
+    var left = json.count(tape, list);
+    while left > 0 {
+        let path = decoded(heap, manifest, tape, e);
+        borrow path as &p in {
+            run_valid(heap, io, root, sch, contents(p), tally);
+        }
+        unbox_slice(heap, path);
+        e = json.skip(tape, e);
+        left = left - 1;
+    }
+    return 0;
+}
+
+fn summary[&h, &i, &w](heap: &!h Heap, io: &!i Io, tally: &w [int]) -> [heap, io_write] int {
+    var o = buffer.append(heap, buffer.empty(heap, 256), "\n== ");
+    o = buffer.push_nat(heap, o, tally[t_fixtures_ok()]);
+    o = buffer.append(heap, o, " of ");
+    o = buffer.push_nat(heap, o, tally[t_fixtures()]);
+    o = buffer.append(heap, o, " fixtures matched on the stage-1 rules (");
+    o = buffer.push_nat(heap, o, tally[t_entries_ok()]);
+    o = buffer.append(heap, o, " of ");
+    o = buffer.push_nat(heap, o, tally[t_entries()]);
+    o = buffer.append(heap, o, " stage-1 sidecar entries); ");
+    o = buffer.push_nat(heap, o, tally[t_valid_ok()]);
+    o = buffer.append(heap, o, " of ");
+    o = buffer.push_nat(heap, o, tally[t_valid()]);
+    o = buffer.append(heap, o, " valid examples clean; ");
+    o = buffer.push_nat(heap, o, tally[t_deferred()]);
+    o = buffer.append(heap, o, " sidecar entries deferred to stage 2, not counted as passed ==\n");
+    borrow o as &r in {
+        buffer.write(io, r);
+    }
+    buffer.drop(heap, o);
+    if tally[t_broken()] > 0 {
+        return 2;
+    }
+    if tally[t_fixtures_ok()] == tally[t_fixtures()] && tally[t_valid_ok()] == tally[t_valid()] {
+        return 0;
+    }
+    return 1;
+}

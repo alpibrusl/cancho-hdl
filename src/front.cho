@@ -1,0 +1,71 @@
+module chw.front;
+
+// front.cho -- the text form: bytes in, an IR or a refusal out, as a pure
+// function of the bytes (the text half of chw.load).
+
+import std.buffer;
+import chw.lex as lx;
+import chw.ir as model;
+import chw.parse;
+import chw.diag;
+import chw.json_out;
+
+// Parse the text form. Answers the IR (empty if refused) and the report: empty
+// when the text parsed, else one `parse-error` record at the first fault, in
+// the Python tool's words.
+pub fn parse_text[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] (model.Ir, buffer.Buffer) {
+    let toks = box_slice(heap, len(text) + 2, lx.blank());
+    let st = box_slice(heap, parse.state_size(), 0);
+    var count = 0;
+    borrow mut toks as &!tw in {
+        count = lx.lex(text, contents(tw));
+    }
+    var report = buffer.empty(heap, 16);
+    var ir = model.empty(heap);
+    borrow toks as &tr in {
+        borrow mut st as &!sw in {
+            parse.start(contents(sw), count);
+            model.drop(heap, ir);
+            ir = parse.parse_file(heap, text, contents(tr), contents(sw), model.empty(heap));
+            if parse.failed(contents(sw)) {
+                var msg = buffer.empty(heap, 128);
+                var k = 0;
+                while k < parse.msg_len(contents(sw)) {
+                    msg = buffer.push(heap, msg, byte_of(parse.msg_byte(contents(sw), k)));
+                    k = k + 1;
+                }
+                borrow msg as &m in {
+                    report = diag.add(heap, report, "parse-error", parse.err_line(contents(sw)), parse.err_col(contents(sw)), "-", "", buffer.bytes(m));
+                }
+                buffer.drop(heap, msg);
+            }
+        }
+    }
+    unbox_slice(heap, st);
+    unbox_slice(heap, toks);
+    return (ir, report);
+}
+
+// Text in; the IR as one line of JSON and 0, or the refusal line and 1, as
+// `python3 tools/parse/parser.py` prints them. The buffer is the caller's to
+// drop either way.
+pub fn parse_chw[&h, &t, &p](heap: &!h Heap, path: &p [byte], text: &t [byte]) -> [heap] (buffer.Buffer, int) {
+    let (ir, report) = parse_text(heap, text);
+    var out = buffer.empty(heap, 16);
+    var status = 0;
+    borrow report as &r in {
+        if diag.count(buffer.bytes(r)) > 0 {
+            status = 1;
+            out = diag.render_all(heap, out, buffer.bytes(r), path);
+        } else {
+            borrow ir as &q in {
+                buffer.drop(heap, out);
+                out = json_out.render(heap, text, q);
+            }
+            out = buffer.push(heap, out, byte_of('\n'));
+        }
+    }
+    model.drop(heap, ir);
+    buffer.drop(heap, report);
+    return (out, status);
+}

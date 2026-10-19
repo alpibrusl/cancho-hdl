@@ -1,0 +1,79 @@
+// test_diag.cho -- the diagnostic record line (src/diag.cho).
+//
+//     cancho test tests/unit/test_diag.cho src/diag.cho --std
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.diag;
+
+fn test_line_and_column_are_one_based_bytes() -> [] int {
+    let text = "a\nbc\nd";
+    let (l0, c0) = diag.line_col(text, 0);
+    let (l1, c1) = diag.line_col(text, 3);
+    let (l2, c2) = diag.line_col(text, 5);
+    test.assert_eq(l0 * 100 + c0, 101);
+    test.assert_eq(l1 * 100 + c1, 202);
+    return test.assert_eq(l2 * 100 + c2, 301);
+}
+
+fn test_an_offset_past_the_end_does_not_trap() -> [] int {
+    let (l, c) = diag.line_col("ab", 99);
+    return test.assert_eq(l * 100 + c, 103);
+}
+
+fn test_a_record_reads_back_field_by_field[&h](heap: &!h Heap) -> [heap] int {
+    var r = diag.add(heap, buffer.empty(heap, 16), "schema-invalid", 7, 18, "enum", "/block/bus_width", "64 is not one of [8, 16, 32]");
+    r = diag.add(heap, r, "parse-error", 2, 26, "-", "", "parse error: x");
+    var ok = false;
+    borrow r as &b in {
+        let all = buffer.bytes(b);
+        let first = diag.record(all, 0);
+        let second = diag.record(all, 1);
+        ok = diag.count(all) == 2 && bytes.equal(diag.code(first), "schema-invalid") && diag.line(first) == 7 && diag.column(first) == 18 && bytes.equal(diag.keyword(first), "enum") && bytes.equal(diag.pointer(first), "/block/bus_width") && bytes.equal(diag.message(first), "64 is not one of [8, 16, 32]") && bytes.equal(diag.code(second), "parse-error") && bytes.equal(diag.pointer(second), "");
+    }
+    buffer.drop(heap, r);
+    return test.assert(ok);
+}
+
+fn test_human_form_with_a_span_and_a_keyword[&h](heap: &!h Heap) -> [heap] int {
+    let r = diag.add(heap, buffer.empty(heap, 16), "schema-invalid", 7, 18, "enum", "/block/bus_width", "64 is not one of [8, 16, 32]");
+    var same = false;
+    borrow r as &b in {
+        let o = diag.render_all(heap, buffer.empty(heap, 16), buffer.bytes(b), "f.chw");
+        borrow o as &ob in {
+            same = bytes.equal(buffer.bytes(ob), "error[schema-invalid]: 64 is not one of [8, 16, 32]  f.chw:7:18  (enum /block/bus_width)\n");
+        }
+        buffer.drop(heap, o);
+    }
+    buffer.drop(heap, r);
+    return test.assert(same);
+}
+
+fn test_human_form_of_a_parse_error_is_the_python_tools_line[&h](heap: &!h Heap) -> [heap] int {
+    let r = diag.add(heap, buffer.empty(heap, 16), "parse-error", 2, 26, "-", "", "parse error: expected ':'");
+    var same = false;
+    borrow r as &b in {
+        let o = diag.render_all(heap, buffer.empty(heap, 16), buffer.bytes(b), "p.chw");
+        borrow o as &ob in {
+            same = bytes.equal(buffer.bytes(ob), "error[parse-error]: parse error: expected ':'  p.chw:2:26\n");
+        }
+        buffer.drop(heap, o);
+    }
+    buffer.drop(heap, r);
+    return test.assert(same);
+}
+
+fn test_a_record_without_a_span_prints_the_path_alone[&h](heap: &!h Heap) -> [heap] int {
+    let r = diag.add(heap, buffer.empty(heap, 16), "schema-invalid", 0, 0, "type", "/x", "m");
+    var same = false;
+    borrow r as &b in {
+        let o = diag.render_all(heap, buffer.empty(heap, 16), buffer.bytes(b), "f.chw");
+        borrow o as &ob in {
+            same = bytes.equal(buffer.bytes(ob), "error[schema-invalid]: m  f.chw  (type /x)\n");
+        }
+        buffer.drop(heap, o);
+    }
+    buffer.drop(heap, r);
+    return test.assert(same);
+}

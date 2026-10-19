@@ -1,0 +1,170 @@
+// test_validator_spans.cho -- where a refusal points, and the refusals that are
+// the port's own (docs/cancho-port.md, 9.4): spans, duplicate keys, integers
+// past 18 digits, JSON syntax, and a schema the interpreter cannot enforce.
+//
+//     cancho test tests/unit/test_validator_spans.cho tests/unit/support.cho src/*.cho --std
+//     (all of src/ except main.cho and conform.cho)
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.diag;
+import chw.load;
+import tsup;
+
+fn mini() -> [] &static [byte] {
+    return "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\",\"n\"],\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1,\"pattern\":\"^[a-c]+$\"},\"n\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":31},\"kind\":{\"enum\":[\"A\",\"B\",3,null,true]},\"list\":{\"type\":\"array\",\"minItems\":2,\"items\":{\"$ref\":\"#/$defs/item\"}},\"map\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"flag\":{\"type\":\"boolean\"}},\"$defs\":{\"item\":{\"type\":\"string\"}}}";
+}
+
+// The line and column of record `i`, as line * 1000 + column.
+fn where_is[&h, &s, &d](heap: &!h Heap, schema_text: &s [byte], doc: &d [byte], i: int) -> [heap] int {
+    let report = tsup.report_of(heap, schema_text, doc);
+    var at = 0 - 1;
+    borrow report as &r in {
+        let rec = diag.record(buffer.bytes(r), i);
+        at = diag.line(rec) * 1000 + diag.column(rec);
+    }
+    buffer.drop(heap, report);
+    return at;
+}
+
+// The keyword of record `i`.
+fn keyword_is[&h, &s, &d](heap: &!h Heap, schema_text: &s [byte], doc: &d [byte], i: int, want: &static [byte]) -> [heap] bool {
+    let report = tsup.report_of(heap, schema_text, doc);
+    var same = false;
+    borrow report as &r in {
+        same = bytes.equal(diag.keyword(diag.record(buffer.bytes(r), i)), want);
+    }
+    buffer.drop(heap, report);
+    return same;
+}
+
+fn count_of[&h, &s, &d](heap: &!h Heap, schema_text: &s [byte], doc: &d [byte]) -> [heap] int {
+    let report = tsup.report_of(heap, schema_text, doc);
+    var n = 0 - 1;
+    borrow report as &r in {
+        n = diag.count(buffer.bytes(r));
+    }
+    buffer.drop(heap, report);
+    return n;
+}
+
+fn test_a_value_is_located_by_its_first_byte[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert_eq(where_is(heap, mini(), "{\"name\":\"abc\",\"n\":32}", 0), 1019);
+}
+
+fn test_an_array_element_is_located_after_the_ones_before_it[&h](heap: &!h Heap) -> [heap] int {
+    test.assert_eq(where_is(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"list\":[\"a\",1]}", 0), 1033);
+    return test.assert_eq(where_is(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"list\":[ \"a\" , 1 , {} ]}", 0), 1036);
+}
+
+fn test_a_line_and_column_count_from_one[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert_eq(where_is(heap, mini(), "{\n  \"name\": \"abc\",\n  \"n\": 40\n}", 0), 3008);
+}
+
+fn test_a_required_property_is_located_at_its_object[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert_eq(where_is(heap, mini(), "  {\"name\":\"abc\"}", 0), 1003);
+}
+
+fn test_an_extra_property_is_reported_at_the_object_it_is_in[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert_eq(where_is(heap, mini(), "{\"name\":\"abc\",\"n\":5,\"zz\":1}", 0), 1001);
+}
+
+fn test_a_duplicate_key_is_refused_at_the_second_one[&h](heap: &!h Heap) -> [heap] int {
+    let doc = "{\"name\":\"abc\",\"n\":5,\"n\":6}";
+    test.assert_eq(count_of(heap, mini(), doc), 1);
+    test.assert(keyword_is(heap, mini(), doc, 0, "duplicate-key"));
+    return test.assert_eq(where_is(heap, mini(), doc, 0), 1021);
+}
+
+fn test_a_duplicate_key_in_an_escaped_spelling_is_still_a_duplicate[&h](heap: &!h Heap) -> [heap] int {
+    let doc = "{\"name\":\"abc\",\"n\":5,\"\\u006e\":6}";
+    return test.assert(keyword_is(heap, mini(), doc, 0, "duplicate-key"));
+}
+
+fn test_an_integer_past_18_digits_is_refused_not_trapped[&h](heap: &!h Heap) -> [heap] int {
+    let doc = "{\"name\":\"abc\",\"n\":123456789012345678901}";
+    // The instance-only checks run first, so the refusal of the literal
+    // precedes the (jsonschema) maximum it also breaks.
+    test.assert(keyword_is(heap, mini(), doc, 0, "integer-range"));
+    test.assert(keyword_is(heap, mini(), doc, 1, "maximum"));
+    return test.assert_eq(where_is(heap, mini(), doc, 0), 1019);
+}
+
+fn test_a_whole_float_past_the_range_is_refused_too[&h](heap: &!h Heap) -> [heap] int {
+    let doc = "{\"name\":\"abc\",\"n\":1e30}";
+    return test.assert(keyword_is(heap, mini(), doc, 0, "integer-range"));
+}
+
+fn test_18_digits_are_accepted[&h](heap: &!h Heap) -> [heap] int {
+    let doc = "{\"name\":\"abc\",\"n\":5,\"map\":{\"k\":999999999999999999}}";
+    return test.assert_eq(count_of(heap, mini(), doc), 0);
+}
+
+fn test_json_syntax_is_a_schema_invalid_record_with_a_position[&h](heap: &!h Heap) -> [heap] int {
+    let doc = "{\"name\":\"abc\",\"n\":}";
+    test.assert_eq(count_of(heap, mini(), doc), 1);
+    test.assert(keyword_is(heap, mini(), doc, 0, "json-syntax"));
+    return test.assert_eq(where_is(heap, mini(), doc, 0), 1019);
+}
+
+fn test_what_is_not_json_is_refused_whatever_python_reads[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(keyword_is(heap, mini(), "{\"name\":NaN}", 0, "json-syntax"));
+    test.assert(keyword_is(heap, mini(), "{\"name\":\"\\ud800\"}", 0, "json-syntax"));
+    test.assert(keyword_is(heap, mini(), "{\"a\":1,}", 0, "json-syntax"));
+    return test.assert(keyword_is(heap, mini(), "{\"a\":01}", 0, "json-syntax"));
+}
+
+fn test_a_keyword_the_interpreter_lacks_is_refused_not_skipped[&h](heap: &!h Heap) -> [heap] int {
+    let doc = "{\"a\":\"abcd\"}";
+    let schema = "{\"properties\":{\"a\":{\"maxLength\":3}}}";
+    let report = tsup.report_of(heap, schema, doc);
+    var ok = false;
+    borrow report as &r in {
+        let rec = diag.record(buffer.bytes(r), 0);
+        ok = diag.count(buffer.bytes(r)) == 1 && bytes.equal(diag.code(rec), "internal") && bytes.equal(diag.keyword(rec), "unsupported-keyword") && bytes.find(diag.message(rec), "'maxLength'") >= 0;
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+fn test_a_pattern_outside_the_subset_is_refused_at_the_schema[&h](heap: &!h Heap) -> [heap] int {
+    let report = tsup.report_of(heap, "{\"properties\":{\"a\":{\"pattern\":\"^(a|b)$\"}}}", "{\"a\":\"a\"}");
+    var ok = false;
+    borrow report as &r in {
+        ok = diag.count(buffer.bytes(r)) == 1 && bytes.equal(diag.code(diag.record(buffer.bytes(r), 0)), "internal");
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+fn test_an_unresolvable_ref_is_refused[&h](heap: &!h Heap) -> [heap] int {
+    let report = tsup.report_of(heap, "{\"properties\":{\"a\":{\"$ref\":\"#/$defs/nope\"}}}", "{\"a\":1}");
+    var ok = false;
+    borrow report as &r in {
+        ok = diag.count(buffer.bytes(r)) == 1 && bytes.equal(diag.code(diag.record(buffer.bytes(r), 0)), "internal");
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+fn test_a_ref_cycle_stops_instead_of_overflowing_the_stack[&h](heap: &!h Heap) -> [heap] int {
+    let report = tsup.report_of(heap, "{\"$ref\":\"#/$defs/a\",\"$defs\":{\"a\":{\"$ref\":\"#/$defs/a\"}}}", "{}");
+    var ok = false;
+    borrow report as &r in {
+        ok = diag.count(buffer.bytes(r)) >= 1 && bytes.equal(diag.code(diag.record(buffer.bytes(r), 0)), "internal");
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+fn test_a_schema_that_is_not_json_is_not_used[&h](heap: &!h Heap) -> [heap] int {
+    // `load.schema_ok` is what the CLI consults before validating anything.
+    let sch = tsup.schema_of(heap, "{ not json");
+    var usable = true;
+    borrow sch as &s in {
+        usable = load.schema_ok(s);
+    }
+    load.drop_schema(heap, sch);
+    return test.assert(!usable);
+}

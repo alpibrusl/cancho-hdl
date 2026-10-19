@@ -8,6 +8,9 @@
 | Directory | Phase | Contents |
 |---|---|---|
 | `tests/conformance/` | 1+ | Snapshot tests pinning every diagnostic, generator output, and report to a checked-in file |
+| `tests/unit/` | cancho port | `cancho test` suites for the cancho modules in `src/` (embedded sources: a test cannot open a file) |
+| `tests/stage1/` | cancho port | `.chw` + `.expect.json` fixtures for the schema-level refusals the Python fixtures do not cover (JSON syntax, duplicate keys, integer range, each `jsonschema` keyword, escapes), read by `chw conform . --fixtures tests/stage1` |
+| `tests/differential/` | cancho port | Python as **oracle only**: the cancho parser against the Python parser (`text_parse.py`), the cancho JSON loader and validator against `json` + `jsonschema` (`json_validate.py`) |
 | `tests/diff/` | 2 | Golden suite for the semantic diff and impact documents; includes the seeded Phase 2 change fixture (`fixtures/uart_rebase.chw`) |
 | `tests/parser/` | 1 | Textual-parser roundtrip: identity with the JSON wire form, determinism, span positions |
 | `tests/refusal/` | 1+ | Refusal fixtures (the canonical sources are in `examples/refusal/`; this directory holds CLI-level tests) |

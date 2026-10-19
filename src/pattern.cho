@@ -1,0 +1,150 @@
+module chw.pattern;
+
+// pattern.cho -- the regular-expression subset the contract schema uses, and
+// nothing else (docs/cancho-port.md, 9.3).
+//
+// The schema's two patterns are `^[0-9]+\.[0-9]+\.[0-9]+$` and
+// `^0x[0-9a-fA-F]+$`. The matcher supports exactly what they need and what a
+// neighbour would plausibly add: a leading `^`, a trailing `$`, literals, `\`
+// escapes (`\d` and a escaped punctuation), `.`, a character class of literals
+// and ranges, and the quantifiers `+ * ?` on one atom. Anything else
+// (`( ) | { }`, a negated class) is NOT guessed at: `search` answers -1 and
+// the caller reports it.
+//
+// One deliberate difference from Python's `re.search`: `$` matches only at the
+// very end. Python's also matches before a final newline, so `"0x10\n"` passes
+// the schema in Python; here it does not (known difference, 9.5).
+
+// Where the atom starting at `pi` ends, or -1 if it is outside the subset.
+fn atom_end[&p](pat: &p [byte], pi: int, pend: int) -> [] int {
+    let c = int_of(pat[pi]);
+    if c == '\\' {
+        if pi + 1 >= pend {
+            return 0 - 1;
+        }
+        return pi + 2;
+    }
+    if c == '[' {
+        if pi + 1 < pend && int_of(pat[pi + 1]) == '^' {
+            return 0 - 1;
+        }
+        var q = pi + 1;
+        while q < pend && int_of(pat[q]) != ']' {
+            if int_of(pat[q]) == '\\' {
+                return 0 - 1;
+            }
+            q = q + 1;
+        }
+        if q >= pend {
+            return 0 - 1;
+        }
+        return q + 1;
+    }
+    if c == '(' || c == ')' || c == '|' || c == '{' || c == '}' || c == '+' || c == '*' || c == '?' || c == '^' || c == '$' || c == ']' {
+        return 0 - 1;
+    }
+    return pi + 1;
+}
+
+// Does byte `ch` match the atom `pat[pi..ae]`?
+fn atom_matches[&p](pat: &p [byte], pi: int, ae: int, ch: int) -> [] bool {
+    let c = int_of(pat[pi]);
+    if c == '.' {
+        return ch != '\n';
+    }
+    if c == '\\' {
+        let e = int_of(pat[pi + 1]);
+        if e == 'd' {
+            return ch >= '0' && ch <= '9';
+        }
+        return ch == e;
+    }
+    if c == '[' {
+        var q = pi + 1;
+        while q < ae - 1 {
+            if q + 2 < ae - 1 && int_of(pat[q + 1]) == '-' {
+                if ch >= int_of(pat[q]) && ch <= int_of(pat[q + 2]) {
+                    return true;
+                }
+                q = q + 3;
+            } else {
+                if ch == int_of(pat[q]) {
+                    return true;
+                }
+                q = q + 1;
+            }
+        }
+        return false;
+    }
+    return ch == c;
+}
+
+// 1 if `pat[pi..pend]` matches `text` from `ti` (to the end of the text when
+// `anchored_end`), 0 if not, -1 if the pattern is outside the subset.
+fn here[&p, &t](pat: &p [byte], pi: int, pend: int, text: &t [byte], ti: int, anchored_end: bool) -> [] int {
+    if pi >= pend {
+        if anchored_end && ti != len(text) {
+            return 0;
+        }
+        return 1;
+    }
+    let ae = atom_end(pat, pi, pend);
+    if ae < 0 {
+        return 0 - 1;
+    }
+    var q = 0;
+    if ae < pend {
+        q = int_of(pat[ae]);
+    }
+    if q == '+' || q == '*' || q == '?' {
+        var most = 0;
+        while ti + most < len(text) && atom_matches(pat, pi, ae, int_of(text[ti + most])) && (q != '?' || most < 1) {
+            most = most + 1;
+        }
+        var least = 0;
+        if q == '+' {
+            least = 1;
+        }
+        var k = most;
+        while k >= least {
+            let r = here(pat, ae + 1, pend, text, ti + k, anchored_end);
+            if r != 0 {
+                return r;
+            }
+            k = k - 1;
+        }
+        return 0;
+    }
+    if ti < len(text) && atom_matches(pat, pi, ae, int_of(text[ti])) {
+        return here(pat, ae, pend, text, ti + 1, anchored_end);
+    }
+    return 0;
+}
+
+// 1 if `pat` is found in `text`, 0 if not, -1 if `pat` is outside the subset.
+pub fn search[&p, &t](pat: &p [byte], text: &t [byte]) -> [] int {
+    var start = 0;
+    var anchored_start = false;
+    if len(pat) > 0 && int_of(pat[0]) == '^' {
+        anchored_start = true;
+        start = 1;
+    }
+    var pend = len(pat);
+    var anchored_end = false;
+    if pend > start && int_of(pat[pend - 1]) == '$' && (pend < start + 2 || int_of(pat[pend - 2]) != '\\') {
+        anchored_end = true;
+        pend = pend - 1;
+    }
+    var ti = 0;
+    while ti <= len(text) {
+        let r = here(pat, start, pend, text, ti, anchored_end);
+        if r != 0 {
+            return r;
+        }
+        if anchored_start {
+            return 0;
+        }
+        ti = ti + 1;
+    }
+    return 0;
+}

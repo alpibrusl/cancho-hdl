@@ -1,0 +1,62 @@
+// test_load.cho -- the entry point (src/load.cho): which form a file is in, and
+// that a text-form contract is validated through its rendered JSON, without a
+// span.
+//
+//     cancho test tests/unit/test_load.cho tests/unit/support.cho src/*.cho --std
+//     (all of src/ except main.cho and conform.cho)
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.diag;
+import tsup;
+
+fn schema() -> [] &static [byte] {
+    return "{\"properties\":{\"block\":{\"properties\":{\"bus_width\":{\"enum\":[8,16,32]},\"name\":{\"type\":\"string\"}}}}}";
+}
+
+// The report for `doc` against `schema()`, as a string to compare.
+fn reported[&h, &d, &w](heap: &!h Heap, doc: &d [byte], want: &w [byte]) -> [heap] int {
+    let report = tsup.report_of(heap, schema(), doc);
+    var same = false;
+    borrow report as &r in {
+        same = bytes.equal(buffer.bytes(r), want);
+    }
+    buffer.drop(heap, report);
+    return test.assert(same);
+}
+
+fn test_a_text_form_contract_with_a_bad_bus_width_is_refused_with_no_span[&h](heap: &!h Heap) -> [heap] int {
+    return reported(heap, "register-block B @ 0x0, width 64, little { register R @ 0x0 : RW { } }", "schema-invalid\t0\t0\tenum\t/block/bus_width\t64 is not one of [8, 16, 32]\n");
+}
+
+fn test_a_clean_text_form_contract_has_an_empty_report[&h](heap: &!h Heap) -> [heap] int {
+    return reported(heap, "register-block B @ 0x0, width 32, little { register R @ 0x0 : RW { } }", "");
+}
+
+fn test_a_text_form_syntax_error_is_a_parse_error_with_a_span[&h](heap: &!h Heap) -> [heap] int {
+    return reported(heap, "register-block B @ 0x0 width 8, little { }", "parse-error\t1\t24\t-\t\tparse error: expected ',' before 'width', found 'width'.\n");
+}
+
+fn test_json_form_is_chosen_by_the_first_non_blank_byte[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(tsup.clean(heap, schema(), "{\"block\":{\"bus_width\":8}}") == 0);
+    test.assert(tsup.clean(heap, schema(), " \t\r\n{\"block\":{\"bus_width\":8}}") == 0);
+    return tsup.only(heap, schema(), "\n\n {\"block\":{\"bus_width\":9}}", "enum", "/block/bus_width", "9 is not one of [8, 16, 32]");
+}
+
+fn test_an_empty_file_is_a_text_form_refusal_not_a_trap[&h](heap: &!h Heap) -> [heap] int {
+    return reported(heap, "", "parse-error\t1\t1\t-\t\tparse error: a contract file must contain a 'register-block', found end of file.\n");
+}
+
+fn test_a_file_that_is_not_a_contract_at_all_is_refused[&h](heap: &!h Heap) -> [heap] int {
+    return reported(heap, "[1, 2]", "parse-error\t1\t1\t-\t\tparse error: expected a 'register-block' or 'dma-buffer' declaration, found '['.\n");
+}
+
+fn test_a_json_syntax_error_is_reported_with_the_position_it_is_at[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.only(heap, schema(), "{\"a\":1,}", "json-syntax", "", "file is not valid JSON: unexpected character");
+}
+
+fn test_without_a_schema_nothing_is_validated[&h](heap: &!h Heap) -> [heap] int {
+    // `chw parse` loads with an empty schema, as parser.py's CLI does.
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x0\",\"bus_width\":64,\"endianness\":\"big\",\"registers\":[]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x0\", \"bus_width\": 64, \"endianness\": \"big\", \"registers\": []}, \"dma_buffers\": []}");
+}

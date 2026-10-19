@@ -1,0 +1,168 @@
+module chw.diag;
+
+// diag.cho -- a diagnostic as one line of text (docs/cancho-port.md, 9.4).
+//
+// A report is a `Buffer` of records, one per line, six tab-separated fields:
+//
+//     code TAB line TAB column TAB keyword TAB pointer TAB message LF
+//
+// `code` is the catalog rule tag (spec/diagnostics/README.md, 3.1);
+// `line`/`column` are 1-based, and 0/0 means "no span" (the text form is
+// validated through its rendered JSON, where an offset means nothing to the
+// author); `keyword` is the sub-tag of 9.4 ("-" if none); `pointer` is a JSON
+// Pointer to the offending node. A message never holds a TAB or an LF: the
+// Python `repr` it quotes escapes both.
+//
+// Keeping the record as text rather than a struct is deliberate: a report is
+// built by threading one Buffer, read back by the conformance runner with
+// `bytes.field`, and printed by a loop that needs no ownership.
+
+import std.buffer;
+import std.bytes;
+
+// 1-based line and column (in bytes) of `offset` in `src`.
+pub fn line_col[&s](src: &s [byte], offset: int) -> [] (int, int) {
+    var line = 1;
+    var last = 0 - 1;
+    var i = 0;
+    var stop = offset;
+    if stop > len(src) {
+        stop = len(src);
+    }
+    while i < stop {
+        if int_of(src[i]) == '\n' {
+            line = line + 1;
+            last = i;
+        }
+        i = i + 1;
+    }
+    return (line, stop - last);
+}
+
+// Append one record. `pointer` and `message` are borrowed text.
+pub fn add[&h, &p, &m](heap: &!h Heap, out: buffer.Buffer, code: &static [byte], line: int, col: int, keyword: &static [byte], pointer: &p [byte], message: &m [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, code);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.push_nat(heap, o, line);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.push_nat(heap, o, col);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, keyword);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, pointer);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, message);
+    return buffer.push(heap, o, byte_of('\n'));
+}
+
+// The record `rec` again, with another line and column.
+pub fn relocate[&h, &r](heap: &!h Heap, out: buffer.Buffer, rec: &r [byte], new_line: int, new_col: int) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, bytes.field(rec, '\t', 1));
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.push_nat(heap, o, new_line);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.push_nat(heap, o, new_col);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, keyword(rec));
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, pointer(rec));
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, message(rec));
+    return buffer.push(heap, o, byte_of('\n'));
+}
+
+// How many records the report holds.
+pub fn count[&r](report: &r [byte]) -> [] int {
+    return bytes.count_byte(report, '\n');
+}
+
+// Where the record that starts at `from` ends (the index of its newline).
+// Walking a long report with this is linear; calling `record(report, i)` for
+// each `i` is quadratic, which was measured (docs/cancho-port.md, 10).
+pub fn end_of[&r](report: &r [byte], from: int) -> [] int {
+    var e = from;
+    while e < len(report) && int_of(report[e]) != '\n' {
+        e = e + 1;
+    }
+    return e;
+}
+
+// Record `i` (0-based), without its newline.
+pub fn record[&r](report: &r [byte], i: int) -> [] &r [byte] {
+    return bytes.field(report, '\n', i + 1);
+}
+
+pub fn code[&r](rec: &r [byte]) -> [] &r [byte] {
+    return bytes.field(rec, '\t', 1);
+}
+
+pub fn keyword[&r](rec: &r [byte]) -> [] &r [byte] {
+    return bytes.field(rec, '\t', 4);
+}
+
+pub fn pointer[&r](rec: &r [byte]) -> [] &r [byte] {
+    return bytes.field(rec, '\t', 5);
+}
+
+pub fn message[&r](rec: &r [byte]) -> [] &r [byte] {
+    return bytes.field(rec, '\t', 6);
+}
+
+fn nat_of[&r](text: &r [byte]) -> [] int {
+    var n = 0;
+    var i = 0;
+    while i < len(text) && i < 12 {
+        n = n * 10 + (int_of(text[i]) - '0');
+        i = i + 1;
+    }
+    return n;
+}
+
+pub fn line[&r](rec: &r [byte]) -> [] int {
+    return nat_of(bytes.field(rec, '\t', 2));
+}
+
+pub fn column[&r](rec: &r [byte]) -> [] int {
+    return nat_of(bytes.field(rec, '\t', 3));
+}
+
+// The human form of one record:
+//
+//     error[schema-invalid]: 64 is not one of [8, 16, 32]  f.chw:7:19  (enum /block/bus_width)
+//
+// A record with no span prints the path alone; a keyword of "-" prints no
+// parenthesis, so a `parse-error` line is exactly the Python tool's.
+pub fn render[&h, &r, &p](heap: &!h Heap, out: buffer.Buffer, rec: &r [byte], path: &p [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, "error[");
+    o = buffer.append(heap, o, code(rec));
+    o = buffer.append(heap, o, "]: ");
+    o = buffer.append(heap, o, message(rec));
+    o = buffer.append(heap, o, "  ");
+    o = buffer.append(heap, o, path);
+    if line(rec) > 0 {
+        o = buffer.push(heap, o, byte_of(':'));
+        o = buffer.push_nat(heap, o, line(rec));
+        o = buffer.push(heap, o, byte_of(':'));
+        o = buffer.push_nat(heap, o, column(rec));
+    }
+    if !bytes.equal(keyword(rec), "-") {
+        o = buffer.append(heap, o, "  (");
+        o = buffer.append(heap, o, keyword(rec));
+        o = buffer.push(heap, o, byte_of(' '));
+        o = buffer.append(heap, o, pointer(rec));
+        o = buffer.push(heap, o, byte_of(')'));
+    }
+    return buffer.push(heap, o, byte_of('\n'));
+}
+
+// Every record of `report`, human form.
+pub fn render_all[&h, &r, &p](heap: &!h Heap, out: buffer.Buffer, report: &r [byte], path: &p [byte]) -> [heap] buffer.Buffer {
+    var o = out;
+    var at = 0;
+    while at < len(report) {
+        let e = end_of(report, at);
+        o = render(heap, o, report[at..e], path);
+        at = e + 1;
+    }
+    return o;
+}

@@ -81,12 +81,16 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 </div>
 
 <div class="wrap" style="padding-bottom:2.5rem">
-  <div class="term" role="img" aria-label="Two refusals: a parse error from the cancho parser and a field overlap from the reference checker">
+  <div class="term" role="img" aria-label="Three refusals: a parse error from the cancho parser, a schema error from the cancho validator and a field overlap from the reference checker">
     <div class="bar"><i></i><i></i><i></i> the terminal</div>
 <pre>
-<span class="d">$ chwparse examples/refusal/parse-error.chw          # the cancho parser</span>
-<span class="b">error[parse-error]</span>: expected ':' after the register offset
-  (before the access kind), found 'RW'.  parse-error.chw:2:26
+<span class="d">$ chw parse examples/refusal/parse-error.chw         # the cancho parser</span>
+<span class="b">error[parse-error]</span>: parse error: expected ':' after the register
+  offset (before the access kind), found 'RW'.  parse-error.chw:2:26
+
+<span class="d">$ chw validate examples/refusal/bus-width-invalid.chw  # the cancho validator</span>
+<span class="b">error[schema-invalid]</span>: 64 is not one of [8, 16, 32]
+  bus-width-invalid.chw:7:18  (enum /block/bus_width)
 
 <span class="d">$ checker.py examples/refusal/field-overlap.chw      # the reference checker</span>
 <span class="b">error[field-overlap]</span>: field 'PARITY' bits [2..4] overlap with
@@ -129,6 +133,8 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
     <div class="num"><b>12</b><span>refusal fixtures, each matched to its expected code</span></div>
     <div class="num"><b>2,765 / 2,767</b><span>mutated inputs: the cancho parser matches the Python one exactly; 2 known differences</span></div>
     <div class="num"><b>1.75×</b><span>lines: lexer, IR and parser in cancho against the Python parser</span></div>
+    <div class="num"><b>0 / 55,093</b><span>mutated JSON inputs the cancho validator and Python's <code>jsonschema</code> disagree on without a known reason (212 deliberate differences)</span></div>
+    <div class="num"><b>12 / 12</b><span>refusal fixtures matched on the schema-level rules by the cancho conformance runner; 14 of 19 sidecar entries (semantic rules) are still Python's</span></div>
   </div>
   <p class="fine">The generated C header executes the scenario corpus op-for-op against the reference model under gcc and clang. Seeded drift makes the comparison fail, which shows it can.</p>
 </div></section>
@@ -139,7 +145,7 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
   <div class="cards">
     <div class="card"><h3>Not working hardware</h3><p>Timing, area and vendor IP are trust boundaries, never labelled verified.</p></div>
     <div class="card"><h3>No SystemVerilog behaviour check yet</h3><p>That needs Verilator or cocotb. Only structure is checked today.</p></div>
-    <div class="card"><h3>Mostly still Python</h3><p>Only the textual parser is ported. The checker, generators, diff and report remain the Python reference, being replaced.</p></div>
+    <div class="card"><h3>Mostly still Python</h3><p>The textual parser, the JSON loader, the schema validator and the schema-level conformance run are ported. The semantic checker, generators, diff and report remain the Python reference, being replaced.</p></div>
   </div>
 </div></section>
 
@@ -149,14 +155,14 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 <pre class="code"><code>git clone https://github.com/alpibrusl/cancho-hdl.git
 cd cancho-hdl
 export CANCHO=&lt;path-to-the-cancho-binary&gt;
-sh spike/run.sh                       # cancho parser vs the Python parser
+sh scripts/gate_cancho.sh              # cancho tests, validator and parser vs the Python tools
 python3 scripts/run_gate.py           # the reference gate</code></pre>
 </div></section>
 
 <section><div class="wrap">
   <h2>Go deeper</h2>
   <div class="cards">
-    <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/cancho-port.md">Port to cancho</a></h3><p>The plan, the spike and its measurements.</p></div>
+    <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/cancho-port.md">Port to cancho</a></h3><p>The plan, the spike, stage 1 and their measurements.</p></div>
     <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/guarantees.md">Guarantees</a></h3><p>What each tier does and does not claim.</p></div>
     <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/contract-design.md">Contract design</a></h3><p>The schema and the textual syntax.</p></div>
   </div>

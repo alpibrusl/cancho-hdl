@@ -1,0 +1,214 @@
+edition 6;
+
+// main.cho -- the `chw` command line (docs/cancho-port.md, 9.2).
+//
+//     chw parse FILE                  load FILE (text or JSON form), print the IR as one
+//                                     line of JSON; no schema check (parser.py FILE)
+//     chw validate FILE [--schema S] [--machine]
+//                                     load and validate against the schema S (default
+//                                     spec/contract-schema/cancho-hdl-contract.schema.json),
+//                                     print every refusal
+//     chw conform [ROOT] [--fixtures DIR]
+//                                     run the examples and the refusal fixtures under ROOT
+//                                     (default .) through the loader and validator
+//
+// Exit 0 clean, 1 something was refused or mismatched, 2 usage or the tool itself could
+// not run (an unreadable file or schema, a schema keyword this validator lacks).
+
+import std.buffer;
+import std.bytes;
+import std.io as console;
+import chw.conform;
+import chw.diag;
+import chw.io as chwio;
+import chw.load;
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] | chw conform [ROOT] [--fixtures DIR]\n");
+    return 2;
+}
+
+// The index of the flag `name` among the arguments, or -1.
+fn flag_at[&g](g: &g Args, name: &static [byte]) -> [args] int {
+    var i = 1;
+    while i < arg_count(g) {
+        if bytes.equal(arg(g, i), name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn schema_path[&g](g: &g Args) -> [args] &g [byte] {
+    let at = flag_at(g, "--schema");
+    if at > 0 && at + 1 < arg_count(g) {
+        return arg(g, at + 1);
+    }
+    return "spec/contract-schema/cancho-hdl-contract.schema.json";
+}
+
+// Print the refusals of `doc`; the answer is the exit status.
+fn show_refusals[&h, &i, &r, &p](heap: &!h Heap, io: &!i Io, report: &r [byte], path: &p [byte], machine: bool, to_stdout: bool) -> [heap, io_write, err_write] int {
+    var out = buffer.empty(heap, 256);
+    var status = 0;
+    if diag.count(report) > 0 {
+        status = 1;
+        var from = 0;
+        while from < len(report) {
+            let e = diag.end_of(report, from);
+            if bytes.equal(diag.code(report[from..e]), "internal") {
+                status = 2;
+            }
+            from = e + 1;
+        }
+    }
+    if machine {
+        out = buffer.append(heap, out, report);
+    } else {
+        out = diag.render_all(heap, out, report, path);
+    }
+    borrow out as &o in {
+        if to_stdout {
+            buffer.write(io, o);
+        } else {
+            console.error_all(io, buffer.bytes(o));
+        }
+    }
+    buffer.drop(heap, out);
+    return status;
+}
+
+fn run_parse[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args) -> [heap, io_write, err_write, fs_read(""), file_read, args] int {
+    let (text, got) = chwio.read_file(heap, fs, arg(g, 2), buffer.empty(heap, 4096));
+    var status = 2;
+    if got < 0 {
+        console.error_all(io, "cannot read file\n");
+    } else {
+        let none = load.open_schema(heap, buffer.empty(heap, 1));
+        borrow text as &t in {
+            borrow none as &s in {
+                let doc = load.load(heap, buffer.bytes(t), s);
+                borrow doc as &dr in {
+                    if diag.count(load.report(dr)) > 0 {
+                        status = show_refusals(heap, io, load.report(dr), arg(g, 2), false, false);
+                    } else {
+                        status = 0;
+                        let out = load.render_ir(heap, dr);
+                        borrow out as &o in {
+                            buffer.write(io, o);
+                        }
+                        buffer.drop(heap, out);
+                    }
+                }
+                load.drop(heap, doc);
+            }
+        }
+        load.drop_schema(heap, none);
+    }
+    buffer.drop(heap, text);
+    return status;
+}
+
+fn run_validate[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args) -> [heap, io_write, err_write, fs_read(""), file_read, args] int {
+    let (stext, sgot) = chwio.read_file(heap, fs, schema_path(g), buffer.empty(heap, 8192));
+    let sch = load.open_schema(heap, stext);
+    var status = 2;
+    var usable = false;
+    borrow sch as &sr in {
+        usable = load.schema_ok(sr);
+    }
+    if sgot < 0 || !usable {
+        console.error_all(io, "cannot read the schema, or it is not JSON\n");
+    } else {
+        let (text, got) = chwio.read_file(heap, fs, arg(g, 2), buffer.empty(heap, 4096));
+        if got < 0 {
+            console.error_all(io, "cannot read file\n");
+        } else {
+            borrow text as &t in {
+                borrow sch as &s in {
+                    let doc = load.load(heap, buffer.bytes(t), s);
+                    borrow doc as &dr in {
+                        status = show_refusals(heap, io, load.report(dr), arg(g, 2), flag_at(g, "--machine") > 0, true);
+                    }
+                    load.drop(heap, doc);
+                }
+            }
+        }
+        buffer.drop(heap, text);
+    }
+    load.drop_schema(heap, sch);
+    return status;
+}
+
+fn run_conform[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args) -> [heap, io_write, err_write, fs_read(""), dir_read, file_read, args] int {
+    var root = ".";
+    if arg_count(g) > 2 && !bytes.starts_with(arg(g, 2), "--") {
+        root = arg(g, 2);
+    }
+    var extra = "";
+    let at = flag_at(g, "--fixtures");
+    if at > 0 && at + 1 < arg_count(g) {
+        extra = arg(g, at + 1);
+    }
+    var status = 2;
+    match open_dir(fs, root) {
+        DirOpened::Ok(opened) => {
+            var dir = opened;
+            borrow dir as &d in {
+                let (stext, sgot) = chwio.read_in(heap, d, "spec/contract-schema/cancho-hdl-contract.schema.json", buffer.empty(heap, 8192));
+                let sch = load.open_schema(heap, stext);
+                var usable = false;
+                borrow sch as &sr in {
+                    usable = load.schema_ok(sr);
+                }
+                if sgot < 0 || !usable {
+                    console.error_all(io, "cannot read spec/contract-schema/cancho-hdl-contract.schema.json beneath the root, or it is not JSON\n");
+                } else {
+                    borrow sch as &s in {
+                        status = conform.run(heap, io, d, s, extra);
+                    }
+                }
+                load.drop_schema(heap, sch);
+            }
+            dir_close(dir);
+        }
+        DirOpened::Failed(reason) => {
+            console.error_all(io, "cannot open the root directory\n");
+        }
+    }
+    return status;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    var status = 2;
+    borrow mut heap as &!h in {
+        borrow mut io as &!i in {
+            borrow args as &g in {
+                borrow fs as &f in {
+                    if arg_count(g) < 2 {
+                        status = usage(i);
+                    } else if bytes.equal(arg(g, 1), "parse") && arg_count(g) >= 3 {
+                        status = run_parse(h, i, f, g);
+                    } else if bytes.equal(arg(g, 1), "validate") && arg_count(g) >= 3 {
+                        status = run_validate(h, i, f, g);
+                    } else if bytes.equal(arg(g, 1), "conform") {
+                        status = run_conform(h, i, f, g);
+                    } else {
+                        status = usage(i);
+                    }
+                }
+            }
+        }
+    }
+    release(fs);
+    release(args);
+    release(io);
+    release(heap);
+    return status;
+}

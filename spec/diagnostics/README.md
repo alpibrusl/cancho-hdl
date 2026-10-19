@@ -137,6 +137,19 @@ tests, not assertions.
 | `block-endianness-unknown` | `RegisterBlock` | `Error` | `Static` | A block with `endianness` other than `little` or `big` |
 | `internal` | `core` | `Error` | `Unknown` | A toolchain internal error |
 
+**Sub-tags of `schema-invalid` and `internal` (the cancho validator, stage 1 of
+[`docs/cancho-port.md`](../../docs/cancho-port.md), section 9.4).** The code stays
+the catalog's; the cancho tools add a `keyword` that says which check refused,
+so a test can pin it. For `schema-invalid`: the JSON Schema keyword (`type`,
+`enum`, `pattern`, `minimum`, `maximum`, `minLength`, `minItems`, `required`,
+`additionalProperties`), and three refusals the Python `jsonschema` pass did not
+make: `json-syntax` (the file begins with `{` and is not RFC 8259 JSON),
+`duplicate-key` (an object repeats a key), `integer-range` (an integer past 18
+digits). For `internal`: `unsupported-keyword` (the schema file uses a keyword
+the validator does not implement, which it refuses rather than skips). The cancho
+diagnostics also carry a JSON Pointer to the node and, for the JSON wire form, its
+line and column; fixtures for each sub-tag are in `tests/stage1/`.
+
 ### 3.2 Registers and fields
 
 | `code` | `subject` | `severity` | `tier` | Meaning |

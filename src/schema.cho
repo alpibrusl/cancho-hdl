@@ -1,0 +1,984 @@
+module chw.schema;
+
+// schema.cho -- the structural validator: an interpreter for the subset of
+// JSON Schema that spec/contract-schema/cancho-hdl-contract.schema.json uses,
+// driven by that FILE, so the schema stays the one source of truth
+// (docs/cancho-port.md, 9.3). It replaces `jsonschema` in
+// `checker._validate_schema`.
+//
+// Keywords: type, enum, pattern, minLength, minItems, minimum, maximum,
+// required, properties, additionalProperties (false, true or a schema), items,
+// $ref (`#/...` only). Annotations are ignored. ANY OTHER KEYWORD IS REFUSED
+// (`lint`), because `jsonschema` skips an unknown keyword and a validator that
+// skips one is a validator that silently stops enforcing it.
+//
+// Every violation is reported, as `iter_errors` does, with the jsonschema 4.26
+// message, the instance quoted by `chw.pyrepr`, a JSON Pointer, and (when
+// `located`) the line and column of the offending node. Two checks the Python
+// side did not have run first, over the instance alone: a duplicate object key
+// and an integer outside 18 digits (9.4).
+
+import std.buffer;
+import std.bytes;
+import std.json;
+import std.map;
+import std.utf8;
+import chw.diag;
+import chw.pyrepr;
+import chw.pattern;
+
+// ------------------------------------------------------------- positions ---
+
+fn skip_ws[&s](src: &s [byte], from: int) -> [] int {
+    var p = from;
+    while p < len(src) && (int_of(src[p]) == ' ' || int_of(src[p]) == '\t' || int_of(src[p]) == '\n' || int_of(src[p]) == '\r') {
+        p = p + 1;
+    }
+    return p;
+}
+
+// One past the end of the string whose opening quote is at `p`.
+fn string_end[&s](src: &s [byte], p: int) -> [] int {
+    var q = p + 1;
+    while q < len(src) && int_of(src[q]) != '"' {
+        if int_of(src[q]) == '\\' {
+            q = q + 2;
+        } else {
+            q = q + 1;
+        }
+    }
+    return q + 1;
+}
+
+// One past the end of the value starting at `p`, in a document `std.json`
+// already accepted.
+fn value_end[&s](src: &s [byte], p: int) -> [] int {
+    if p >= len(src) {
+        return p;
+    }
+    let c = int_of(src[p]);
+    if c == '"' {
+        return string_end(src, p);
+    }
+    if c == '{' || c == '[' {
+        var q = p;
+        var depth = 0;
+        var going = true;
+        while going && q < len(src) {
+            let d = int_of(src[q]);
+            if d == '"' {
+                q = string_end(src, q);
+            } else {
+                if d == '{' || d == '[' {
+                    depth = depth + 1;
+                }
+                if d == '}' || d == ']' {
+                    depth = depth - 1;
+                }
+                q = q + 1;
+                if depth == 0 {
+                    going = false;
+                }
+            }
+        }
+        return q;
+    }
+    var q = p;
+    while q < len(src) && int_of(src[q]) != ',' && int_of(src[q]) != ']' && int_of(src[q]) != '}' && int_of(src[q]) != ' ' && int_of(src[q]) != '\n' && int_of(src[q]) != '\r' && int_of(src[q]) != '\t' {
+        q = q + 1;
+    }
+    return q;
+}
+
+// Where the value of the object pair whose key is tape node `k` starts.
+fn pair_value_at[&s, &t](src: &s [byte], tape: &t [int], k: int) -> [] int {
+    var p = tape[3 * k + 2] + 1;
+    p = skip_ws(src, p);
+    p = p + 1;
+    return skip_ws(src, p);
+}
+
+// Where the element after the one that started at `p` starts.
+fn next_element_at[&s](src: &s [byte], p: int) -> [] int {
+    var q = skip_ws(src, value_end(src, p));
+    q = q + 1;
+    return skip_ws(src, q);
+}
+
+// ----------------------------------------------------------------- emit ---
+
+// A record whose position is still a byte offset: the line field holds the
+// offset and the column is 0, until `locate` turns every offset into a line and
+// a column in one pass (working out each one from the start of the file was
+// measured at 22 s for a 0.8 MB file with 16,000 refusals; see docs/cancho-port.md, 10).
+fn emit[&h, &s, &p](heap: &!h Heap, out: buffer.Buffer, code: &static [byte], src: &s [byte], located: bool, at: int, keyword: &static [byte], ptr: &p [byte], msg: buffer.Buffer) -> [heap] buffer.Buffer {
+    var pending = 0;
+    if located {
+        pending = at;
+    }
+    var o = out;
+    borrow msg as &m in {
+        o = diag.add(heap, o, code, pending, 0, keyword, ptr, buffer.bytes(m));
+    }
+    buffer.drop(heap, msg);
+    return o;
+}
+
+fn violation[&h, &s, &p](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], located: bool, at: int, keyword: &static [byte], ptr: &p [byte], msg: buffer.Buffer) -> [heap] buffer.Buffer {
+    return emit(heap, out, "schema-invalid", src, located, at, keyword, ptr, msg);
+}
+
+fn internal[&h](heap: &!h Heap, out: buffer.Buffer, msg: buffer.Buffer) -> [heap] buffer.Buffer {
+    return emit(heap, out, "internal", "", false, 0, "unsupported-keyword", "", msg);
+}
+
+// `ptr` + "/" + the segment, `~` as `~0`, `/` as `~1`, a control as `~xNN`.
+fn push_segment[&h, &b](heap: &!h Heap, out: buffer.Buffer, text: &b [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('/'));
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == '~' {
+            o = buffer.append(heap, o, "~0");
+        } else if c == '/' {
+            o = buffer.append(heap, o, "~1");
+        } else if c < 32 {
+            o = buffer.append(heap, o, "~x");
+            o = buffer.push(heap, o, byte_of('0' + c / 16));
+            if c % 16 < 10 {
+                o = buffer.push(heap, o, byte_of('0' + c % 16));
+            } else {
+                o = buffer.push(heap, o, byte_of('a' + c % 16 - 10));
+            }
+        } else {
+            o = buffer.push(heap, o, byte_of(c));
+        }
+        i = i + 1;
+    }
+    return o;
+}
+
+fn ptr_key[&h, &p, &s, &t](heap: &!h Heap, ptr: &p [byte], src: &s [byte], tape: &t [int], key: int) -> [heap] buffer.Buffer {
+    let base = buffer.append(heap, buffer.empty(heap, len(ptr) + 16), ptr);
+    if json.string_plain(tape, key) {
+        return push_segment(heap, base, json.string_view(src, tape, key));
+    }
+    let n = json.string_length(src, tape, key);
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(src, tape, key, contents(w));
+    }
+    var o = base;
+    borrow tmp as &r in {
+        o = push_segment(heap, o, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return o;
+}
+
+fn ptr_index[&h, &p](heap: &!h Heap, ptr: &p [byte], i: int) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, buffer.empty(heap, len(ptr) + 8), ptr);
+    o = buffer.push(heap, o, byte_of('/'));
+    return buffer.push_nat(heap, o, i);
+}
+
+// ------------------------------------------------------------ comparisons ---
+
+// Do the strings at `a` (in `asrc`) and `b` (in `bsrc`) hold the same text?
+fn same_string[&h, &a, &b, &c, &d](heap: &!h Heap, asrc: &a [byte], atape: &b [int], an: int, bsrc: &c [byte], btape: &d [int], bn: int) -> [heap] bool {
+    if json.string_plain(btape, bn) {
+        return json.string_equals(asrc, atape, an, json.string_view(bsrc, btape, bn));
+    }
+    if json.string_plain(atape, an) {
+        return json.string_equals(bsrc, btape, bn, json.string_view(asrc, atape, an));
+    }
+    let n = json.string_length(asrc, atape, an);
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(asrc, atape, an, contents(w));
+    }
+    var same = false;
+    borrow tmp as &r in {
+        same = json.string_equals(bsrc, btape, bn, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return same;
+}
+
+fn finite(x: float) -> [] bool {
+    return x - x == 0.0;
+}
+
+// A JSON Schema `integer`: an integer token, or a number whose value is whole
+// (`8.0`, `1e1`), which `jsonschema` accepts and `json.loads` reads as a float.
+fn is_integral[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] bool {
+    let k = json.kind(tape, node);
+    if k == json.kind_int() {
+        return true;
+    }
+    if k != json.kind_float() {
+        return false;
+    }
+    let x = json.to_float(src, tape, node);
+    if !finite(x) {
+        return false;
+    }
+    if x >= 9000000000000000000.0 || x <= 0.0 - 9000000000000000000.0 {
+        return true;
+    }
+    return float_of(truncate(x)) == x;
+}
+
+// -1, 0 or 1: the instance number against the schema's.
+fn compare_numbers[&a, &b, &c, &d](isrc: &a [byte], itape: &b [int], inode: int, ssrc: &c [byte], stape: &d [int], snode: int) -> [] int {
+    if json.is_int(itape, inode) && json.is_int(stape, snode) {
+        let x = json.to_int(isrc, itape, inode);
+        let y = json.to_int(ssrc, stape, snode);
+        if x < y {
+            return 0 - 1;
+        }
+        if x > y {
+            return 1;
+        }
+        return 0;
+    }
+    let fx = json.to_float(isrc, itape, inode);
+    let fy = json.to_float(ssrc, stape, snode);
+    if fx < fy {
+        return 0 - 1;
+    }
+    if fx > fy {
+        return 1;
+    }
+    return 0;
+}
+
+// JSON equality for `enum`: numbers by value, `true` is not `1`, containers
+// never equal (the lint refuses an enum that holds one).
+fn same_value[&h, &a, &b, &c, &d](heap: &!h Heap, isrc: &a [byte], itape: &b [int], inode: int, ssrc: &c [byte], stape: &d [int], snode: int) -> [heap] bool {
+    let ki = json.kind(itape, inode);
+    let ks = json.kind(stape, snode);
+    if json.is_number(itape, inode) && json.is_number(stape, snode) {
+        return compare_numbers(isrc, itape, inode, ssrc, stape, snode) == 0;
+    }
+    if json.is_string(itape, inode) && json.is_string(stape, snode) {
+        return same_string(heap, isrc, itape, inode, ssrc, stape, snode);
+    }
+    return ki == ks && ki >= 0 && ki <= 2;
+}
+
+// The object `inode` has a key equal to the string at `snode`: the value node
+// or -1.
+fn find_key[&h, &a, &b, &c, &d](heap: &!h Heap, isrc: &a [byte], itape: &b [int], inode: int, ssrc: &c [byte], stape: &d [int], snode: int) -> [heap] int {
+    var j = inode + 1;
+    var left = json.count(itape, inode);
+    while left > 0 {
+        if same_string(heap, isrc, itape, j, ssrc, stape, snode) {
+            return j + 1;
+        }
+        j = json.skip(itape, j + 1);
+        left = left - 1;
+    }
+    return 0 - 1;
+}
+
+// The decoded text of the string at `node` has at least `most`... counted in
+// code points, as Python's `len`.
+fn code_points[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], node: int) -> [heap] int {
+    let n = json.string_length(src, tape, node);
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(src, tape, node, contents(w));
+    }
+    var count = 0;
+    borrow tmp as &r in {
+        var i = 0;
+        while i < len(contents(r)) {
+            if int_of(contents(r)[i]) & 192 != 128 {
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+    }
+    unbox_slice(heap, tmp);
+    return count;
+}
+
+// --------------------------------------------------- instance-only checks ---
+
+// Duplicate keys and out-of-range integers, anywhere in the document.
+fn lexical[&h, &s, &t, &p](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], located: bool, ptr: &p [byte], node: int, at: int) -> [heap] buffer.Buffer {
+    var o = out;
+    let k = json.kind(tape, node);
+    if k == json.kind_int() || k == json.kind_float() {
+        let text = src[tape[3 * node + 1]..tape[3 * node + 2]];
+        var digits = 0;
+        var i = 0;
+        while i < len(text) && (int_of(text[i]) != '.' && int_of(text[i]) != 'e' && int_of(text[i]) != 'E') {
+            if int_of(text[i]) >= '0' && int_of(text[i]) <= '9' {
+                digits = digits + 1;
+            }
+            i = i + 1;
+        }
+        var wide = k == json.kind_int() && digits > 18;
+        if k == json.kind_float() {
+            let x = json.to_float(src, tape, node);
+            wide = finite(x) && (x >= 1000000000000000000.0 || x <= 0.0 - 1000000000000000000.0) && is_integral(src, tape, node);
+        }
+        if wide {
+            var m = buffer.append(heap, buffer.empty(heap, 64), "integer ");
+            m = buffer.append(heap, m, text);
+            m = buffer.append(heap, m, " is outside the 18-digit range this tool supports");
+            o = violation(heap, o, src, located, at, "integer-range", ptr, m);
+        }
+        return o;
+    }
+    if k == json.kind_array() {
+        var j = node + 1;
+        var p = skip_ws(src, at + 1);
+        var idx = 0;
+        while idx < json.count(tape, node) {
+            let cptr = ptr_index(heap, ptr, idx);
+            borrow cptr as &cp in {
+                o = lexical(heap, o, src, tape, located, buffer.bytes(cp), j, p);
+            }
+            buffer.drop(heap, cptr);
+            j = json.skip(tape, j);
+            p = next_element_at(src, p);
+            idx = idx + 1;
+        }
+        return o;
+    }
+    if k == json.kind_object() {
+        var j = node + 1;
+        var idx = 0;
+        var seen = map.empty(heap, json.count(tape, node) + 1, 0, 7);
+        while idx < json.count(tape, node) {
+            let (now, dup) = note_key(heap, seen, src, tape, j);
+            seen = now;
+            if dup {
+                var m = buffer.append(heap, buffer.empty(heap, 64), "duplicate key ");
+                m = pyrepr.string_repr(heap, m, src, tape, j);
+                m = buffer.append(heap, m, ": the first and the last value disagree on which one counts");
+                let kptr = ptr_key(heap, ptr, src, tape, j);
+                borrow kptr as &kp in {
+                    o = violation(heap, o, src, located, tape[3 * j + 1] - 1, "duplicate-key", buffer.bytes(kp), m);
+                }
+                buffer.drop(heap, kptr);
+            }
+            let cptr = ptr_key(heap, ptr, src, tape, j);
+            borrow cptr as &cp in {
+                o = lexical(heap, o, src, tape, located, buffer.bytes(cp), j + 1, pair_value_at(src, tape, j));
+            }
+            buffer.drop(heap, cptr);
+            j = json.skip(tape, j + 1);
+            idx = idx + 1;
+        }
+        map.drop(heap, seen);
+    }
+    return o;
+}
+
+// Has the decoded key at `k` been seen in this object? Records it if not. A hash
+// map, because comparing every pair was measured at 48 s for one object of 5,000
+// keys (docs/cancho-port.md, 10).
+fn note_key[&h, &s, &t](heap: &!h Heap, seen: map.Map[int], src: &s [byte], tape: &t [int], k: int) -> [heap] (map.Map[int], bool) {
+    var table = seen;
+    var dup = false;
+    if json.string_plain(tape, k) {
+        let key = json.string_view(src, tape, k);
+        borrow table as &m in {
+            dup = map.has(m, key);
+        }
+        if !dup {
+            table = map.put(heap, table, key, 1);
+        }
+        return (table, dup);
+    }
+    let tmp = box_slice(heap, json.string_length(src, tape, k), byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(src, tape, k, contents(w));
+    }
+    borrow tmp as &r in {
+        borrow table as &m in {
+            dup = map.has(m, contents(r));
+        }
+        if !dup {
+            table = map.put(heap, table, contents(r), 1);
+        }
+    }
+    unbox_slice(heap, tmp);
+    return (table, dup);
+}
+
+// ------------------------------------------------------------------- lint ---
+
+fn known_keyword[&s, &t](src: &s [byte], tape: &t [int], k: int) -> [] bool {
+    return json.string_equals(src, tape, k, "type") || json.string_equals(src, tape, k, "enum") || json.string_equals(src, tape, k, "pattern") || json.string_equals(src, tape, k, "minLength") || json.string_equals(src, tape, k, "minItems") || json.string_equals(src, tape, k, "minimum") || json.string_equals(src, tape, k, "maximum") || json.string_equals(src, tape, k, "required") || json.string_equals(src, tape, k, "properties") || json.string_equals(src, tape, k, "additionalProperties") || json.string_equals(src, tape, k, "items") || json.string_equals(src, tape, k, "$ref");
+}
+
+fn annotation[&s, &t](src: &s [byte], tape: &t [int], k: int) -> [] bool {
+    return json.string_equals(src, tape, k, "$id") || json.string_equals(src, tape, k, "$schema") || json.string_equals(src, tape, k, "$defs") || json.string_equals(src, tape, k, "$comment") || json.string_equals(src, tape, k, "title") || json.string_equals(src, tape, k, "description") || json.string_equals(src, tape, k, "default") || json.string_equals(src, tape, k, "examples");
+}
+
+fn known_type[&s, &t](src: &s [byte], tape: &t [int], v: int) -> [] bool {
+    return json.string_equals(src, tape, v, "string") || json.string_equals(src, tape, v, "integer") || json.string_equals(src, tape, v, "number") || json.string_equals(src, tape, v, "boolean") || json.string_equals(src, tape, v, "object") || json.string_equals(src, tape, v, "array") || json.string_equals(src, tape, v, "null");
+}
+
+fn pattern_supported[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], v: int) -> [heap] bool {
+    if !json.is_string(tape, v) {
+        return false;
+    }
+    let pat = box_slice(heap, json.string_length(src, tape, v), byte_of(0));
+    borrow mut pat as &!pw in {
+        json.string_into(src, tape, v, contents(pw));
+    }
+    var ok = false;
+    borrow pat as &pr in {
+        ok = pattern.search(contents(pr), "") >= 0;
+    }
+    unbox_slice(heap, pat);
+    return ok;
+}
+
+fn refuse_keyword[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], k: int, what: &static [byte]) -> [heap] buffer.Buffer {
+    var m = buffer.append(heap, buffer.empty(heap, 64), what);
+    m = pyrepr.string_repr(heap, m, src, tape, k);
+    m = buffer.append(heap, m, " is not implemented by this validator, so the schema cannot be enforced");
+    return internal(heap, out, m);
+}
+
+// Every keyword of the schema is one the interpreter implements.
+fn lint[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int, depth: int) -> [heap] buffer.Buffer {
+    var o = out;
+    if json.kind(tape, node) == json.kind_true() || json.kind(tape, node) == json.kind_false() {
+        return o;
+    }
+    if !json.is_object(tape, node) || depth > 64 {
+        var m = buffer.append(heap, buffer.empty(heap, 64), "a schema node that is not an object or a boolean (or nested past 64)");
+        return internal(heap, o, m);
+    }
+    var k = node + 1;
+    var left = json.count(tape, node);
+    while left > 0 {
+        let v = k + 1;
+        if known_keyword(src, tape, k) {
+            if json.string_equals(src, tape, k, "type") && !(json.is_string(tape, v) && known_type(src, tape, v)) {
+                o = refuse_keyword(heap, o, src, tape, k, "type value for ");
+            } else if json.string_equals(src, tape, k, "pattern") && !pattern_supported(heap, src, tape, v) {
+                o = refuse_keyword(heap, o, src, tape, k, "pattern outside the supported subset for ");
+            } else if json.string_equals(src, tape, k, "enum") {
+                var e = v + 1;
+                var n = json.count(tape, v);
+                while n > 0 {
+                    if json.is_array(tape, e) || json.is_object(tape, e) {
+                        o = refuse_keyword(heap, o, src, tape, k, "container value in ");
+                    }
+                    e = json.skip(tape, e);
+                    n = n - 1;
+                }
+            } else if json.string_equals(src, tape, k, "properties") && json.is_object(tape, v) {
+                var j = v + 1;
+                var n = json.count(tape, v);
+                while n > 0 {
+                    o = lint(heap, o, src, tape, j + 1, depth + 1);
+                    j = json.skip(tape, j + 1);
+                    n = n - 1;
+                }
+            } else if json.string_equals(src, tape, k, "additionalProperties") || json.string_equals(src, tape, k, "items") {
+                o = lint(heap, o, src, tape, v, depth + 1);
+            }
+        } else if json.string_equals(src, tape, k, "$defs") && json.is_object(tape, v) {
+            var j = v + 1;
+            var n = json.count(tape, v);
+            while n > 0 {
+                o = lint(heap, o, src, tape, j + 1, depth + 1);
+                j = json.skip(tape, j + 1);
+                n = n - 1;
+            }
+        } else if !annotation(src, tape, k) {
+            o = refuse_keyword(heap, o, src, tape, k, "keyword ");
+        }
+        k = json.skip(tape, v);
+        left = left - 1;
+    }
+    return o;
+}
+
+// ------------------------------------------------------------------ check ---
+
+// `#/a/b` against the schema root.
+fn resolve[&s, &t](src: &s [byte], tape: &t [int], v: int) -> [] int {
+    if !json.is_string(tape, v) {
+        return 0 - 1;
+    }
+    let text = json.string_view(src, tape, v);
+    if len(text) < 2 || int_of(text[0]) != '#' || int_of(text[1]) != '/' {
+        return 0 - 1;
+    }
+    var cur = 0;
+    var p = 2;
+    while p <= len(text) && cur >= 0 {
+        var q = p;
+        while q < len(text) && int_of(text[q]) != '/' {
+            q = q + 1;
+        }
+        cur = json.get(src, tape, cur, text[p..q]);
+        p = q + 1;
+    }
+    return cur;
+}
+
+fn type_holds[&s, &t, &c, &d](isrc: &s [byte], itape: &t [int], inode: int, ssrc: &c [byte], stape: &d [int], v: int) -> [] bool {
+    if json.string_equals(ssrc, stape, v, "string") {
+        return json.is_string(itape, inode);
+    }
+    if json.string_equals(ssrc, stape, v, "integer") {
+        return is_integral(isrc, itape, inode);
+    }
+    if json.string_equals(ssrc, stape, v, "number") {
+        return json.is_number(itape, inode);
+    }
+    if json.string_equals(ssrc, stape, v, "boolean") {
+        return json.is_bool(itape, inode);
+    }
+    if json.string_equals(ssrc, stape, v, "object") {
+        return json.is_object(itape, inode);
+    }
+    if json.string_equals(ssrc, stape, v, "array") {
+        return json.is_array(itape, inode);
+    }
+    return json.is_null(itape, inode);
+}
+
+fn kw_type[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int) -> [heap] buffer.Buffer {
+    if type_holds(isrc, itape, inode, ssrc, stape, v) {
+        return out;
+    }
+    var m = pyrepr.repr(heap, buffer.empty(heap, 64), isrc, itape, inode);
+    m = buffer.append(heap, m, " is not of type ");
+    m = pyrepr.string_repr(heap, m, ssrc, stape, v);
+    return violation(heap, out, isrc, located, at, "type", ptr, m);
+}
+
+fn kw_enum[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int) -> [heap] buffer.Buffer {
+    var e = v + 1;
+    var n = json.count(stape, v);
+    while n > 0 {
+        if same_value(heap, isrc, itape, inode, ssrc, stape, e) {
+            return out;
+        }
+        e = json.skip(stape, e);
+        n = n - 1;
+    }
+    var m = pyrepr.repr(heap, buffer.empty(heap, 64), isrc, itape, inode);
+    m = buffer.append(heap, m, " is not one of ");
+    m = pyrepr.repr(heap, m, ssrc, stape, v);
+    return violation(heap, out, isrc, located, at, "enum", ptr, m);
+}
+
+fn kw_pattern[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int) -> [heap] buffer.Buffer {
+    if !json.is_string(itape, inode) {
+        return out;
+    }
+    let n = json.string_length(isrc, itape, inode);
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(isrc, itape, inode, contents(w));
+    }
+    var found = 1;
+    let pat = box_slice(heap, json.string_length(ssrc, stape, v), byte_of(0));
+    borrow mut pat as &!pw in {
+        json.string_into(ssrc, stape, v, contents(pw));
+    }
+    borrow tmp as &r in {
+        borrow pat as &pr in {
+            found = pattern.search(contents(pr), contents(r));
+        }
+    }
+    unbox_slice(heap, pat);
+    unbox_slice(heap, tmp);
+    if found != 0 {
+        return out;
+    }
+    var m = pyrepr.repr(heap, buffer.empty(heap, 64), isrc, itape, inode);
+    m = buffer.append(heap, m, " does not match ");
+    m = pyrepr.string_repr(heap, m, ssrc, stape, v);
+    return violation(heap, out, isrc, located, at, "pattern", ptr, m);
+}
+
+fn kw_min_length[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int) -> [heap] buffer.Buffer {
+    if !json.is_string(itape, inode) {
+        return out;
+    }
+    let least = json.to_int(ssrc, stape, v);
+    if code_points(heap, isrc, itape, inode) >= least {
+        return out;
+    }
+    var m = pyrepr.repr(heap, buffer.empty(heap, 64), isrc, itape, inode);
+    if least == 1 {
+        m = buffer.append(heap, m, " should be non-empty");
+    } else {
+        m = buffer.append(heap, m, " is too short");
+    }
+    return violation(heap, out, isrc, located, at, "minLength", ptr, m);
+}
+
+fn kw_min_items[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int) -> [heap] buffer.Buffer {
+    if !json.is_array(itape, inode) {
+        return out;
+    }
+    let least = json.to_int(ssrc, stape, v);
+    if json.count(itape, inode) >= least {
+        return out;
+    }
+    var m = pyrepr.repr(heap, buffer.empty(heap, 64), isrc, itape, inode);
+    if least == 1 {
+        m = buffer.append(heap, m, " should be non-empty");
+    } else {
+        m = buffer.append(heap, m, " is too short");
+    }
+    return violation(heap, out, isrc, located, at, "minItems", ptr, m);
+}
+
+fn kw_bound[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int, upper: bool) -> [heap] buffer.Buffer {
+    if !json.is_number(itape, inode) {
+        return out;
+    }
+    let order = compare_numbers(isrc, itape, inode, ssrc, stape, v);
+    if !upper && order >= 0 || upper && order <= 0 {
+        return out;
+    }
+    var m = pyrepr.repr(heap, buffer.empty(heap, 64), isrc, itape, inode);
+    if upper {
+        m = buffer.append(heap, m, " is greater than the maximum of ");
+        m = pyrepr.repr(heap, m, ssrc, stape, v);
+        return violation(heap, out, isrc, located, at, "maximum", ptr, m);
+    }
+    m = buffer.append(heap, m, " is less than the minimum of ");
+    m = pyrepr.repr(heap, m, ssrc, stape, v);
+    return violation(heap, out, isrc, located, at, "minimum", ptr, m);
+}
+
+fn kw_required[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int) -> [heap] buffer.Buffer {
+    if !json.is_object(itape, inode) {
+        return out;
+    }
+    var o = out;
+    var e = v + 1;
+    var n = json.count(stape, v);
+    while n > 0 {
+        if find_key(heap, isrc, itape, inode, ssrc, stape, e) < 0 {
+            var m = pyrepr.string_repr(heap, buffer.empty(heap, 64), ssrc, stape, e);
+            m = buffer.append(heap, m, " is a required property");
+            o = violation(heap, o, isrc, located, at, "required", ptr, m);
+        }
+        e = json.skip(stape, e);
+        n = n - 1;
+    }
+    return o;
+}
+
+// -------------------------------------------------- recursive keywords ---
+
+fn check[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, snode: int, depth: int) -> [heap] buffer.Buffer {
+    var o = out;
+    if depth > 64 {
+        return internal(heap, o, buffer.append(heap, buffer.empty(heap, 64), "schema $ref recursion is deeper than 64"));
+    }
+    if !json.is_object(stape, snode) {
+        return o;
+    }
+    var k = snode + 1;
+    var left = json.count(stape, snode);
+    while left > 0 {
+        let v = k + 1;
+        if json.string_equals(ssrc, stape, k, "$ref") {
+            let target = resolve(ssrc, stape, v);
+            if target < 0 {
+                o = internal(heap, o, buffer.append(heap, buffer.empty(heap, 64), "a $ref that does not resolve inside the schema"));
+            } else {
+                o = check(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, target, depth + 1);
+            }
+        } else if json.string_equals(ssrc, stape, k, "type") {
+            o = kw_type(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v);
+        } else if json.string_equals(ssrc, stape, k, "enum") {
+            o = kw_enum(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v);
+        } else if json.string_equals(ssrc, stape, k, "pattern") {
+            o = kw_pattern(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v);
+        } else if json.string_equals(ssrc, stape, k, "minLength") {
+            o = kw_min_length(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v);
+        } else if json.string_equals(ssrc, stape, k, "minItems") {
+            o = kw_min_items(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v);
+        } else if json.string_equals(ssrc, stape, k, "minimum") {
+            o = kw_bound(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v, false);
+        } else if json.string_equals(ssrc, stape, k, "maximum") {
+            o = kw_bound(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v, true);
+        } else if json.string_equals(ssrc, stape, k, "required") {
+            o = kw_required(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v);
+        } else if json.string_equals(ssrc, stape, k, "properties") {
+            o = kw_properties(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v, depth);
+        } else if json.string_equals(ssrc, stape, k, "additionalProperties") {
+            o = kw_additional(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v, snode, depth);
+        } else if json.string_equals(ssrc, stape, k, "items") {
+            o = kw_items(heap, o, isrc, itape, ssrc, stape, located, ptr, inode, at, v, depth);
+        }
+        k = json.skip(stape, v);
+        left = left - 1;
+    }
+    return o;
+}
+
+// The schema node for property `key` of the instance object, or -1.
+fn property_schema[&h, &a, &b, &c, &d](heap: &!h Heap, isrc: &a [byte], itape: &b [int], key: int, ssrc: &c [byte], stape: &d [int], props: int) -> [heap] int {
+    if !json.is_object(stape, props) {
+        return 0 - 1;
+    }
+    var j = props + 1;
+    var left = json.count(stape, props);
+    while left > 0 {
+        if same_string(heap, isrc, itape, key, ssrc, stape, j) {
+            return j + 1;
+        }
+        j = json.skip(stape, j + 1);
+        left = left - 1;
+    }
+    return 0 - 1;
+}
+
+fn kw_properties[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int, depth: int) -> [heap] buffer.Buffer {
+    if !json.is_object(itape, inode) {
+        return out;
+    }
+    var o = out;
+    var j = inode + 1;
+    var left = json.count(itape, inode);
+    while left > 0 {
+        let sub = property_schema(heap, isrc, itape, j, ssrc, stape, v);
+        if sub >= 0 {
+            let cptr = ptr_key(heap, ptr, isrc, itape, j);
+            borrow cptr as &cp in {
+                o = check(heap, o, isrc, itape, ssrc, stape, located, buffer.bytes(cp), j + 1, pair_value_at(isrc, itape, j), sub, depth + 1);
+            }
+            buffer.drop(heap, cptr);
+        }
+        j = json.skip(itape, j + 1);
+        left = left - 1;
+    }
+    return o;
+}
+
+// -1, 0 or 1: the decoded key at `a` against the one at `b`, by code point
+// (UTF-8 bytes in order are code points in order, which is how Python sorts).
+fn compare_keys[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], a: int, b: int) -> [heap] int {
+    let x = box_slice(heap, json.string_length(src, tape, a), byte_of(0));
+    borrow mut x as &!xw in {
+        json.string_into(src, tape, a, contents(xw));
+    }
+    let y = box_slice(heap, json.string_length(src, tape, b), byte_of(0));
+    borrow mut y as &!yw in {
+        json.string_into(src, tape, b, contents(yw));
+    }
+    var order = 0;
+    borrow x as &xr in {
+        borrow y as &yr in {
+            order = bytes.compare(contents(xr), contents(yr));
+        }
+    }
+    unbox_slice(heap, x);
+    unbox_slice(heap, y);
+    return order;
+}
+
+// The tape indices `keys[0..n]`, ordered by their decoded text: a stable
+// bottom-up merge sort, because an object with thousands of unknown keys must
+// not cost a quadratic number of decodes.
+fn sort_keys[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], keys: Box[[int]], n: int) -> [heap] Box[[int]] {
+    var a = keys;
+    var b = box_slice(heap, n + 1, 0);
+    var width = 1;
+    while width < n {
+        var lo = 0;
+        while lo < n {
+            var mid = lo + width;
+            if mid > n {
+                mid = n;
+            }
+            var hi = lo + 2 * width;
+            if hi > n {
+                hi = n;
+            }
+            var i = lo;
+            var j = mid;
+            var k = lo;
+            borrow a as &ar in {
+                borrow mut b as &!bw in {
+                    while k < hi {
+                        var left = false;
+                        if i < mid {
+                            if j >= hi {
+                                left = true;
+                            } else if compare_keys(heap, src, tape, contents(ar)[i], contents(ar)[j]) <= 0 {
+                                left = true;
+                            }
+                        }
+                        if left {
+                            contents(bw)[k] = contents(ar)[i];
+                            i = i + 1;
+                        } else {
+                            contents(bw)[k] = contents(ar)[j];
+                            j = j + 1;
+                        }
+                        k = k + 1;
+                    }
+                }
+            }
+            lo = lo + 2 * width;
+        }
+        let spare = a;
+        a = b;
+        b = spare;
+        width = width * 2;
+    }
+    unbox_slice(heap, b);
+    return a;
+}
+
+fn kw_additional[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int, snode: int, depth: int) -> [heap] buffer.Buffer {
+    if !json.is_object(itape, inode) || json.kind(stape, v) == json.kind_true() {
+        return out;
+    }
+    let props = json.get(ssrc, stape, snode, "properties");
+    var o = out;
+    // The keys the schema does not name, as tape indices.
+    var extras = box_slice(heap, json.count(itape, inode) + 1, 0);
+    var n_extra = 0;
+    var j = inode + 1;
+    var left = json.count(itape, inode);
+    while left > 0 {
+        if property_schema(heap, isrc, itape, j, ssrc, stape, props) < 0 {
+            if json.kind(stape, v) == json.kind_false() {
+                borrow mut extras as &!ew in {
+                    contents(ew)[n_extra] = j;
+                }
+                n_extra = n_extra + 1;
+            } else {
+                let cptr = ptr_key(heap, ptr, isrc, itape, j);
+                borrow cptr as &cp in {
+                    o = check(heap, o, isrc, itape, ssrc, stape, located, buffer.bytes(cp), j + 1, pair_value_at(isrc, itape, j), v, depth + 1);
+                }
+                buffer.drop(heap, cptr);
+            }
+        }
+        j = json.skip(itape, j + 1);
+        left = left - 1;
+    }
+    if n_extra > 0 {
+        // jsonschema reports them sorted.
+        extras = sort_keys(heap, isrc, itape, extras, n_extra);
+        var m = buffer.append(heap, buffer.empty(heap, 64), "Additional properties are not allowed (");
+        var e = 0;
+        borrow extras as &er in {
+            while e < n_extra {
+                if e > 0 {
+                    m = buffer.append(heap, m, ", ");
+                }
+                m = pyrepr.string_repr(heap, m, isrc, itape, contents(er)[e]);
+                e = e + 1;
+            }
+        }
+        if n_extra == 1 {
+            m = buffer.append(heap, m, " was unexpected)");
+        } else {
+            m = buffer.append(heap, m, " were unexpected)");
+        }
+        o = violation(heap, o, isrc, located, at, "additionalProperties", ptr, m);
+    }
+    unbox_slice(heap, extras);
+    return o;
+}
+
+fn kw_items[&h, &a, &b, &c, &d, &p](heap: &!h Heap, out: buffer.Buffer, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool, ptr: &p [byte], inode: int, at: int, v: int, depth: int) -> [heap] buffer.Buffer {
+    if !json.is_array(itape, inode) {
+        return out;
+    }
+    var o = out;
+    var j = inode + 1;
+    var p = skip_ws(isrc, at + 1);
+    var idx = 0;
+    while idx < json.count(itape, inode) {
+        let cptr = ptr_index(heap, ptr, idx);
+        borrow cptr as &cp in {
+            o = check(heap, o, isrc, itape, ssrc, stape, located, buffer.bytes(cp), j, p, v, depth + 1);
+        }
+        buffer.drop(heap, cptr);
+        j = json.skip(itape, j);
+        p = next_element_at(isrc, p);
+        idx = idx + 1;
+    }
+    return o;
+}
+
+// ----------------------------------------------------------------- entry ---
+
+// Validate the parsed document (`isrc`, `itape`) against the parsed schema
+// (`ssrc`, `stape`). The answer is the report: empty if the document is valid.
+// `located` says whether an offset in `isrc` means something to the author.
+pub fn validate[&h, &a, &b, &c, &d](heap: &!h Heap, isrc: &a [byte], itape: &b [int], ssrc: &c [byte], stape: &d [int], located: bool) -> [heap] buffer.Buffer {
+    var out = lint(heap, buffer.empty(heap, 256), ssrc, stape, 0, 0);
+    var found = 0;
+    borrow out as &r in {
+        found = diag.count(buffer.bytes(r));
+    }
+    if found > 0 {
+        return out;
+    }
+    let start = skip_ws(isrc, 0);
+    out = lexical(heap, out, isrc, itape, located, "", 0, start);
+    out = check(heap, out, isrc, itape, ssrc, stape, located, "", 0, start, 0, 0);
+    if !located {
+        return out;
+    }
+    return locate(heap, out, isrc);
+}
+
+// Turn the byte offset each `schema-invalid` record carries into a line and a
+// column. Offsets arrive nearly in document order, so one cursor that only moves
+// forward does the work; a record that points backwards restarts it.
+fn locate[&h, &s](heap: &!h Heap, report: buffer.Buffer, src: &s [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 256);
+    var pos = 0;
+    var line = 1;
+    var last = 0 - 1;
+    borrow report as &r in {
+        let all = buffer.bytes(r);
+        var from = 0;
+        while from < len(all) {
+            let rec = all[from..diag.end_of(all, from)];
+            from = from + len(rec) + 1;
+            var at = diag.line(rec);
+            if !bytes.equal(diag.code(rec), "schema-invalid") {
+                out = diag.relocate(heap, out, rec, 0, 0);
+            } else {
+                if at > len(src) {
+                    at = len(src);
+                }
+                if at < pos {
+                    pos = 0;
+                    line = 1;
+                    last = 0 - 1;
+                }
+                while pos < at {
+                    if int_of(src[pos]) == '\n' {
+                        line = line + 1;
+                        last = pos;
+                    }
+                    pos = pos + 1;
+                }
+                out = diag.relocate(heap, out, rec, line, at - last);
+            }
+        }
+    }
+    buffer.drop(heap, report);
+    return out;
+}

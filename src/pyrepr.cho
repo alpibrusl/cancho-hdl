@@ -1,0 +1,204 @@
+module chw.pyrepr;
+
+// pyrepr.cho -- a JSON value as Python's `repr` writes it.
+//
+// The refusal sidecars quote `jsonschema`'s messages, and those quote the
+// offending value with `repr`: `'GPU' is not one of ['CPU', 'DEVICE']`, `True
+// is not of type 'integer'`, `{} is not of type 'array'`. A validator that
+// replaces `jsonschema` has to say the same words, so the value is written the
+// way Python writes it (docs/cancho-port.md, 9.3):
+//
+//   null None, true True, false False; an integer as digits; a string in single
+//   quotes (double if it holds a single quote and no double quote) with `\\`,
+//   the quote, `\n \r \t` and `\xNN` for the other controls; `[a, b]`;
+//   `{'k': v, ...}`.
+//
+// Known differences (9.5): a float is its source text (Python prints the
+// shortest round-trip form); a non-ASCII character is escaped only if it is
+// in the small set of non-printables below, Python escapes every non-printable.
+
+import std.buffer;
+import std.json;
+import std.utf8;
+
+fn hex_digit(n: int) -> [] int {
+    if n < 10 {
+        return '0' + n;
+    }
+    return 'a' + n - 10;
+}
+
+fn push_hex[&h](heap: &!h Heap, out: buffer.Buffer, value: int, digits: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var shift = (digits - 1) * 4;
+    while shift >= 0 {
+        o = buffer.push(heap, o, byte_of(hex_digit(value >> shift & 15)));
+        shift = shift - 4;
+    }
+    return o;
+}
+
+// The code points Python's `str.isprintable` rejects that a contract is
+// likely to meet: the controls, C1, no-break and other spaces, the format
+// characters of the General Punctuation block, the BOM.
+fn non_printable(cp: int) -> [] bool {
+    if cp < 32 || cp == 127 {
+        return true;
+    }
+    if cp >= 128 && cp <= 160 {
+        return true;
+    }
+    if cp == 173 || cp == 5760 || cp == 6158 {
+        return true;
+    }
+    if cp >= 8192 && cp <= 8207 {
+        return true;
+    }
+    if cp >= 8232 && cp <= 8239 {
+        return true;
+    }
+    if cp >= 8287 && cp <= 8303 {
+        return true;
+    }
+    return cp == 12288 || cp == 65279;
+}
+
+// `text` as a Python string literal.
+pub fn str_repr[&h, &b](heap: &!h Heap, out: buffer.Buffer, text: &b [byte]) -> [heap] buffer.Buffer {
+    var has_single = false;
+    var has_double = false;
+    var i = 0;
+    while i < len(text) {
+        if int_of(text[i]) == '\'' {
+            has_single = true;
+        }
+        if int_of(text[i]) == '"' {
+            has_double = true;
+        }
+        i = i + 1;
+    }
+    var quote = '\'';
+    if has_single && !has_double {
+        quote = '"';
+    }
+    var o = buffer.push(heap, out, byte_of(quote));
+    var p = 0;
+    while p < len(text) {
+        match utf8.decode(text, p) {
+            utf8.Step::Code(cp, w) => {
+                if cp == '\\' {
+                    o = buffer.append(heap, o, "\\\\");
+                } else if cp == quote {
+                    o = buffer.push(heap, o, byte_of('\\'));
+                    o = buffer.push(heap, o, byte_of(quote));
+                } else if cp == '\n' {
+                    o = buffer.append(heap, o, "\\n");
+                } else if cp == '\r' {
+                    o = buffer.append(heap, o, "\\r");
+                } else if cp == '\t' {
+                    o = buffer.append(heap, o, "\\t");
+                } else if non_printable(cp) {
+                    if cp < 256 {
+                        o = buffer.append(heap, o, "\\x");
+                        o = push_hex(heap, o, cp, 2);
+                    } else {
+                        o = buffer.append(heap, o, "\\u");
+                        o = push_hex(heap, o, cp, 4);
+                    }
+                } else {
+                    o = buffer.append(heap, o, text[p..p + w]);
+                }
+                p = p + w;
+            }
+            utf8.Step::Invalid(w) => {
+                // Cannot happen for a string `std.json` accepted; the bytes
+                // are copied rather than trapped on.
+                o = buffer.append(heap, o, text[p..p + w]);
+                p = p + w;
+            }
+        }
+    }
+    return buffer.push(heap, o, byte_of(quote));
+}
+
+// The decoded string at `node`, repr'd.
+pub fn string_repr[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    if json.string_plain(tape, node) {
+        return str_repr(heap, out, json.string_view(src, tape, node));
+    }
+    let n = json.string_length(src, tape, node);
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(src, tape, node, contents(w));
+    }
+    var o = out;
+    borrow tmp as &r in {
+        o = str_repr(heap, o, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return o;
+}
+
+// An integer's digits as Python prints them: `-0` is `0`.
+fn int_repr[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    let text = src[tape[3 * node + 1]..tape[3 * node + 2]];
+    if len(text) == 2 && int_of(text[0]) == '-' && int_of(text[1]) == '0' {
+        return buffer.push(heap, out, byte_of('0'));
+    }
+    return buffer.append(heap, out, text);
+}
+
+// The value at `node`.
+pub fn repr[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    let k = json.kind(tape, node);
+    if k == json.kind_null() {
+        return buffer.append(heap, out, "None");
+    }
+    if k == json.kind_true() {
+        return buffer.append(heap, out, "True");
+    }
+    if k == json.kind_false() {
+        return buffer.append(heap, out, "False");
+    }
+    if k == json.kind_int() {
+        return int_repr(heap, out, src, tape, node);
+    }
+    if k == json.kind_float() {
+        return buffer.append(heap, out, src[tape[3 * node + 1]..tape[3 * node + 2]]);
+    }
+    if k == json.kind_string() {
+        return string_repr(heap, out, src, tape, node);
+    }
+    var o = out;
+    if k == json.kind_array() {
+        o = buffer.push(heap, o, byte_of('['));
+        var j = node + 1;
+        var left = json.count(tape, node);
+        while left > 0 {
+            o = repr(heap, o, src, tape, j);
+            j = json.skip(tape, j);
+            left = left - 1;
+            if left > 0 {
+                o = buffer.append(heap, o, ", ");
+            }
+        }
+        return buffer.push(heap, o, byte_of(']'));
+    }
+    if k == json.kind_object() {
+        o = buffer.push(heap, o, byte_of('{'));
+        var j = node + 1;
+        var left = json.count(tape, node);
+        while left > 0 {
+            o = string_repr(heap, o, src, tape, j);
+            o = buffer.append(heap, o, ": ");
+            o = repr(heap, o, src, tape, j + 1);
+            j = json.skip(tape, j + 1);
+            left = left - 1;
+            if left > 0 {
+                o = buffer.append(heap, o, ", ");
+            }
+        }
+        return buffer.push(heap, o, byte_of('}'));
+    }
+    return o;
+}

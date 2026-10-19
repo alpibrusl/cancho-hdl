@@ -1,0 +1,87 @@
+module tsup;
+
+// support.cho -- helpers the unit tests share. A test may borrow only `Heap`
+// and `Io` (docs/testing.md, 3), so every document here is an embedded string.
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.diag;
+import chw.load;
+
+// The Schema for `text`.
+pub fn schema_of[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] load.Schema {
+    return load.open_schema(heap, buffer.append(heap, buffer.empty(heap, 64), text));
+}
+
+// Load `doc` against `schema_text` and answer the report.
+pub fn report_of[&h, &s, &d](heap: &!h Heap, schema_text: &s [byte], doc: &d [byte]) -> [heap] buffer.Buffer {
+    let sch = schema_of(heap, schema_text);
+    var out = buffer.empty(heap, 16);
+    borrow sch as &sr in {
+        let loaded = load.load(heap, doc, sr);
+        borrow loaded as &lr in {
+            buffer.drop(heap, out);
+            out = buffer.append(heap, buffer.empty(heap, 64), load.report(lr));
+        }
+        load.drop(heap, loaded);
+    }
+    load.drop_schema(heap, sch);
+    return out;
+}
+
+// Record `i` of the report has this keyword, pointer and message.
+pub fn is_record[&r](report: &r [byte], i: int, keyword: &static [byte], ptr: &static [byte], message: &static [byte]) -> [] bool {
+    let rec = diag.record(report, i);
+    return bytes.equal(diag.keyword(rec), keyword) && bytes.equal(diag.pointer(rec), ptr) && bytes.equal(diag.message(rec), message);
+}
+
+// The report has `n` records and record 0 is this one.
+pub fn only[&h, &s, &d](heap: &!h Heap, schema_text: &s [byte], doc: &d [byte], keyword: &static [byte], ptr: &static [byte], message: &static [byte]) -> [heap] int {
+    let report = report_of(heap, schema_text, doc);
+    var ok = false;
+    borrow report as &r in {
+        ok = diag.count(buffer.bytes(r)) == 1 && is_record(buffer.bytes(r), 0, keyword, ptr, message);
+    }
+    buffer.drop(heap, report);
+    return test.assert(ok);
+}
+
+pub fn clean[&h, &s, &d](heap: &!h Heap, schema_text: &s [byte], doc: &d [byte]) -> [heap] int {
+    let report = report_of(heap, schema_text, doc);
+    var n = 0 - 1;
+    borrow report as &r in {
+        n = diag.count(buffer.bytes(r));
+    }
+    buffer.drop(heap, report);
+    return test.assert_eq(n, 0);
+}
+
+// The IR of `doc` (either form) as the one line of JSON `chw parse` prints,
+// with no schema: what the loader built, as the printer writes it.
+pub fn printed[&h, &d](heap: &!h Heap, doc: &d [byte]) -> [heap] buffer.Buffer {
+    let none = load.open_schema(heap, buffer.empty(heap, 1));
+    var out = buffer.empty(heap, 16);
+    borrow none as &s in {
+        let loaded = load.load(heap, doc, s);
+        borrow loaded as &lr in {
+            buffer.drop(heap, out);
+            out = load.render_ir(heap, lr);
+        }
+        load.drop(heap, loaded);
+    }
+    load.drop_schema(heap, none);
+    return out;
+}
+
+// `doc` loads and prints as exactly `want` (and a newline).
+pub fn prints_as[&h, &d, &w](heap: &!h Heap, doc: &d [byte], want: &w [byte]) -> [heap] int {
+    let out = printed(heap, doc);
+    var same = false;
+    borrow out as &o in {
+        let got = buffer.bytes(o);
+        same = len(got) == len(want) + 1 && bytes.equal(got[0..len(want)], want) && int_of(got[len(want)]) == '\n';
+    }
+    buffer.drop(heap, out);
+    return test.assert(same);
+}

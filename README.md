@@ -10,8 +10,11 @@ header, Cancho bindings, a device-tree fragment, SystemVerilog register RTL and
 CMSIS-SVD.
 
 ```
-$ chwparse examples/refusal/parse-error.chw                  # the cancho parser
-error[parse-error]: expected ':' after the register offset (before the access kind), found 'RW'.  parse-error.chw:2:26
+$ chw parse examples/refusal/parse-error.chw                 # the cancho parser
+error[parse-error]: parse error: expected ':' after the register offset (before the access kind), found 'RW'.  examples/refusal/parse-error.chw:2:26
+
+$ chw validate examples/refusal/bus-width-invalid.chw        # the cancho validator
+error[schema-invalid]: 64 is not one of [8, 16, 32]  examples/refusal/bus-width-invalid.chw:7:18  (enum /block/bus_width)
 
 $ checker.py examples/refusal/field-overlap.chw              # the reference checker
 error[field-overlap]: field 'PARITY' bits [2..4] overlap with ENABLE bits [0..3] in register 'CTRL'.
@@ -33,14 +36,22 @@ exit 1
   trust boundaries, never as verified.
 - **Becoming pure cancho.** The tools were first written in Python. The product
   is being rewritten in cancho (`docs/cancho-port.md`), with Python kept only as
-  a test oracle. The textual parser is the first piece: its JSON for
-  `uart.chw` and `dma.chw` is byte-identical to the Python parser's.
+  a test oracle. Ported so far: the textual parser (its JSON for `uart.chw` and
+  `dma.chw` is byte-identical to the Python parser's), the JSON wire loader, the
+  structural validator that replaces `jsonschema`, and a conformance runner that
+  decides the schema-level half of every refusal sidecar. The semantic checker,
+  the generators, `diff` and `report` are still Python.
 - **Measured.** The Python reference passes 22 of 22 simulator scenarios, every
   one of 12 refusal fixtures is matched, and the generated C header runs the
   scenario corpus op-for-op against the reference model under gcc and clang.
   The cancho parser matched the Python parser on 2,765 of 2,767 mutated inputs
   (stdout, stderr and exit status); the two differences are known and listed
-  in the port plan. Not claimed: a SystemVerilog behavioural roundtrip (needs
+  in the port plan. The cancho JSON loader and validator were compared with
+  `json` + `jsonschema` on 55,093 mutated inputs: 0 unexplained differences, 212
+  verdict differences that are all deliberate (stricter: duplicate keys, integers
+  past 18 digits, a newline before `$`), and 12 of 12 refusal fixtures matched on
+  the schema-level rules; the 14 of 19 sidecar entries that name semantic rules are
+  deferred to the checker port and not counted. Not claimed: a SystemVerilog behavioural roundtrip (needs
   Verilator or cocotb), timing, or working hardware. Those stay trust
   boundaries.
 
@@ -52,12 +63,13 @@ exit 1
 
 ## Try it
 
-The cancho parser, and its differential test against the Python one:
+The cancho side (parser, JSON loader, validator, conformance runner) and its
+differential tests against the Python tools:
 
 ```sh
 git clone https://github.com/alpibrusl/cancho-hdl.git && cd cancho-hdl
 export CANCHO=<path-to-the-cancho-binary>
-sh spike/run.sh          # 11 cancho tests, byte-identical JSON, 2,765/2,767 mutations
+sh scripts/gate_cancho.sh   # 94 cancho tests, the conformance runner, two differentials (about five minutes)
 ```
 
 The reference implementation (Python, being replaced, run from the repository

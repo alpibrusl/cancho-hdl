@@ -1,16 +1,16 @@
-"""Test-only oracle driver for the spike: run the Python parser (the legacy
+"""Test-only oracle driver for the textual parser: run the Python parser (the legacy
 reference implementation) and the cancho port over the same inputs and compare
 stdout, stderr and exit status byte for byte.
 
 Inputs: the two textual examples, then mutants of each (truncation at every
 byte offset, and deletion of every token-sized run). Usage:
 
-    python3 spike/diff_oracle.py /path/to/built/chwparse
+    python3 tests/differential/text_parse.py /path/to/built/chwparse
 
 This file is oracle code only: it decides nothing about the product."""
 import pathlib, re, subprocess, sys, tempfile
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "parse"))
 sys.path.insert(0, str(ROOT / "tools" / "check"))
 from parser import parse_source_text  # noqa: E402
@@ -27,7 +27,7 @@ def python_side(src: str, path: str):
 
 
 def cancho_side(exe: str, path: str):
-    p = subprocess.run([exe, path], capture_output=True, text=True)
+    p = subprocess.run([exe, "parse", path], capture_output=True, text=True)
     return p.stdout, p.stderr, p.returncode
 
 

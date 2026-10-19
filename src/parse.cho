@@ -2,7 +2,7 @@ module chw.parse;
 
 // parse.cho -- recursive descent over the token tape, a port of `Parser` in
 // tools/parse/parser.py. Same grammar, same first-error-wins, same message
-// text, same error position (docs/cancho-port.md, "Spike").
+// text, same error position (docs/cancho-port.md, section 7).
 //
 // Two conventions carry the whole file, both forced by the language:
 //
@@ -292,7 +292,7 @@ fn parse_block[&h, &r, &t, &p](heap: &!h Heap, src: &r [byte], toks: &t [lx.Tok]
         }
     }
     expect_p(src, toks, st, "{", "'{' to open the block body");
-    out = model.set_block(out, model.Block { name_s: ns, name_e: ne, base_s: bs, base_e: be, width: width, big: big });
+    out = model.set_block(out, model.Block { name_s: ns, name_e: ne, base_s: bs, base_e: be, width: width, big: big, ver_s: 0 - 1, ver_e: 0, sch_s: 0 - 1, sch_e: 0, has_schema: true });
 
     while !failed(st) && !is_p(src, toks, st, "}") {
         if is_eof(toks, st) {
