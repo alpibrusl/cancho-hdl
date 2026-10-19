@@ -19,6 +19,7 @@ module chw.load;
 //             rules on an IR that failed the schema.
 
 import std.buffer;
+import std.bytes;
 import std.json;
 import chw.check;
 import chw.dg_report;
@@ -87,6 +88,36 @@ pub fn drop[&h](heap: &!h Heap, doc: Doc) -> [heap] int {
 // The diagnostics of a loaded document.
 pub fn diags[&d](doc: &d Doc) -> [] &d dg.Diags {
     return doc.diags;
+}
+
+// The IR of a loaded document, and the bytes its spans index (a generator reads both).
+pub fn ir_of[&d](doc: &d Doc) -> [] &d model.Ir {
+    return doc.ir;
+}
+
+pub fn source_of[&d](doc: &d Doc) -> [] &d [byte] {
+    return buffer.bytes(doc.text);
+}
+
+// Did the document get as far as an IR? False when it is not JSON, or the text form
+// does not parse: `load_contract` returns no IR then, and the generators' command
+// reports that alone, not the checker (tools/generate/generate.py).
+pub fn loaded[&d](doc: &d Doc) -> [] bool {
+    if dg.size(doc.diags) == 0 {
+        return true;
+    }
+    let first = dg.get(doc.diags, 0);
+    match first.rule {
+        dg.Rule::ParseError => {
+            return false;
+        }
+        dg.Rule::SchemaInvalid => {
+            return !bytes.equal(dg.text(doc.diags, first.kw), "json-syntax");
+        }
+        _ => {
+            return true;
+        }
+    }
 }
 
 // The structural half alone (`chw validate`): the report as records.

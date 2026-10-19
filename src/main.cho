@@ -13,6 +13,9 @@ edition 6;
 //                                     the text form, or the JSON of `--output json`, which is
 //                                     the Python checker's byte for byte (--located adds the
 //                                     position of the node a structural refusal names)
+//     chw generate FILE --target T [--schema S]
+//                                     the artifact of target T for a contract the checker accepts
+//                                     (tools/generate/generate.py): only c-header is ported
 //     chw catalog                     every rule with its subject, severity and tier
 //     chw conform [ROOT] [--fixtures DIR[,DIR...]]
 //                                     run the examples and the refusal fixtures under ROOT
@@ -29,11 +32,13 @@ import chw.dg_json;
 import chw.dg_text;
 import chw.diag;
 import chw.diagnostic as dg;
+import chw.gen_c;
 import chw.io as chwio;
 import chw.load;
+import chw.pyrepr;
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] [--output json] [--located] | chw check FILE [--schema S] [--output text|json] [--located] | chw catalog | chw conform [ROOT] [--fixtures DIR[,DIR...]]\n");
+    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] [--output json] [--located] | chw check FILE [--schema S] [--output text|json] [--located] | chw generate FILE --target T [--schema S] | chw catalog | chw conform [ROOT] [--fixtures DIR[,DIR...]]\n");
     return 2;
 }
 
@@ -222,6 +227,150 @@ fn run_check[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Ar
     return status;
 }
 
+// `error[CODE]: MESSAGE` for the top-level diagnostics of `ds` that `only_errors` selects, on standard error.
+fn print_errors[&h, &i, &q](heap: &!h Heap, io: &!i Io, ds: &q dg.Diags) -> [heap, err_write] int {
+    var k = 0;
+    while k < dg.size(ds) {
+        let d = dg.get(ds, k);
+        if d.kids.nest == 0 && dg.is_error(d.rule) {
+            var line = buffer.append(heap, buffer.empty(heap, 96), "error[");
+            line = buffer.append(heap, line, dg.rule_name(d.rule));
+            line = buffer.append(heap, line, "]: ");
+            line = buffer.append(heap, line, dg.text(ds, d.msg));
+            line = buffer.push(heap, line, byte_of('\n'));
+            borrow line as &lr in {
+                console.error_all(io, buffer.bytes(lr));
+            }
+            buffer.drop(heap, line);
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// The value of `--target`, or empty when it is absent; the FILE is the first argument after the verb that is
+// neither a flag nor a flag's value.
+fn target_of[&g](g: &g Args) -> [args] &g [byte] {
+    let at = flag_at(g, "--target");
+    if at > 0 && at + 1 < arg_count(g) {
+        return arg(g, at + 1);
+    }
+    return arg(g, 0)[0..0];
+}
+
+fn file_arg[&g](g: &g Args) -> [args] int {
+    var i = 2;
+    while i < arg_count(g) {
+        if bytes.equal(arg(g, i), "--target") || bytes.equal(arg(g, i), "--schema") {
+            i = i + 2;
+        } else {
+            return i;
+        }
+    }
+    return 0 - 1;
+}
+
+fn known_target[&t](target: &t [byte]) -> [] bool {
+    return bytes.equal(target, "c-header") || bytes.equal(target, "cancho-binding") || bytes.equal(target, "devicetree") || bytes.equal(target, "svd") || bytes.equal(target, "systemverilog");
+}
+
+fn run_generate_doc[&h, &i, &q, &g](heap: &!h Heap, io: &!i Io, doc: &q load.Doc, g: &g Args) -> [heap, io_write, err_write, args] int {
+    let ds = load.diags(doc);
+    if !load.loaded(doc) {
+        print_errors(heap, io, ds);
+        return 1;
+    }
+    if dg.count_errors(ds) > 0 {
+        print_errors(heap, io, ds);
+        console.error_all(io, "error: not generating from a refused contract.\n");
+        return 1;
+    }
+    let target = target_of(g);
+    if !known_target(target) {
+        var line = buffer.append(heap, buffer.empty(heap, 128), "error[generator-target-unknown]: target ");
+        line = pyrepr.str_repr(heap, line, target);
+        line = buffer.append(heap, line, " is not supported. Known: c-header, cancho-binding, devicetree, svd, systemverilog\n");
+        borrow line as &lr in {
+            console.error_all(io, buffer.bytes(lr));
+        }
+        buffer.drop(heap, line);
+        return 1;
+    }
+    if !bytes.equal(target, "c-header") {
+        var line = buffer.append(heap, buffer.empty(heap, 128), "error[generator-unimplemented]: target ");
+        line = buffer.append(heap, line, target);
+        line = buffer.append(heap, line, ": not ported to cancho yet (the Python tool has it)\n");
+        borrow line as &lr in {
+            console.error_all(io, buffer.bytes(lr));
+        }
+        buffer.drop(heap, line);
+        return 1;
+    }
+    let (text, status) = gen_c.generate(heap, load.source_of(doc), arg(g, file_arg(g)), load.ir_of(doc));
+    if status == gen_c.status_ok() {
+        borrow text as &tr in {
+            buffer.write(io, tr);
+        }
+    } else {
+        var line = buffer.empty(heap, 128);
+        if status == gen_c.status_refused() {
+            line = buffer.append(heap, line, "error[generator-unimplemented]: target c-header: ");
+        } else {
+            line = buffer.append(heap, line, "error[internal]: ");
+        }
+        borrow text as &tr in {
+            line = buffer.append(heap, line, buffer.bytes(tr));
+        }
+        line = buffer.push(heap, line, byte_of('\n'));
+        borrow line as &lr in {
+            console.error_all(io, buffer.bytes(lr));
+        }
+        buffer.drop(heap, line);
+    }
+    buffer.drop(heap, text);
+    return status;
+}
+
+fn run_generate[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args) -> [heap, io_write, err_write, fs_read(""), file_read, args] int {
+    if flag_at(g, "--target") < 0 || len(target_of(g)) == 0 || file_arg(g) < 0 {
+        return usage(io);
+    }
+    var status = 2;
+    let (stext, sgot) = chwio.read_file(heap, fs, schema_path(g), buffer.empty(heap, 8192));
+    let sch = load.open_schema(heap, stext);
+    var usable = false;
+    borrow sch as &sr in {
+        usable = load.schema_ok(sr);
+    }
+    if sgot < 0 || !usable {
+        console.error_all(io, "cannot read the schema, or it is not JSON\n");
+    } else {
+        let (text, got) = chwio.read_file(heap, fs, arg(g, file_arg(g)), buffer.empty(heap, 4096));
+        if got < 0 {
+            var line = buffer.append(heap, buffer.empty(heap, 64), "error: file not found: ");
+            line = buffer.append(heap, line, arg(g, file_arg(g)));
+            line = buffer.push(heap, line, byte_of('\n'));
+            borrow line as &lr in {
+                console.error_all(io, buffer.bytes(lr));
+            }
+            buffer.drop(heap, line);
+        } else {
+            borrow text as &t in {
+                borrow sch as &s in {
+                    let doc = load.load(heap, buffer.bytes(t), s);
+                    borrow doc as &dr in {
+                        status = run_generate_doc(heap, io, dr, g);
+                    }
+                    load.drop(heap, doc);
+                }
+            }
+        }
+        buffer.drop(heap, text);
+    }
+    load.drop_schema(heap, sch);
+    return status;
+}
+
 // `chw catalog`: every rule with the subject, severity and tier the code gives
 // it, one per line, tab-separated (checked against the spec by
 // tests/differential/catalog.py).
@@ -305,6 +454,8 @@ fn main(world: World) -> [] int {
                         status = run_validate(h, i, f, g);
                     } else if bytes.equal(arg(g, 1), "check") && arg_count(g) >= 3 {
                         status = run_check(h, i, f, g);
+                    } else if bytes.equal(arg(g, 1), "generate") && arg_count(g) >= 3 {
+                        status = run_generate(h, i, f, g);
                     } else if bytes.equal(arg(g, 1), "catalog") {
                         status = run_catalog(h, i);
                     } else if bytes.equal(arg(g, 1), "conform") {
