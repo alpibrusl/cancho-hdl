@@ -41,8 +41,8 @@ jobs:
           cp -r packages ~/cancho-bin/packages
 
       # Python is the test oracle and the legacy reference implementation, never the product's new code.
-      - name: Install the oracle's dependency
-        run: pip install jsonschema
+      - name: Install the oracle's dependencies (lxml gives the SVD roundtrip its XSD validation)
+        run: pip install jsonschema lxml
 
       - name: The cancho parser (tests, byte-identical JSON, differential run against the Python parser)
         run: CANCHO=$HOME/cancho-bin/cancho sh spike/run.sh
