@@ -71,6 +71,22 @@ diagnostic an agent can read.
 
 ## Status
 
+> **The Python tools in this repository are the legacy reference
+> implementation, and they are being replaced by a pure-cancho rewrite.**
+> Everything described below as "landed" is landed *in Python*
+> (`tools/`, `gen/`, `scripts/`); it is the oracle the cancho port is
+> diffed against and it is deleted stage by stage as each port lands.
+> The `.chw` examples, `examples/refusal/*.expect.json` and
+> `tests/behavioral/scenarios.json` are language-neutral specifications
+> and carry over unchanged. The plan, the module layout, the rule that keeps
+> Python test-only, and the measured spike are in
+> [`docs/cancho-port.md`](docs/cancho-port.md). What is ported so far: the
+> textual `.chw` parser and the IR-to-JSON printer, as a spike in
+> [`spike/`](spike/) (byte-identical to the Python parser on both textual
+> examples and on 2,765 of 2,767 mutated inputs, the other 2 being documented
+> differences). Nothing else is ported: the checker, the generators, `diff`,
+> `impact` and `report` exist only as the Python reference.
+
 **Phase 1 of 4, code complete.** Schema, diagnostic format
 (JSON + the human-readable form derived from it), guarantees
 table, generator contracts, two reference peripherals in both

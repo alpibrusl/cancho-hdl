@@ -1,0 +1,59 @@
+module chw.io;
+
+// io.cho -- read a whole file. The one place the port touches the file
+// system; every other module is a pure function of bytes.
+
+import std.buffer;
+
+// Append the file at `path` to `text`. Answers the buffer (always, so an error
+// is not a leak) and -1 if the file could not be read, else the byte count.
+pub fn read_file[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], text: buffer.Buffer) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
+    var out = text;
+    var total = 0;
+    var trouble = 0;
+    match open_read(fs, path) {
+        Opened::Failed(reason) => {
+            trouble = 1;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            var chunk = buffer.empty(heap, 65536);
+            borrow mut file as &!handle in {
+                var going = true;
+                while going {
+                    var got = 0;
+                    borrow mut chunk as &!c in {
+                        match file_read(handle, buffer.room(c)) {
+                            Read::Got(n) => {
+                                got = n;
+                                buffer.filled(c, n);
+                            }
+                            Read::End => {
+                                going = false;
+                            }
+                            Read::Failed(reason) => {
+                                going = false;
+                                trouble = 1;
+                            }
+                        }
+                    }
+                    if got > 0 {
+                        borrow chunk as &c in {
+                            out = buffer.append(heap, out, buffer.bytes(c));
+                        }
+                        total = total + got;
+                        borrow mut chunk as &!c in {
+                            buffer.clear(c);
+                        }
+                    }
+                }
+            }
+            file_close(file);
+            buffer.drop(heap, chunk);
+        }
+    }
+    if trouble != 0 {
+        return (out, 0 - 1);
+    }
+    return (out, total);
+}

@@ -1,0 +1,51 @@
+// chwparse.cho -- parse a `.chw` contract and print its IR as one line of
+// JSON, or the refusal exactly as `python3 tools/parse/parser.py` prints it.
+// Spike for docs/cancho-port.md.
+//
+//     cancho build spike/chwparse.cho spike/lex.cho spike/ir.cho spike/parse.cho \
+//         spike/json.cho spike/front.cho spike/io.cho --std -o chwparse
+//     ./chwparse examples/textual/uart.chw
+
+import std.buffer;
+import std.io as console;
+import chw.front;
+import chw.io as chwio;
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args } = split(world);
+    release(ffi);
+    var status = 2;
+    borrow mut heap as &!h in {
+        borrow mut io as &!i in {
+            borrow args as &g in {
+                if arg_count(g) >= 2 {
+                    borrow fs as &f in {
+                        let (text, got) = chwio.read_file(h, f, arg(g, 1), buffer.empty(h, 4096));
+                        if got < 0 {
+                            console.error_all(i, "cannot read file\n");
+                        } else {
+                            borrow text as &t in {
+                                let (answer, code) = front.parse_chw(h, arg(g, 1), buffer.bytes(t));
+                                status = code;
+                                borrow answer as &a in {
+                                    if code == 0 {
+                                        console.write_all(i, buffer.bytes(a));
+                                    } else {
+                                        console.error_all(i, buffer.bytes(a));
+                                    }
+                                }
+                                buffer.drop(h, answer);
+                            }
+                        }
+                        buffer.drop(h, text);
+                    }
+                }
+            }
+        }
+    }
+    release(fs);
+    release(args);
+    release(io);
+    release(heap);
+    return status;
+}

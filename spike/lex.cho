@@ -1,0 +1,225 @@
+module chw.lex;
+
+// lex.cho -- the `.chw` tokeniser, a port of `tokenize` in
+// tools/parse/parser.py (spike for docs/cancho-port.md).
+//
+// Same token kinds, same maximal-munch order as the Python regex (comment,
+// hex, dec, ident, punct, whitespace, else a one-byte error token), and the
+// same special case: the word `constraint` claims the rest of its line as one
+// `str` token. Columns count bytes, which equals the Python tool's count for
+// ASCII sources; a non-ASCII byte is one error token per byte here, one per
+// character there (docs/cancho-port.md, "Known differences").
+
+import std.bytes;
+
+// Kinds. Plain functions, because the language has no constants
+// (docs/cancho-port.md, obstacles) and an enum cannot be compared with `==`
+// or carried through an `[int]` slice.
+pub fn k_eof() -> [] int {
+    return 0;
+}
+
+pub fn k_ident() -> [] int {
+    return 1;
+}
+
+pub fn k_punct() -> [] int {
+    return 2;
+}
+
+pub fn k_hex() -> [] int {
+    return 3;
+}
+
+pub fn k_dec() -> [] int {
+    return 4;
+}
+
+pub fn k_constraint() -> [] int {
+    return 5;
+}
+
+pub fn k_str() -> [] int {
+    return 6;
+}
+
+pub fn k_error() -> [] int {
+    return 7;
+}
+
+// A token is a kind and a half-open byte span into the source, plus where it
+// starts (1-based line and column, the form every diagnostic prints).
+pub struct Tok {
+    kind: int,
+    s: int,
+    e: int,
+    line: int,
+    col: int,
+}
+
+pub fn blank() -> [] Tok {
+    return Tok { kind: 0, s: 0, e: 0, line: 0, col: 0 };
+}
+
+// The byte at `i` as an int, or -1 past the end.
+pub fn at[&r](src: &r [byte], i: int) -> [] int {
+    if i < 0 || i >= len(src) {
+        return 0 - 1;
+    }
+    return int_of(src[i]);
+}
+
+fn is_hex(c: int) -> [] bool {
+    return bytes.is_digit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F';
+}
+
+fn is_ident_start(c: int) -> [] bool {
+    return bytes.is_alpha(c) || c == '_';
+}
+
+fn is_ident_char(c: int) -> [] bool {
+    return is_ident_start(c) || bytes.is_digit(c);
+}
+
+fn is_ws(c: int) -> [] bool {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+fn is_punct1(c: int) -> [] bool {
+    return c == ',' || c == ':' || c == ';' || c == '=' || c == '@' || c == '[' || c == ']' || c == '{' || c == '}' || c == '(' || c == ')' || c == '.' || c == '-';
+}
+
+// Length of the run starting at `from` whose bytes are hex digits or `_`.
+fn hex_run[&r](src: &r [byte], from: int) -> [] int {
+    var j = from;
+    while is_hex(at(src, j)) || at(src, j) == '_' {
+        j = j + 1;
+    }
+    return j - from;
+}
+
+fn run_of[&r](src: &r [byte], from: int, digits: bool) -> [] int {
+    var j = from;
+    if digits {
+        while bytes.is_digit(at(src, j)) {
+            j = j + 1;
+        }
+    } else {
+        while is_ident_char(at(src, j)) {
+            j = j + 1;
+        }
+    }
+    return j - from;
+}
+
+// Everything after `from` up to a `//` or a newline: the `constraint` text.
+fn rest_of_line[&r](src: &r [byte], from: int) -> [] int {
+    var j = from;
+    while j < len(src) && at(src, j) != '\n' && !(at(src, j) == '/' && at(src, j + 1) == '/') {
+        j = j + 1;
+    }
+    return j - from;
+}
+
+// Trim blanks off both ends of src[a..b]: answers the new start, then the
+// caller asks `trim_end`. Two functions because there are no out parameters
+// and a tuple would be the only other way to answer two numbers.
+fn trim_start[&r](src: &r [byte], a: int, b: int) -> [] int {
+    var j = a;
+    while j < b && bytes.is_blank(at(src, j)) {
+        j = j + 1;
+    }
+    return j;
+}
+
+fn trim_end[&r](src: &r [byte], a: int, b: int) -> [] int {
+    var j = b;
+    while j > a && bytes.is_blank(at(src, j - 1)) {
+        j = j - 1;
+    }
+    return j;
+}
+
+// Tokens into `toks`, which the caller sizes `len(src) + 2` (every token but
+// the last two kinds is at least one byte; `constraint` + its text is ten).
+// Answers how many it wrote, the end-of-file token last.
+pub fn lex[&r, &t](src: &r [byte], toks: &!t [Tok]) -> [] int {
+    var count = 0;
+    var pos = 0;
+    var line = 1;
+    var col = 1;
+    while pos < len(src) {
+        let c = at(src, pos);
+        // `kind` -1 means "consumed, no token" (comment, whitespace).
+        var kind = 0 - 1;
+        var n = 1;
+        if c == '/' && at(src, pos + 1) == '/' {
+            // A comment runs to the newline; `rest_of_line` would stop at a
+            // second `//`, which is only right for `constraint` text.
+            n = 0;
+            while pos + n < len(src) && at(src, pos + n) != '\n' {
+                n = n + 1;
+            }
+        } else if c == '0' && (at(src, pos + 1) == 'x' || at(src, pos + 1) == 'X') && hex_run(src, pos + 2) > 0 {
+            kind = k_hex();
+            n = 2 + hex_run(src, pos + 2);
+        } else if bytes.is_digit(c) {
+            kind = k_dec();
+            n = run_of(src, pos, true);
+        } else if is_ident_start(c) {
+            kind = k_ident();
+            n = run_of(src, pos, false);
+        } else if c == '.' && at(src, pos + 1) == '.' {
+            kind = k_punct();
+            n = 2;
+        } else if is_punct1(c) {
+            kind = k_punct();
+        } else if is_ws(c) {
+            n = 0;
+            while is_ws(at(src, pos + n)) {
+                n = n + 1;
+            }
+        } else {
+            kind = k_error();
+        }
+
+        if kind >= 0 {
+            var word_is_constraint = false;
+            if kind == k_ident() {
+                word_is_constraint = bytes.equal(src[pos..pos + n], "constraint");
+            }
+            if word_is_constraint {
+                toks[count] = Tok { kind: k_constraint(), s: pos, e: pos + n, line: line, col: col };
+                count = count + 1;
+                // The text claims the rest of the line as ONE token; the
+                // token's column is the keyword's column plus its length,
+                // which is what the Python lexer records.
+                let from = pos + n;
+                let cut = rest_of_line(src, from);
+                let a = trim_start(src, from, from + cut);
+                let b = trim_end(src, a, from + cut);
+                toks[count] = Tok { kind: k_str(), s: a, e: b, line: line, col: col + n };
+                count = count + 1;
+                n = n + cut;
+            } else {
+                toks[count] = Tok { kind: kind, s: pos, e: pos + n, line: line, col: col };
+                count = count + 1;
+            }
+        }
+
+        // Advance over the n bytes, keeping line and column.
+        var k = 0;
+        while k < n {
+            if at(src, pos + k) == '\n' {
+                line = line + 1;
+                col = 1;
+            } else {
+                col = col + 1;
+            }
+            k = k + 1;
+        }
+        pos = pos + n;
+    }
+    toks[count] = Tok { kind: k_eof(), s: len(src), e: len(src), line: line, col: col };
+    return count + 1;
+}
