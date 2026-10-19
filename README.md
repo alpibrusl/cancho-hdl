@@ -63,6 +63,10 @@ exit 1
 
 ## Try it
 
+**Claude Code skill:** copy [`skills/cancho-hdl`](skills/cancho-hdl/SKILL.md) into `~/.claude/skills/` (or your project's `.claude/skills/`) and the agent knows how to check a contract, read an impact report and generate artifacts, with the rules built in. Other agents can read the same file as plain instructions.
+
+**Or ask your coding agent to do it:** paste [`docs/agent-prompt.md`](docs/agent-prompt.md) into Claude Code, Codex or similar. It installs the pinned compiler, proves the install with both gates (no network, no key, no model) and runs the tool on the examples.
+
 The cancho side (parser, JSON loader, validator, conformance runner) and its
 differential tests against the Python tools:
 
