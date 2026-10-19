@@ -5,7 +5,7 @@ description: Check hardware register contracts (.chw files) and see which genera
 
 # cancho-hdl
 
-cancho-hdl declares the software/hardware boundary once in a `.chw` file, refuses contradictions with a stable diagnostic code, and generates the copies (C header, Cancho bindings, device tree, SystemVerilog register RTL, CMSIS-SVD). The product is being rewritten in cancho: the loader, the structural validator and the conformance runner (`chw`) are cancho; the checker (semantic rules), the generators, `diff`/`impact` and `report` are still the Python reference implementation. Python is the test oracle, never new product logic.
+cancho-hdl declares the software/hardware boundary once in a `.chw` file, refuses contradictions with a stable diagnostic code, and generates the copies (C header, Cancho bindings, device tree, SystemVerilog register RTL, CMSIS-SVD). The product is being rewritten in cancho: the loader, the structural validator, the semantic checker (`chw check`, with `--output json` identical to the Python checker's) and the conformance runner (`chw conform`) are cancho; the generators, `diff`/`impact` and `report` are still the Python reference implementation. Python is the test oracle, never new product logic.
 
 ## Rules (always)
 

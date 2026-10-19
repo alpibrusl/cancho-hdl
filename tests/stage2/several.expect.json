@@ -1,0 +1,44 @@
+{
+  "file": "tests/stage2/several.chw",
+  "expect": [
+    {
+      "code": "field-enum-overflow",
+      "subject": {
+        "kind": "Field",
+        "block": "Dev",
+        "register": "CTRL",
+        "name": "MODE"
+      },
+      "message_contains": "field MODE: enum value 9 does not fit in 2 bits (declared as C=9)."
+    },
+    {
+      "code": "register-offset-duplicate",
+      "subject": {
+        "kind": "Register",
+        "block": "Dev",
+        "name": "CTRL"
+      },
+      "message_contains": "registers CTRL and ST share offset 0x00 in block Dev."
+    },
+    {
+      "code": "interrupt-enable-unresolved",
+      "subject": {
+        "kind": "InterruptLinkage",
+        "block": "Dev",
+        "interrupt": "rx",
+        "role": "enable"
+      },
+      "message_contains": "interrupt rx enable references CTRL.NOPE does not exist: field NOPE is not declared on register CTRL."
+    },
+    {
+      "code": "dma-overlap",
+      "subject": {
+        "kind": "DmaField",
+        "block": "Dev",
+        "buffer": "D",
+        "name": "b"
+      },
+      "message_contains": "DMA field b at offset 0x02..0x06 overlaps a at 0x00..0x04 in buffer D."
+    }
+  ]
+}

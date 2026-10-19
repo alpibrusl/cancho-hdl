@@ -10,6 +10,13 @@
       "keyword": "pattern",
       "line": 3,
       "column": 14
+    },
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "version '1.0' is not in MAJOR.MINOR.PATCH form."
     }
   ]
 }

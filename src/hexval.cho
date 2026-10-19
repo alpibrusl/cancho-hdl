@@ -1,0 +1,133 @@
+module chw.hexval;
+
+// hexval.cho -- Python's `_parse_hex` (tools/check/checker.py): `int(s, 16)`
+// for a string that starts with a lowercase `0x`, and None for anything else.
+//
+// `int(s, 16)` is more generous than the schema's `^0x[0-9a-fA-F]+$`: it
+// accepts a single `_` between digits (and one right after the prefix) and
+// trailing whitespace, so a contract that fails the schema can still be read
+// by the checker, and the port reads it the same way. What it does not do:
+// non-ASCII digits and whitespace are refused (docs/cancho-port.md, 13.5).
+//
+// A cancho `int` traps on overflow, so the value is exact only while it is
+// below 2^60 (15 significant hex digits). Past that `big` is set and `v` is the
+// saturated 2^60, which is above every bus mask and every address the
+// checker compares with; `low` always holds the value modulo 65536, which is
+// all an alignment check (a power of two up to 4096) needs; and the canonical
+// digits (`canon_into`) identify the value exactly, whatever its size.
+
+import std.buffer;
+
+pub struct Hv {
+    ok: bool,
+    zero: bool,
+    big: bool,
+    v: int,
+    low: int,
+}
+
+pub fn cap() -> [] int {
+    return 1152921504606846976;
+}
+
+fn digit_of(c: int) -> [] int {
+    if c >= '0' && c <= '9' {
+        return c - '0';
+    }
+    if c >= 'a' && c <= 'f' {
+        return c - 'a' + 10;
+    }
+    if c >= 'A' && c <= 'F' {
+        return c - 'A' + 10;
+    }
+    return 0 - 1;
+}
+
+// The whitespace `str.strip()` removes, in ASCII.
+fn is_space(c: int) -> [] bool {
+    return c == ' ' || c >= 9 && c <= 13 || c >= 28 && c <= 31;
+}
+
+pub fn bad() -> [] Hv {
+    return Hv { ok: false, zero: false, big: false, v: 0, low: 0 };
+}
+
+pub fn parse[&t](text: &t [byte]) -> [] Hv {
+    if len(text) < 3 || int_of(text[0]) != '0' || int_of(text[1]) != 'x' {
+        return bad();
+    }
+    var i = 2;
+    var prev_us = false;
+    if int_of(text[2]) == '_' {
+        prev_us = true;
+        i = 3;
+    }
+    var nd = 0;
+    var sig = 0;
+    var v = 0;
+    var low = 0;
+    var tail = false;
+    var fine = true;
+    while i < len(text) && fine {
+        let c = int_of(text[i]);
+        if tail {
+            if !is_space(c) {
+                fine = false;
+            }
+        } else if digit_of(c) >= 0 {
+            let d = digit_of(c);
+            prev_us = false;
+            nd = nd + 1;
+            if sig > 0 || d > 0 {
+                sig = sig + 1;
+            }
+            if sig <= 15 {
+                v = v * 16 + d;
+            }
+            low = (low * 16 + d) % 65536;
+        } else if c == '_' {
+            if prev_us || nd == 0 {
+                fine = false;
+            }
+            prev_us = true;
+        } else if is_space(c) {
+            tail = true;
+        } else {
+            fine = false;
+        }
+        i = i + 1;
+    }
+    if !fine || nd == 0 || prev_us {
+        return bad();
+    }
+    if sig > 15 {
+        return Hv { ok: true, zero: false, big: true, v: cap(), low: low };
+    }
+    return Hv { ok: true, zero: sig == 0, big: false, v: v, low: low };
+}
+
+// The value's digits as lowercase hex without leading zeros ("0" for zero).
+// Two literals have the same value exactly when these are equal.
+pub fn canon_into[&h, &t](heap: &!h Heap, out: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    var o = out;
+    var started = false;
+    var i = 2;
+    while i < len(text) {
+        let d = digit_of(int_of(text[i]));
+        if d >= 0 {
+            if started || d > 0 {
+                started = true;
+                if d < 10 {
+                    o = buffer.push(heap, o, byte_of('0' + d));
+                } else {
+                    o = buffer.push(heap, o, byte_of('a' + d - 10));
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if !started {
+        o = buffer.push(heap, o, byte_of('0'));
+    }
+    return o;
+}

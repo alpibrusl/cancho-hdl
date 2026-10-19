@@ -1,0 +1,117 @@
+// test_diagnostic.cho -- the `Diagnostic` record (src/diagnostic.cho): the
+// catalog functions, the pool and the parent/related/notes layout of the table.
+//
+//     cancho test tests/unit/test_diagnostic.cho src/diagnostic.cho --std
+
+import std.bytes;
+import std.test;
+import chw.diagnostic as dg;
+
+fn test_the_catalog_lists_every_rule_once() -> [] int {
+    // 36 rules, each with a name that is not another's
+    var i = 0;
+    var ok = true;
+    while i < dg.rule_count() {
+        var j = i + 1;
+        while j < dg.rule_count() {
+            if bytes.equal(dg.rule_name(dg.rule_at(i)), dg.rule_name(dg.rule_at(j))) {
+                ok = false;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    test.assert_eq(dg.rule_count(), 36);
+    return test.assert(ok);
+}
+
+fn test_two_rules_are_warnings_one_is_runtime_and_one_is_the_tools_own() -> [] int {
+    var warnings = 0;
+    var runtime = 0;
+    var unknown = 0;
+    var i = 0;
+    while i < dg.rule_count() {
+        let r = dg.rule_at(i);
+        match dg.rule_severity(r) {
+            dg.Severity::Warning => {
+                warnings = warnings + 1;
+            }
+            dg.Severity::Error => {
+                warnings = warnings + 0;
+            }
+        }
+        match dg.rule_tier(r) {
+            dg.Tier::Runtime => {
+                runtime = runtime + 1;
+            }
+            dg.Tier::Unknown => {
+                unknown = unknown + 1;
+            }
+            _ => {
+                runtime = runtime + 0;
+            }
+        }
+        i = i + 1;
+    }
+    test.assert_eq(warnings, 2);
+    test.assert_eq(runtime, 1);
+    return test.assert_eq(unknown, 1);
+}
+
+fn test_a_subject_kind_names_its_keys_in_the_specs_order() -> [] int {
+    test.assert(bytes.equal(dg.key_a(dg.Kind::Field), "block") && bytes.equal(dg.key_b(dg.Kind::Field), "register") && bytes.equal(dg.key_c(dg.Kind::Field), "name"));
+    test.assert(bytes.equal(dg.key_a(dg.Kind::DmaField), "block") && bytes.equal(dg.key_b(dg.Kind::DmaField), "buffer") && bytes.equal(dg.key_c(dg.Kind::DmaField), "name"));
+    test.assert(bytes.equal(dg.key_b(dg.Kind::InterruptLinkage), "interrupt") && bytes.equal(dg.key_c(dg.Kind::InterruptLinkage), "role"));
+    test.assert(bytes.equal(dg.key_a(dg.Kind::RegisterBlock), "name") && len(dg.key_b(dg.Kind::RegisterBlock)) == 0);
+    return test.assert(bytes.equal(dg.key_a(dg.Kind::Ir), "path"));
+}
+
+fn test_text_is_a_span_of_one_pool[&h](heap: &!h Heap) -> [heap] int {
+    let ds = dg.empty(heap);
+    let (d1, a) = dg.word(heap, ds, "alpha");
+    let (d2, b) = dg.word(heap, d1, "beta");
+    let (d3, m) = dg.mark(d2);
+    let (d4, both) = dg.close(dg.lit_sp(heap, dg.lit_sp(heap, d3, a), b), m);
+    var ok = false;
+    borrow d4 as &q in {
+        ok = bytes.equal(dg.text(q, a), "alpha") && bytes.equal(dg.text(q, b), "beta") && bytes.equal(dg.text(q, both), "alphabeta") && len(dg.text(q, dg.none())) == 0;
+    }
+    dg.drop(heap, d4);
+    return test.assert(ok);
+}
+
+fn test_a_parent_finds_its_related_entries_and_notes[&h](heap: &!h Heap) -> [heap] int {
+    let ds = dg.empty(heap);
+    let (d1, msg) = dg.word(heap, ds, "main");
+    let (d2, rel) = dg.word(heap, d1, "related");
+    let (d3, note) = dg.word(heap, d2, "a note");
+    let main = dg.mk(dg.Rule::FieldOverlap, dg.none(), dg.none(), dg.none(), msg);
+    var d = dg.push(heap, d3, dg.mk(dg.Rule::SchemaInvalid, dg.none(), dg.none(), dg.none(), msg));
+    d = dg.push_parent(heap, d, main, 1, 1);
+    d = dg.push(heap, d, dg.with_nest(dg.mk(dg.Rule::FieldOverlap, dg.none(), dg.none(), dg.none(), rel), 1));
+    d = dg.push(heap, d, dg.with_nest(dg.mk(dg.Rule::FieldOverlap, dg.none(), dg.none(), dg.none(), note), 2));
+    var ok = false;
+    borrow d as &q in {
+        let p = dg.get(q, 1);
+        ok = dg.size(q) == 4 && dg.count_top(q) == 2 && p.kids.rel_first == 2 && p.kids.rel_n == 1 && p.kids.note_first == 3 && p.kids.note_n == 1 && bytes.equal(dg.text(q, dg.get(q, p.kids.rel_first).msg), "related") && bytes.equal(dg.text(q, dg.get(q, p.kids.note_first).msg), "a note");
+    }
+    dg.drop(heap, d);
+    return test.assert(ok);
+}
+
+fn test_only_top_level_errors_are_counted_as_errors[&h](heap: &!h Heap) -> [heap] int {
+    let ds = dg.empty(heap);
+    let (d1, msg) = dg.word(heap, ds, "m");
+    var d = dg.push(heap, d1, dg.mk(dg.Rule::FieldConstraintIgnored, dg.none(), dg.none(), dg.none(), msg));
+    d = dg.push(heap, d, dg.mk(dg.Rule::ResetWoNonzero, dg.none(), dg.none(), dg.none(), msg));
+    d = dg.push(heap, d, dg.with_nest(dg.mk(dg.Rule::FieldOverlap, dg.none(), dg.none(), dg.none(), msg), 1));
+    var errors = 0 - 1;
+    var top = 0 - 1;
+    borrow d as &q in {
+        errors = dg.count_errors(q);
+        top = dg.count_top(q);
+    }
+    dg.drop(heap, d);
+    test.assert_eq(errors, 0);
+    return test.assert_eq(top, 2);
+}

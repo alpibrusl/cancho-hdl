@@ -1,0 +1,57 @@
+module chw.check;
+
+// check.cho -- `check()` of tools/check/checker.py: every static rule, run on
+// the JSON tape of a contract (docs/cancho-port.md, 13).
+//
+// The order is the Python function's, and it is the order of the output:
+// the schema version, the block, the registers (each with its fields), the
+// interrupts, the DMA buffers. The text form is checked through the JSON its
+// IR renders as, the form `chw.load` already validates, so one checker serves
+// both.
+
+import std.json;
+import chw.check_block as blk;
+import chw.check_dma as dmac;
+import chw.check_intr as intr;
+import chw.check_regs as regs;
+import chw.check_util as cu;
+import chw.diagnostic as dg;
+
+// `bus_width = block.get("bus_width", 32)`, but only if it is one of the three
+// widths and an integer: the checker falls back to 32 otherwise.
+fn bus_width[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] int {
+    if json.is_int(tape, node) {
+        let n = json.to_int(src, tape, node);
+        if n == 8 || n == 16 || n == 32 {
+            return n;
+        }
+    }
+    return 32;
+}
+
+// Append the diagnostics of the document `src`/`tape` (a successful
+// `json.parse`) to `into`.
+pub fn run[&h, &s, &t](heap: &!h Heap, into: dg.Diags, src: &s [byte], tape: &t [int]) -> [heap] dg.Diags {
+    let root = 0;
+    var ds = blk.version(heap, into, src, tape, root);
+    let block = json.get(src, tape, root, "block");
+    if !json.is_object(tape, block) {
+        return blk.no_block(heap, ds);
+    }
+    let (d1, bn) = blk.block_name(heap, ds, src, tape, block);
+    ds = blk.block(heap, d1, src, tape, block, bn);
+    let width = bus_width(src, tape, json.get(src, tape, block, "bus_width"));
+    let regs_node = json.get(src, tape, block, "registers");
+    if json.is_array(tape, regs_node) && json.count(tape, regs_node) > 0 {
+        ds = regs.registers(heap, ds, src, tape, regs_node, bn, width);
+    }
+    let intrs = json.get(src, tape, block, "interrupts");
+    if json.is_array(tape, intrs) && json.count(tape, intrs) > 0 {
+        ds = intr.interrupts(heap, ds, src, tape, intrs, regs_node, bn, json.get(src, tape, block, "name"));
+    }
+    let bufs = json.get(src, tape, root, "dma_buffers");
+    if json.is_array(tape, bufs) && json.count(tape, bufs) > 0 {
+        ds = dmac.dma(heap, ds, src, tape, bufs, bn);
+    }
+    return ds;
+}

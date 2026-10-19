@@ -1,0 +1,85 @@
+{
+  "version": "0.1.0",
+  "block": {
+    "name": "Dev",
+    "base_address": "0x40000000",
+    "bus_width": 32,
+    "endianness": "little",
+    "registers": [
+      {
+        "name": "CTRL",
+        "offset": "0x00",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "EN",
+            "lsb": 0,
+            "msb": 0
+          },
+          {
+            "name": "MODE",
+            "lsb": 4,
+            "msb": 5,
+            "enum": {
+              "A": 0,
+              "B": 3
+            }
+          }
+        ]
+      },
+      {
+        "name": "ST",
+        "offset": "0x100000000",
+        "kind": "RO",
+        "fields": [
+          {
+            "name": "RDY",
+            "lsb": 0,
+            "msb": 0
+          }
+        ]
+      }
+    ],
+    "interrupts": [
+      {
+        "name": "rx",
+        "source": {
+          "register": "ST",
+          "field": "RDY"
+        },
+        "enable": {
+          "register": "CTRL",
+          "field": "EN"
+        },
+        "status": {
+          "register": "ST",
+          "field": "RDY"
+        },
+        "clear": {
+          "register": "CTRL",
+          "field": "EN",
+          "kind": "W1C"
+        }
+      }
+    ]
+  },
+  "dma_buffers": [
+    {
+      "name": "D",
+      "fields": [
+        {
+          "name": "a",
+          "offset": "0x00",
+          "owner": "CPU",
+          "align": 4
+        },
+        {
+          "name": "b",
+          "offset": "0x04",
+          "owner": "DEVICE"
+        }
+      ]
+    }
+  ]
+}

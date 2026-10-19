@@ -1,0 +1,14 @@
+{
+  "file": "tests/stage2/register-offset-overflow.chw",
+  "expect": [
+    {
+      "code": "register-offset-overflow",
+      "subject": {
+        "kind": "Register",
+        "block": "Dev",
+        "name": "ST"
+      },
+      "message_contains": "register 'ST' offset 0x100000000 pushes the register past the block's addressable range."
+    }
+  ]
+}

@@ -1,0 +1,878 @@
+module chw.diagnostic;
+
+// diagnostic.cho -- the `Diagnostic` of spec/diagnostics/README.md, section 2,
+// as a typed value (docs/cancho-port.md, 13.2).
+//
+// A diagnostic is a `Dg`: a rule tag (an enum, so a rule that does not exist
+// cannot be spelled), a subject, a span, a message, `expected` and `actual`, a
+// remediation with its confidence, and the `related` diagnostics and `notes`
+// that belong to it. The severity, the tier and the subject kind are not
+// stored: they are functions of the rule, the catalog of section 3 written as
+// code, so a rule cannot be emitted with another rule's tier.
+//
+// Text is not owned by the record. Every string a diagnostic holds is a span
+// (`Sp`, half-open) of ONE byte pool that the `Diags` owns, which is how the IR
+// avoids owning strings too (ir.cho). A diagnostic is built by appending its
+// pieces to the pool (`lit`, and the `put_*` helpers of chw.check_util), then
+// closing the span (`mark` / `close`), then pushing the record. Records are
+// values: they are never updated, only rebuilt with the `with_*` functions.
+//
+// Related diagnostics and notes are records of the same table, pushed right
+// after their parent and found through the parent's `Kids`; a reader that walks
+// the table skips `nest != 0`.
+//
+// `expected` and `actual` are held as the JSON text they print as (a string, a
+// number, an array of strings), already formatted as `json.dumps(indent=2)`
+// would at the depth of a top-level diagnostic: that is all a consumer of the
+// JSON form can see, and the text form does not print them.
+
+import std.buffer;
+import std.vec;
+
+// `x` is `e`, except for the one name that Python does not keep as a string
+// (a block whose `name` is a number, null, ...): the JSON text of the value
+// then follows the plain text in the pool, `e..x`, and the JSON form prints
+// that where it prints the subject (docs/cancho-port.md, 13.5).
+pub struct Sp {
+    s: int,
+    e: int,
+    x: int,
+}
+
+pub fn none() -> [] Sp {
+    return Sp { s: 0 - 1, e: 0, x: 0 };
+}
+
+pub fn present(sp: Sp) -> [] bool {
+    return sp.s >= 0;
+}
+
+// Does the pool hold a JSON value after this text?
+pub fn has_raw(sp: Sp) -> [] bool {
+    return sp.s >= 0 && sp.x > sp.e;
+}
+
+// The JSON text that follows `sp`'s text in the pool.
+pub fn raw_of(sp: Sp) -> [] Sp {
+    return Sp { s: sp.e, e: sp.x, x: sp.x };
+}
+
+// `sp` with the `n` bytes appended to the pool since it was closed counted as
+// its raw JSON text.
+pub fn with_raw(sp: Sp, end: int) -> [] Sp {
+    return Sp { s: sp.s, e: sp.e, x: end };
+}
+
+// ------------------------------------------------------------ the catalog ---
+
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+pub enum Tier {
+    Static,
+    Tested,
+    Runtime,
+    Trust,
+    Unknown,
+}
+
+pub enum Confidence {
+    High,
+    Medium,
+    Low,
+}
+
+pub enum Kind {
+    RegisterBlock,
+    Register,
+    Field,
+    Interrupt,
+    InterruptLinkage,
+    DmaBuffer,
+    DmaField,
+    Ir,
+}
+
+// Every rule the checker and the loaders can emit. Section 3 of the
+// diagnostics spec is the table these four functions (name, severity, tier,
+// subject) restate; `chw catalog` prints them and
+// `tests/differential/catalog.py` compares that with the spec.
+pub enum Rule {
+    ParseError,
+    SchemaInvalid,
+    SchemaVersionUnsupported,
+    Internal,
+    BlockNameMissing,
+    BlockBaseAddressMissing,
+    BlockBusWidthInvalid,
+    BlockEndiannessUnknown,
+    RegisterNameMissing,
+    RegisterOffsetMissing,
+    RegisterOffsetNonAligned,
+    RegisterOffsetOverflow,
+    RegisterOffsetDuplicate,
+    RegisterKindUnknown,
+    ResetOverflow,
+    ResetWoNonzero,
+    FieldNameMissing,
+    FieldBoundsMissing,
+    FieldBoundsInverted,
+    FieldBoundsOverflow,
+    FieldOverlap,
+    FieldEnumOverflow,
+    FieldConstraintIgnored,
+    InterruptNameMissing,
+    InterruptSourceUnresolved,
+    InterruptEnableUnresolved,
+    InterruptStatusUnresolved,
+    InterruptClearUnresolved,
+    InterruptClearKindInvalid,
+    InterruptDuplicateName,
+    DmaNameMissing,
+    DmaFieldNameMissing,
+    DmaOverlap,
+    DmaAlignIllegal,
+    DmaAlignUnsatisfied,
+    DmaOwnerUnknown,
+}
+
+pub fn rule_name(r: Rule) -> [] &static [byte] {
+    match r {
+        Rule::ParseError => {
+            return "parse-error";
+        }
+        Rule::SchemaInvalid => {
+            return "schema-invalid";
+        }
+        Rule::SchemaVersionUnsupported => {
+            return "schema-version-unsupported";
+        }
+        Rule::Internal => {
+            return "internal";
+        }
+        Rule::BlockNameMissing => {
+            return "block-name-missing";
+        }
+        Rule::BlockBaseAddressMissing => {
+            return "block-base-address-missing";
+        }
+        Rule::BlockBusWidthInvalid => {
+            return "block-bus-width-invalid";
+        }
+        Rule::BlockEndiannessUnknown => {
+            return "block-endianness-unknown";
+        }
+        Rule::RegisterNameMissing => {
+            return "register-name-missing";
+        }
+        Rule::RegisterOffsetMissing => {
+            return "register-offset-missing";
+        }
+        Rule::RegisterOffsetNonAligned => {
+            return "register-offset-non-aligned";
+        }
+        Rule::RegisterOffsetOverflow => {
+            return "register-offset-overflow";
+        }
+        Rule::RegisterOffsetDuplicate => {
+            return "register-offset-duplicate";
+        }
+        Rule::RegisterKindUnknown => {
+            return "register-kind-unknown";
+        }
+        Rule::ResetOverflow => {
+            return "reset-overflow";
+        }
+        Rule::ResetWoNonzero => {
+            return "reset-wo-nonzero";
+        }
+        Rule::FieldNameMissing => {
+            return "field-name-missing";
+        }
+        Rule::FieldBoundsMissing => {
+            return "field-bounds-missing";
+        }
+        Rule::FieldBoundsInverted => {
+            return "field-bounds-inverted";
+        }
+        Rule::FieldBoundsOverflow => {
+            return "field-bounds-overflow";
+        }
+        Rule::FieldOverlap => {
+            return "field-overlap";
+        }
+        Rule::FieldEnumOverflow => {
+            return "field-enum-overflow";
+        }
+        Rule::FieldConstraintIgnored => {
+            return "field-constraint-ignored";
+        }
+        Rule::InterruptNameMissing => {
+            return "interrupt-name-missing";
+        }
+        Rule::InterruptSourceUnresolved => {
+            return "interrupt-source-unresolved";
+        }
+        Rule::InterruptEnableUnresolved => {
+            return "interrupt-enable-unresolved";
+        }
+        Rule::InterruptStatusUnresolved => {
+            return "interrupt-status-unresolved";
+        }
+        Rule::InterruptClearUnresolved => {
+            return "interrupt-clear-unresolved";
+        }
+        Rule::InterruptClearKindInvalid => {
+            return "interrupt-clear-kind-invalid";
+        }
+        Rule::InterruptDuplicateName => {
+            return "interrupt-duplicate-name";
+        }
+        Rule::DmaNameMissing => {
+            return "dma-name-missing";
+        }
+        Rule::DmaFieldNameMissing => {
+            return "dma-field-name-missing";
+        }
+        Rule::DmaOverlap => {
+            return "dma-overlap";
+        }
+        Rule::DmaAlignIllegal => {
+            return "dma-align-illegal";
+        }
+        Rule::DmaAlignUnsatisfied => {
+            return "dma-align-unsatisfied";
+        }
+        Rule::DmaOwnerUnknown => {
+            return "dma-owner-unknown";
+        }
+    }
+}
+
+pub fn rule_severity(r: Rule) -> [] Severity {
+    match r {
+        Rule::ResetWoNonzero => {
+            return Severity::Warning;
+        }
+        Rule::FieldConstraintIgnored => {
+            return Severity::Warning;
+        }
+        _ => {
+            return Severity::Error;
+        }
+    }
+}
+
+pub fn rule_tier(r: Rule) -> [] Tier {
+    match r {
+        Rule::SchemaVersionUnsupported => {
+            return Tier::Runtime;
+        }
+        Rule::Internal => {
+            return Tier::Unknown;
+        }
+        _ => {
+            return Tier::Static;
+        }
+    }
+}
+
+pub fn rule_kind(r: Rule) -> [] Kind {
+    match r {
+        Rule::BlockNameMissing => {
+            return Kind::RegisterBlock;
+        }
+        Rule::BlockBaseAddressMissing => {
+            return Kind::RegisterBlock;
+        }
+        Rule::BlockBusWidthInvalid => {
+            return Kind::RegisterBlock;
+        }
+        Rule::BlockEndiannessUnknown => {
+            return Kind::RegisterBlock;
+        }
+        Rule::RegisterNameMissing => {
+            return Kind::Register;
+        }
+        Rule::RegisterOffsetMissing => {
+            return Kind::Register;
+        }
+        Rule::RegisterOffsetNonAligned => {
+            return Kind::Register;
+        }
+        Rule::RegisterOffsetOverflow => {
+            return Kind::Register;
+        }
+        Rule::RegisterOffsetDuplicate => {
+            return Kind::Register;
+        }
+        Rule::RegisterKindUnknown => {
+            return Kind::Register;
+        }
+        Rule::ResetOverflow => {
+            return Kind::Register;
+        }
+        Rule::ResetWoNonzero => {
+            return Kind::Register;
+        }
+        Rule::FieldNameMissing => {
+            return Kind::Field;
+        }
+        Rule::FieldBoundsMissing => {
+            return Kind::Field;
+        }
+        Rule::FieldBoundsInverted => {
+            return Kind::Field;
+        }
+        Rule::FieldBoundsOverflow => {
+            return Kind::Field;
+        }
+        Rule::FieldOverlap => {
+            return Kind::Field;
+        }
+        Rule::FieldEnumOverflow => {
+            return Kind::Field;
+        }
+        Rule::FieldConstraintIgnored => {
+            return Kind::Field;
+        }
+        Rule::InterruptNameMissing => {
+            return Kind::Interrupt;
+        }
+        Rule::InterruptDuplicateName => {
+            return Kind::Interrupt;
+        }
+        Rule::InterruptSourceUnresolved => {
+            return Kind::InterruptLinkage;
+        }
+        Rule::InterruptEnableUnresolved => {
+            return Kind::InterruptLinkage;
+        }
+        Rule::InterruptStatusUnresolved => {
+            return Kind::InterruptLinkage;
+        }
+        Rule::InterruptClearUnresolved => {
+            return Kind::InterruptLinkage;
+        }
+        Rule::InterruptClearKindInvalid => {
+            return Kind::InterruptLinkage;
+        }
+        Rule::DmaNameMissing => {
+            return Kind::DmaBuffer;
+        }
+        Rule::DmaFieldNameMissing => {
+            return Kind::DmaField;
+        }
+        Rule::DmaOverlap => {
+            return Kind::DmaField;
+        }
+        Rule::DmaAlignIllegal => {
+            return Kind::DmaField;
+        }
+        Rule::DmaAlignUnsatisfied => {
+            return Kind::DmaField;
+        }
+        Rule::DmaOwnerUnknown => {
+            return Kind::DmaField;
+        }
+        _ => {
+            return Kind::Ir;
+        }
+    }
+}
+
+// The catalog as a list: how many rules there are, and the i-th. A test (and
+// `chw catalog`) walks it, so a rule added to the enum and not to this list
+// is a rule the catalog check never sees; `rule_count` is pinned by a unit test.
+pub fn rule_count() -> [] int {
+    return 36;
+}
+
+pub fn rule_at(i: int) -> [] Rule {
+    if i == 0 {
+        return Rule::ParseError;
+    }
+    if i == 1 {
+        return Rule::SchemaInvalid;
+    }
+    if i == 2 {
+        return Rule::SchemaVersionUnsupported;
+    }
+    if i == 3 {
+        return Rule::Internal;
+    }
+    if i == 4 {
+        return Rule::BlockNameMissing;
+    }
+    if i == 5 {
+        return Rule::BlockBaseAddressMissing;
+    }
+    if i == 6 {
+        return Rule::BlockBusWidthInvalid;
+    }
+    if i == 7 {
+        return Rule::BlockEndiannessUnknown;
+    }
+    if i == 8 {
+        return Rule::RegisterNameMissing;
+    }
+    if i == 9 {
+        return Rule::RegisterOffsetMissing;
+    }
+    if i == 10 {
+        return Rule::RegisterOffsetNonAligned;
+    }
+    if i == 11 {
+        return Rule::RegisterOffsetOverflow;
+    }
+    if i == 12 {
+        return Rule::RegisterOffsetDuplicate;
+    }
+    if i == 13 {
+        return Rule::RegisterKindUnknown;
+    }
+    if i == 14 {
+        return Rule::ResetOverflow;
+    }
+    if i == 15 {
+        return Rule::ResetWoNonzero;
+    }
+    if i == 16 {
+        return Rule::FieldNameMissing;
+    }
+    if i == 17 {
+        return Rule::FieldBoundsMissing;
+    }
+    if i == 18 {
+        return Rule::FieldBoundsInverted;
+    }
+    if i == 19 {
+        return Rule::FieldBoundsOverflow;
+    }
+    if i == 20 {
+        return Rule::FieldOverlap;
+    }
+    if i == 21 {
+        return Rule::FieldEnumOverflow;
+    }
+    if i == 22 {
+        return Rule::FieldConstraintIgnored;
+    }
+    if i == 23 {
+        return Rule::InterruptNameMissing;
+    }
+    if i == 24 {
+        return Rule::InterruptSourceUnresolved;
+    }
+    if i == 25 {
+        return Rule::InterruptEnableUnresolved;
+    }
+    if i == 26 {
+        return Rule::InterruptStatusUnresolved;
+    }
+    if i == 27 {
+        return Rule::InterruptClearUnresolved;
+    }
+    if i == 28 {
+        return Rule::InterruptClearKindInvalid;
+    }
+    if i == 29 {
+        return Rule::InterruptDuplicateName;
+    }
+    if i == 30 {
+        return Rule::DmaNameMissing;
+    }
+    if i == 31 {
+        return Rule::DmaFieldNameMissing;
+    }
+    if i == 32 {
+        return Rule::DmaOverlap;
+    }
+    if i == 33 {
+        return Rule::DmaAlignIllegal;
+    }
+    if i == 34 {
+        return Rule::DmaAlignUnsatisfied;
+    }
+    return Rule::DmaOwnerUnknown;
+}
+
+pub fn severity_name(s: Severity) -> [] &static [byte] {
+    match s {
+        Severity::Error => {
+            return "Error";
+        }
+        Severity::Warning => {
+            return "Warning";
+        }
+    }
+}
+
+pub fn tier_name(t: Tier) -> [] &static [byte] {
+    match t {
+        Tier::Static => {
+            return "Static";
+        }
+        Tier::Tested => {
+            return "Tested";
+        }
+        Tier::Runtime => {
+            return "Runtime";
+        }
+        Tier::Trust => {
+            return "Trust";
+        }
+        Tier::Unknown => {
+            return "Unknown";
+        }
+    }
+}
+
+pub fn confidence_name(c: Confidence) -> [] &static [byte] {
+    match c {
+        Confidence::High => {
+            return "High";
+        }
+        Confidence::Medium => {
+            return "Medium";
+        }
+        Confidence::Low => {
+            return "Low";
+        }
+    }
+}
+
+pub fn kind_name(k: Kind) -> [] &static [byte] {
+    match k {
+        Kind::RegisterBlock => {
+            return "RegisterBlock";
+        }
+        Kind::Register => {
+            return "Register";
+        }
+        Kind::Field => {
+            return "Field";
+        }
+        Kind::Interrupt => {
+            return "Interrupt";
+        }
+        Kind::InterruptLinkage => {
+            return "InterruptLinkage";
+        }
+        Kind::DmaBuffer => {
+            return "DmaBuffer";
+        }
+        Kind::DmaField => {
+            return "DmaField";
+        }
+        Kind::Ir => {
+            return "Ir";
+        }
+    }
+}
+
+// The names of the subject's string slots, in the order `Subj` holds them
+// (a, b, c); "" when the kind has fewer.
+pub fn key_a(k: Kind) -> [] &static [byte] {
+    match k {
+        Kind::RegisterBlock => {
+            return "name";
+        }
+        Kind::Ir => {
+            return "path";
+        }
+        _ => {
+            return "block";
+        }
+    }
+}
+
+pub fn key_b(k: Kind) -> [] &static [byte] {
+    match k {
+        Kind::Register => {
+            return "name";
+        }
+        Kind::Field => {
+            return "register";
+        }
+        Kind::Interrupt => {
+            return "name";
+        }
+        Kind::InterruptLinkage => {
+            return "interrupt";
+        }
+        Kind::DmaBuffer => {
+            return "name";
+        }
+        Kind::DmaField => {
+            return "buffer";
+        }
+        _ => {
+            return "";
+        }
+    }
+}
+
+pub fn key_c(k: Kind) -> [] &static [byte] {
+    match k {
+        Kind::Field => {
+            return "name";
+        }
+        Kind::InterruptLinkage => {
+            return "role";
+        }
+        Kind::DmaField => {
+            return "name";
+        }
+        _ => {
+            return "";
+        }
+    }
+}
+
+// ------------------------------------------------------------- the record ---
+
+// The subject's strings (the keys are `key_a`..`key_c` of the rule's kind).
+// An `Ir` subject keeps no path: the path is the one the tool was run with
+// and is supplied when the record is printed. `ptr` is the JSON Pointer of a
+// `schema-invalid` record, absent for every other.
+pub struct Subj {
+    a: Sp,
+    b: Sp,
+    c: Sp,
+    ptr: Sp,
+}
+
+// `has` is false for "no position" (a text-form file validated through its
+// rendered JSON, where an offset means nothing). `fixed` says the span is the
+// same whichever way the tool is run: the whole-file span of 1:1 that the
+// Python checker gives every semantic rule, and the real position of a
+// `parse-error`. A span that is not fixed is a stage-1 position, printed only
+// when the caller asks for located spans.
+pub struct Loc {
+    has: bool,
+    fixed: bool,
+    sl: int,
+    sc: int,
+    el: int,
+    ec: int,
+}
+
+pub struct Rem {
+    text: Sp,
+    conf: Confidence,
+}
+
+// `rel_first`/`rel_n` and `note_first`/`note_n` name runs of the same table.
+// `nest` is 0 for a diagnostic, 1 for a `related` entry of another, 2 for a
+// note (a note holds only its message).
+pub struct Kids {
+    rel_first: int,
+    rel_n: int,
+    note_first: int,
+    note_n: int,
+    nest: int,
+}
+
+pub struct Dg {
+    rule: Rule,
+    subj: Subj,
+    loc: Loc,
+    kw: Sp,
+    msg: Sp,
+    exp: Sp,
+    act: Sp,
+    rem: Rem,
+    kids: Kids,
+}
+
+pub fn file_loc() -> [] Loc {
+    return Loc { has: true, fixed: true, sl: 1, sc: 1, el: 1, ec: 1 };
+}
+
+// A diagnostic of `rule` with a whole-file span and nothing optional.
+pub fn mk(rule: Rule, a: Sp, b: Sp, c: Sp, msg: Sp) -> [] Dg {
+    return Dg { rule: rule, subj: Subj { a: a, b: b, c: c, ptr: none() }, loc: file_loc(), kw: none(), msg: msg, exp: none(), act: none(), rem: Rem { text: none(), conf: Confidence::Medium }, kids: Kids { rel_first: 0, rel_n: 0, note_first: 0, note_n: 0, nest: 0 } };
+}
+
+pub fn with_expected(d: Dg, exp: Sp, act: Sp) -> [] Dg {
+    return Dg { rule: d.rule, subj: d.subj, loc: d.loc, kw: d.kw, msg: d.msg, exp: exp, act: act, rem: d.rem, kids: d.kids };
+}
+
+pub fn with_remedy(d: Dg, text: Sp, conf: Confidence) -> [] Dg {
+    return Dg { rule: d.rule, subj: d.subj, loc: d.loc, kw: d.kw, msg: d.msg, exp: d.exp, act: d.act, rem: Rem { text: text, conf: conf }, kids: d.kids };
+}
+
+pub fn with_loc(d: Dg, loc: Loc) -> [] Dg {
+    return Dg { rule: d.rule, subj: d.subj, loc: loc, kw: d.kw, msg: d.msg, exp: d.exp, act: d.act, rem: d.rem, kids: d.kids };
+}
+
+pub fn with_keyword(d: Dg, kw: Sp) -> [] Dg {
+    return Dg { rule: d.rule, subj: d.subj, loc: d.loc, kw: kw, msg: d.msg, exp: d.exp, act: d.act, rem: d.rem, kids: d.kids };
+}
+
+pub fn with_pointer(d: Dg, ptr: Sp) -> [] Dg {
+    return Dg { rule: d.rule, subj: Subj { a: d.subj.a, b: d.subj.b, c: d.subj.c, ptr: ptr }, loc: d.loc, kw: d.kw, msg: d.msg, exp: d.exp, act: d.act, rem: d.rem, kids: d.kids };
+}
+
+pub fn with_nest(d: Dg, nest: int) -> [] Dg {
+    return Dg { rule: d.rule, subj: d.subj, loc: d.loc, kw: d.kw, msg: d.msg, exp: d.exp, act: d.act, rem: d.rem, kids: Kids { rel_first: 0, rel_n: 0, note_first: 0, note_n: 0, nest: nest } };
+}
+
+fn with_kids(d: Dg, kids: Kids) -> [] Dg {
+    return Dg { rule: d.rule, subj: d.subj, loc: d.loc, kw: d.kw, msg: d.msg, exp: d.exp, act: d.act, rem: d.rem, kids: kids };
+}
+
+// ------------------------------------------------------------------ table ---
+
+pub res struct Diags {
+    pool: buffer.Buffer,
+    items: vec.Vec[Dg],
+}
+
+pub fn empty[&h](heap: &!h Heap) -> [heap] Diags {
+    return Diags { pool: buffer.empty(heap, 1024), items: vec.empty(heap, 16, mk(Rule::Internal, none(), none(), none(), none())) };
+}
+
+pub fn drop[&h](heap: &!h Heap, ds: Diags) -> [heap] int {
+    let Diags { pool, items } = ds;
+    vec.drop(heap, items);
+    return buffer.drop(heap, pool);
+}
+
+// How many records the table holds (diagnostics, related entries and notes).
+pub fn size[&q](ds: &q Diags) -> [] int {
+    return vec.size(ds.items);
+}
+
+pub fn get[&q](ds: &q Diags, i: int) -> [] Dg {
+    return vec.get(ds.items, i);
+}
+
+pub fn text[&q](ds: &q Diags, sp: Sp) -> [] &q [byte] {
+    if sp.s < 0 {
+        return buffer.bytes(ds.pool)[0..0];
+    }
+    return buffer.bytes(ds.pool)[sp.s..sp.e];
+}
+
+// Append `t` to the pool.
+pub fn lit[&h, &t](heap: &!h Heap, ds: Diags, t: &t [byte]) -> [heap] Diags {
+    let Diags { pool, items } = ds;
+    return Diags { pool: buffer.append(heap, pool, t), items: items };
+}
+
+// Append a copy of the pool text `sp` (a name already written to it).
+pub fn lit_sp[&h](heap: &!h Heap, ds: Diags, sp: Sp) -> [heap] Diags {
+    if sp.s < 0 || sp.e <= sp.s {
+        return ds;
+    }
+    let tmp = box_slice(heap, sp.e - sp.s, byte_of(0));
+    borrow ds as &q in {
+        borrow mut tmp as &!w in {
+            let all = buffer.bytes(q.pool);
+            let out = contents(w);
+            var i = 0;
+            while i < sp.e - sp.s {
+                out[i] = all[sp.s + i];
+                i = i + 1;
+            }
+        }
+    }
+    var out = ds;
+    borrow tmp as &r in {
+        out = lit(heap, out, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return out;
+}
+
+// The pool as it is now: where the next piece will start.
+pub fn mark(ds: Diags) -> [] (Diags, int) {
+    var at = 0;
+    borrow ds as &q in {
+        at = buffer.size(q.pool);
+    }
+    return (ds, at);
+}
+
+// The span from `from` to the end of the pool.
+pub fn close(ds: Diags, from: int) -> [] (Diags, Sp) {
+    var at = 0;
+    borrow ds as &q in {
+        at = buffer.size(q.pool);
+    }
+    return (ds, Sp { s: from, e: at, x: at });
+}
+
+// A string literal as a span of its own.
+pub fn word[&h, &t](heap: &!h Heap, ds: Diags, t: &t [byte]) -> [heap] (Diags, Sp) {
+    let (d1, m) = mark(ds);
+    return close(lit(heap, d1, t), m);
+}
+
+pub fn push[&h](heap: &!h Heap, ds: Diags, d: Dg) -> [heap] Diags {
+    let Diags { pool, items } = ds;
+    return Diags { pool: pool, items: vec.push(heap, items, d) };
+}
+
+// Push a diagnostic that will be followed by `nrel` related entries and then
+// `nnotes` notes, which the caller pushes next, in that order.
+pub fn push_parent[&h](heap: &!h Heap, ds: Diags, d: Dg, nrel: int, nnotes: int) -> [heap] Diags {
+    var at = 0;
+    borrow ds as &q in {
+        at = vec.size(q.items);
+    }
+    let kids = Kids { rel_first: at + 1, rel_n: nrel, note_first: at + 1 + nrel, note_n: nnotes, nest: 0 };
+    return push(heap, ds, with_kids(d, kids));
+}
+
+// The number of top-level diagnostics, of those whose severity is Error.
+pub fn count_errors[&q](ds: &q Diags) -> [] int {
+    var n = 0;
+    var i = 0;
+    while i < size(ds) {
+        let d = get(ds, i);
+        if d.kids.nest == 0 && is_error(d.rule) {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+pub fn is_error(r: Rule) -> [] bool {
+    match rule_severity(r) {
+        Severity::Error => {
+            return true;
+        }
+        Severity::Warning => {
+            return false;
+        }
+    }
+}
+
+pub fn count_top[&q](ds: &q Diags) -> [] int {
+    var n = 0;
+    var i = 0;
+    while i < size(ds) {
+        if get(ds, i).kids.nest == 0 {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+pub fn is_internal(r: Rule) -> [] bool {
+    match r {
+        Rule::Internal => {
+            return true;
+        }
+        _ => {
+            return false;
+        }
+    }
+}

@@ -10,6 +10,14 @@
       "keyword": "minLength",
       "line": 5,
       "column": 13
+    },
+    {
+      "code": "block-name-missing",
+      "subject": {
+        "kind": "RegisterBlock",
+        "name": "<missing>"
+      },
+      "message_contains": "block is missing required 'name' (non-empty string)."
     }
   ]
 }

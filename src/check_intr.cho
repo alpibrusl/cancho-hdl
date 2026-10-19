@@ -1,0 +1,236 @@
+module chw.check_intr;
+
+// check_intr.cho -- the interrupt rules of tools/check/checker.py
+// (`_check_interrupts`, `_check_ref`).
+//
+// The Python code builds `registers_by_name`, a dict in which a later register
+// of the same name replaces an earlier one; the `std.map` here does the same
+// (`put` replaces the value of a key it has).
+
+import std.buffer;
+import std.json;
+import std.map;
+import chw.check_util as cu;
+import chw.diagnostic as dg;
+
+fn linkage[&h](heap: &!h Heap, ds: dg.Diags, rule: dg.Rule, bn: dg.Sp, iname: dg.Sp, role: dg.Sp, msg: dg.Sp, exp: dg.Sp, act: dg.Sp) -> [heap] dg.Diags {
+    let d = dg.mk(rule, bn, iname, role, msg);
+    return dg.push(heap, ds, dg.with_expected(d, exp, act));
+}
+
+// `registers_by_name`: name -> the node of the last register of that name.
+fn index_registers[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], regs: int) -> [heap] map.Map[int] {
+    var m = map.empty(heap, json.count(tape, regs) + 1, 0, 13);
+    var j = regs + 1;
+    var left = json.count(tape, regs);
+    while left > 0 {
+        let name = json.get(src, tape, j, "name");
+        if json.is_object(tape, j) && cu.is_name(src, tape, name) {
+            let key = cu.decoded(heap, src, tape, name);
+            borrow key as &kr in {
+                m = map.put(heap, m, contents(kr), j);
+            }
+            unbox_slice(heap, key);
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return m;
+}
+
+// The register node `name` resolves to, or -1.
+fn find_register[&h, &s, &t, &m](heap: &!h Heap, src: &s [byte], tape: &t [int], by_name: &m map.Map[int], name: int) -> [heap] int {
+    if !cu.is_name(src, tape, name) {
+        return 0 - 1;
+    }
+    let key = cu.decoded(heap, src, tape, name);
+    var found = 0 - 1;
+    borrow key as &kr in {
+        found = map.get(by_name, contents(kr), 0 - 1);
+    }
+    unbox_slice(heap, key);
+    return found;
+}
+
+// Does the register at `reg` declare a field called `name`?
+fn has_field[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], reg: int, name: int) -> [heap] bool {
+    let list = json.get(src, tape, reg, "fields");
+    if !json.is_array(tape, list) || !cu.is_name(src, tape, name) {
+        return false;
+    }
+    var j = list + 1;
+    var left = json.count(tape, list);
+    var found = false;
+    while left > 0 && !found {
+        let fname = json.get(src, tape, j, "name");
+        if json.is_object(tape, j) && cu.is_name(src, tape, fname) && cu.same_str(heap, src, tape, fname, name) {
+            found = true;
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return found;
+}
+
+// `_check_ref` for the reference `refn` playing `role` of the interrupt.
+fn check_ref[&h, &s, &t, &m](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], by_name: &m map.Map[int], refn: int, rule: dg.Rule, role_text: &static [byte], iname_node: int, bn: dg.Sp, iname: dg.Sp) -> [heap] dg.Diags {
+    if !json.is_object(tape, refn) {
+        return ds;
+    }
+    let reg_name = json.get(src, tape, refn, "register");
+    let field_name = json.get(src, tape, refn, "field");
+    var reg = 0 - 1;
+    if cu.truthy(src, tape, reg_name) {
+        reg = find_register(heap, src, tape, by_name, reg_name);
+    }
+    let register_found = reg >= 0;
+    if register_found && has_field(heap, src, tape, reg, field_name) {
+        return ds;
+    }
+    let (d1, role) = dg.word(heap, ds, role_text);
+    let (d2, m) = dg.mark(d1);
+    var d = dg.lit(heap, d2, "interrupt ");
+    d = cu.put_str(heap, d, src, tape, iname_node);
+    d = dg.lit(heap, d, " ");
+    d = dg.lit(heap, d, role_text);
+    d = dg.lit(heap, d, " references ");
+    d = cu.put_py(heap, d, src, tape, reg_name);
+    d = dg.lit(heap, d, ".");
+    d = cu.put_py(heap, d, src, tape, field_name);
+    d = dg.lit(heap, d, " does not exist: ");
+    if register_found {
+        d = dg.lit(heap, d, "field ");
+        d = cu.put_py(heap, d, src, tape, field_name);
+        d = dg.lit(heap, d, " is not declared on register ");
+        d = cu.put_py(heap, d, src, tape, reg_name);
+        d = dg.lit(heap, d, ".");
+    } else {
+        d = dg.lit(heap, d, "register ");
+        d = cu.put_py(heap, d, src, tape, reg_name);
+        d = dg.lit(heap, d, " is not declared in block ");
+        d = dg.lit_sp(heap, d, bn);
+        d = dg.lit(heap, d, ".");
+    }
+    let (d3, msg) = dg.close(d, m);
+    // actual: "<register>.<field>"
+    let (d4, a0) = dg.mark(d3);
+    var ab = cu.put_py(heap, d4, src, tape, reg_name);
+    ab = dg.lit(heap, ab, ".");
+    ab = cu.put_py(heap, ab, src, tape, field_name);
+    let (d5, plain) = dg.close(ab, a0);
+    let (d6, act) = cu.jquote(heap, d5, plain);
+    var exp = dg.none();
+    var d7 = d6;
+    if register_found {
+        let (x, e) = cu.text_span(heap, d7, "an existing field name on the referenced register");
+        d7 = x;
+        exp = e;
+    } else {
+        let (d8, e0) = dg.mark(d7);
+        let (d9, plain_exp) = dg.close(dg.lit_sp(heap, dg.lit(heap, d8, "an existing register name on block "), bn), e0);
+        let (d10, e) = cu.jquote(heap, d9, plain_exp);
+        d7 = d10;
+        exp = e;
+    }
+    return linkage(heap, d7, rule, bn, iname, role, msg, exp, act);
+}
+
+fn name_repr_of_block[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bname: int) -> [heap] dg.Diags {
+    if bname < 0 {
+        return dg.lit(heap, ds, "'<missing>'");
+    }
+    return cu.put_repr(heap, ds, src, tape, bname);
+}
+
+fn one_interrupt[&h, &s, &t, &m](heap: &!h Heap, ds: dg.Diags, seen: map.Map[int], src: &s [byte], tape: &t [int], by_name: &m map.Map[int], bn: dg.Sp, bname: int, intr: int) -> [heap] (dg.Diags, map.Map[int]) {
+    let name = json.get(src, tape, intr, "name");
+    if !cu.is_name(src, tape, name) {
+        let (d1, missing) = dg.word(heap, ds, "<missing>");
+        let (d2, msg) = dg.word(heap, d1, "interrupt is missing required 'name' (non-empty string).");
+        return (dg.push(heap, d2, dg.mk(dg.Rule::InterruptNameMissing, bn, missing, dg.none(), msg)), seen);
+    }
+    let (ds1, iname) = cu.str_span(heap, ds, src, tape, name);
+    var ds2 = ds1;
+    var seen2 = seen;
+    let key = cu.decoded(heap, src, tape, name);
+    var dup = false;
+    borrow key as &kr in {
+        borrow seen2 as &sm in {
+            dup = map.has(sm, contents(kr));
+        }
+        if !dup {
+            seen2 = map.put(heap, seen2, contents(kr), 1);
+        }
+    }
+    unbox_slice(heap, key);
+    if dup {
+        let (d1, m) = dg.mark(ds2);
+        var d = dg.lit(heap, d1, "interrupt ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " is declared twice in block ");
+        d = name_repr_of_block(heap, d, src, tape, bname);
+        d = dg.lit(heap, d, ".");
+        let (d2, msg) = dg.close(d, m);
+        ds2 = dg.push(heap, d2, dg.mk(dg.Rule::InterruptDuplicateName, bn, iname, dg.none(), msg));
+    }
+    let src_ref = json.get(src, tape, intr, "source");
+    if !cu.is_none(tape, src_ref) {
+        ds2 = check_ref(heap, ds2, src, tape, by_name, src_ref, dg.Rule::InterruptSourceUnresolved, "source", name, bn, iname);
+    }
+    let en_ref = json.get(src, tape, intr, "enable");
+    if !cu.is_none(tape, en_ref) {
+        ds2 = check_ref(heap, ds2, src, tape, by_name, en_ref, dg.Rule::InterruptEnableUnresolved, "enable", name, bn, iname);
+    }
+    let st_ref = json.get(src, tape, intr, "status");
+    if !cu.is_none(tape, st_ref) {
+        ds2 = check_ref(heap, ds2, src, tape, by_name, st_ref, dg.Rule::InterruptStatusUnresolved, "status", name, bn, iname);
+    }
+    let clear = json.get(src, tape, intr, "clear");
+    if !cu.is_none(tape, clear) && json.is_object(tape, clear) {
+        ds2 = check_ref(heap, ds2, src, tape, by_name, clear, dg.Rule::InterruptClearUnresolved, "clear", name, bn, iname);
+        let kind = json.get(src, tape, clear, "kind");
+        let valid = kind < 0 || cu.str_is(src, tape, kind, "W1C") || cu.str_is(src, tape, kind, "W0C") || cu.str_is(src, tape, kind, "RC");
+        if !valid {
+            let (d1, role) = dg.word(heap, ds2, "clear");
+            let (d2, m) = dg.mark(d1);
+            var d = dg.lit(heap, d2, "interrupt ");
+            d = cu.put_repr(heap, d, src, tape, name);
+            d = dg.lit(heap, d, " clear.kind=");
+            d = cu.put_repr(heap, d, src, tape, kind);
+            d = dg.lit(heap, d, "; must be one of RC, W0C, W1C.");
+            let (d3, msg) = dg.close(d, m);
+            let (d4, exp) = cu.list_span(heap, d3, "RC|W0C|W1C");
+            let (d5, act) = cu.value_span(heap, d4, src, tape, kind);
+            ds2 = linkage(heap, d5, dg.Rule::InterruptClearKindInvalid, bn, iname, role, msg, exp, act);
+        }
+    }
+    return (ds2, seen2);
+}
+
+// `_check_interrupts`: `intrs` is the array of interrupts, `regs` the block's
+// registers (an array node or -1), `bname` the node of the block's name (or -1).
+pub fn interrupts[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], intrs: int, regs: int, bn: dg.Sp, bname: int) -> [heap] dg.Diags {
+    var by_name = map.empty(heap, 4, 0, 13);
+    if json.is_array(tape, regs) {
+        map.drop(heap, by_name);
+        by_name = index_registers(heap, src, tape, regs);
+    }
+    var seen = map.empty(heap, json.count(tape, intrs) + 1, 0, 17);
+    var ds1 = ds;
+    var j = intrs + 1;
+    var left = json.count(tape, intrs);
+    while left > 0 {
+        if json.is_object(tape, j) {
+            borrow by_name as &bm in {
+                let (d, sn) = one_interrupt(heap, ds1, seen, src, tape, bm, bn, bname, j);
+                ds1 = d;
+                seen = sn;
+            }
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    map.drop(heap, seen);
+    map.drop(heap, by_name);
+    return ds1;
+}

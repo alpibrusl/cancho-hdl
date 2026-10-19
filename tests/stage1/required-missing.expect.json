@@ -10,6 +10,14 @@
       "keyword": "required",
       "line": 4,
       "column": 12
+    },
+    {
+      "code": "block-endianness-unknown",
+      "subject": {
+        "kind": "RegisterBlock",
+        "name": "T"
+      },
+      "message_contains": "block 'T' has endianness=None; must be 'little' or 'big'."
     }
   ]
 }

@@ -1,0 +1,35 @@
+{
+  "file": "tests/stage2/unicode-names.chw",
+  "expect": [
+    {
+      "code": "field-overlap",
+      "subject": {
+        "kind": "Field",
+        "block": "Dev",
+        "register": "CTRL",
+        "name": "q\"uote\\"
+      },
+      "message_contains": "field 'q\"uote\\\\' bits [2..4] overlap with \u00c4\u00d6\u2603 bits [0..3] in register 'CTRL'."
+    },
+    {
+      "code": "interrupt-enable-unresolved",
+      "subject": {
+        "kind": "InterruptLinkage",
+        "block": "Dev",
+        "interrupt": "rx",
+        "role": "enable"
+      },
+      "message_contains": "interrupt rx enable references CTRL.EN does not exist: field EN is not declared on register CTRL."
+    },
+    {
+      "code": "interrupt-clear-unresolved",
+      "subject": {
+        "kind": "InterruptLinkage",
+        "block": "Dev",
+        "interrupt": "rx",
+        "role": "clear"
+      },
+      "message_contains": "interrupt rx clear references CTRL.EN does not exist: field EN is not declared on register CTRL."
+    }
+  ]
+}

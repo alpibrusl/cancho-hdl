@@ -150,6 +150,18 @@ the validator does not implement, which it refuses rather than skips). The canch
 diagnostics also carry a JSON Pointer to the node and, for the JSON wire form, its
 line and column; fixtures for each sub-tag are in `tests/stage1/`.
 
+**The cancho checker's output (stage 2 of the port plan).** `chw check FILE
+--output json` prints exactly the shape of section 4 (`Diagnostic.to_json()` of
+`tools/check/diagnostic.py`), and the structural diagnostics in the words
+`checker.py` gives them: `schema validation failed: ` and the `jsonschema` message,
+the pointer as a list in the subject, `expected` the schema's name. Its sub-tags
+and positions are not in that shape, so they appear only with `--located`: the
+position of the node (a `span` that is not the whole file) and a `keyword` in the
+`Ir` subject. A semantic rule always carries the whole-file span, as the Python
+checker's do. The rule table of this section is restated as code in
+`src/diagnostic.cho` and compared with these tables by
+`tests/differential/catalog.py`.
+
 ### 3.2 Registers and fields
 
 | `code` | `subject` | `severity` | `tier` | Meaning |

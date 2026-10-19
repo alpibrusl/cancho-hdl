@@ -1,0 +1,194 @@
+module chw.check_block;
+
+// check_block.cho -- the schema-version and block rules of
+// tools/check/checker.py (`_check_schema_version`, `_check_block`), and the
+// rules for a document with no `block` at all. Each function is the Python
+// one, statement for statement; the message is the f-string, piece by piece.
+
+import std.json;
+import chw.check_util as cu;
+import chw.diagnostic as dg;
+
+fn is_digit(c: int) -> [] bool {
+    return c >= '0' && c <= '9';
+}
+
+// `len(parts) == 3 and all(p.isdigit() for p in parts)` for `v.split(".")`.
+fn version_shape[&t](v: &t [byte]) -> [] bool {
+    var dots = 0;
+    var run = 0;
+    var i = 0;
+    var ok = true;
+    while i < len(v) {
+        let c = int_of(v[i]);
+        if c == '.' {
+            if run == 0 {
+                ok = false;
+            }
+            dots = dots + 1;
+            run = 0;
+        } else if is_digit(c) {
+            run = run + 1;
+        } else {
+            ok = false;
+        }
+        i = i + 1;
+    }
+    if run == 0 {
+        ok = false;
+    }
+    return ok && dots == 2;
+}
+
+// `int(part)` of the `index`-th part, as 0, 1 or 2 for "anything else".
+fn part_class[&t](v: &t [byte], index: int) -> [] int {
+    var part = 0;
+    var i = 0;
+    var value = 0;
+    var started = false;
+    while i < len(v) && part <= index {
+        let c = int_of(v[i]);
+        if c == '.' {
+            part = part + 1;
+        } else if part == index {
+            if started || c != '0' {
+                if started {
+                    value = 2;
+                } else {
+                    started = true;
+                    if c == '1' {
+                        value = 1;
+                    } else {
+                        value = 2;
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return value;
+}
+
+// Append `text`, close it as a span.
+fn say[&h, &t](heap: &!h Heap, ds: dg.Diags, text: &t [byte]) -> [heap] (dg.Diags, dg.Sp) {
+    return dg.word(heap, ds, text);
+}
+
+fn ir_diag[&h](heap: &!h Heap, ds: dg.Diags, rule: dg.Rule, msg: dg.Sp) -> [heap] dg.Diags {
+    return dg.push(heap, ds, dg.mk(rule, dg.none(), dg.none(), dg.none(), msg));
+}
+
+pub fn version[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], root: int) -> [heap] dg.Diags {
+    let v = json.get(src, tape, root, "version");
+    if !json.is_string(tape, v) {
+        let (d1, msg) = say(heap, ds, "contract is missing required 'version' field (string in MAJOR.MINOR.PATCH form).");
+        return ir_diag(heap, d1, dg.Rule::SchemaInvalid, msg);
+    }
+    let vt = cu.decoded(heap, src, tape, v);
+    var shaped = false;
+    var major = 0;
+    var minor = 0;
+    borrow vt as &vr in {
+        shaped = version_shape(contents(vr));
+        if shaped {
+            major = part_class(contents(vr), 0);
+            minor = part_class(contents(vr), 1);
+        }
+    }
+    unbox_slice(heap, vt);
+    if !shaped {
+        let (d1, m) = dg.mark(ds);
+        var d = dg.lit(heap, d1, "version ");
+        d = cu.put_repr(heap, d, src, tape, v);
+        d = dg.lit(heap, d, " is not in MAJOR.MINOR.PATCH form.");
+        let (d2, msg) = dg.close(d, m);
+        return ir_diag(heap, d2, dg.Rule::SchemaInvalid, msg);
+    }
+    if major != 0 || minor != 1 {
+        let (d1, m) = dg.mark(ds);
+        var d = dg.lit(heap, d1, "schema version ");
+        d = cu.put_str(heap, d, src, tape, v);
+        d = dg.lit(heap, d, " is not supported by this toolchain (expected 0.1.x).");
+        let (d2, msg) = dg.close(d, m);
+        return ir_diag(heap, d2, dg.Rule::SchemaVersionUnsupported, msg);
+    }
+    return ds;
+}
+
+// A contract with no `block` object.
+pub fn no_block[&h](heap: &!h Heap, ds: dg.Diags) -> [heap] dg.Diags {
+    let (d1, msg) = say(heap, ds, "contract is missing required 'block' object.");
+    return ir_diag(heap, d1, dg.Rule::SchemaInvalid, msg);
+}
+
+// `block_name = block.get("name", "<missing>")`, as the text `f"{block_name}"`
+// prints it. When the value is not a string, Python's subject keeps the value
+// itself, so its JSON text follows in the pool (see `dg.Sp`), written at
+// nesting 0 and indented where it is printed.
+pub fn block_name[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], blk: int) -> [heap] (dg.Diags, dg.Sp) {
+    let name = json.get(src, tape, blk, "name");
+    if name < 0 {
+        return dg.word(heap, ds, "<missing>");
+    }
+    let (d1, m) = dg.mark(ds);
+    let (d2, plain) = dg.close(cu.put_py(heap, d1, src, tape, name), m);
+    if json.is_string(tape, name) {
+        return (d2, plain);
+    }
+    let (d3, end) = cu.put_json(heap, d2, src, tape, name, 0);
+    return (d3, dg.with_raw(plain, end));
+}
+
+fn block_diag[&h](heap: &!h Heap, ds: dg.Diags, rule: dg.Rule, bn: dg.Sp, msg: dg.Sp, exp: dg.Sp, act: dg.Sp) -> [heap] dg.Diags {
+    let d = dg.mk(rule, bn, dg.none(), dg.none(), msg);
+    return dg.push(heap, ds, dg.with_expected(d, exp, act));
+}
+
+pub fn block[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], blk: int, bn: dg.Sp) -> [heap] dg.Diags {
+    let name = json.get(src, tape, blk, "name");
+    if !cu.is_name(src, tape, name) {
+        let (d1, missing) = dg.word(heap, ds, "<missing>");
+        let (d2, msg) = say(heap, d1, "block is missing required 'name' (non-empty string).");
+        return block_diag(heap, d2, dg.Rule::BlockNameMissing, missing, msg, dg.none(), dg.none());
+    }
+    var ds1 = ds;
+
+    let base = cu.hex_of(heap, src, tape, json.get(src, tape, blk, "base_address"));
+    if !base.ok || base.zero {
+        let (d1, m) = dg.mark(ds1);
+        var d = dg.lit(heap, d1, "block ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " has no valid hex 'base_address' (expected '0x...').");
+        let (d2, msg) = dg.close(d, m);
+        ds1 = block_diag(heap, d2, dg.Rule::BlockBaseAddressMissing, bn, msg, dg.none(), dg.none());
+    }
+
+    let width = json.get(src, tape, blk, "bus_width");
+    if !(cu.num_is(src, tape, width, 8) || cu.num_is(src, tape, width, 16) || cu.num_is(src, tape, width, 32)) {
+        let (d1, m) = dg.mark(ds1);
+        var d = dg.lit(heap, d1, "block ");
+        d = cu.put_str(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " has bus_width ");
+        d = cu.put_py(heap, d, src, tape, width);
+        d = dg.lit(heap, d, " must be 8, 16, or 32.");
+        let (d2, msg) = dg.close(d, m);
+        let (d3, exp) = cu.text_span(heap, d2, "8, 16, or 32");
+        let (d4, act) = cu.value_span(heap, d3, src, tape, width);
+        ds1 = block_diag(heap, d4, dg.Rule::BlockBusWidthInvalid, bn, msg, exp, act);
+    }
+
+    let endian = json.get(src, tape, blk, "endianness");
+    if !(cu.str_is(src, tape, endian, "little") || cu.str_is(src, tape, endian, "big")) {
+        let (d1, m) = dg.mark(ds1);
+        var d = dg.lit(heap, d1, "block ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " has endianness=");
+        d = cu.put_repr(heap, d, src, tape, endian);
+        d = dg.lit(heap, d, "; must be 'little' or 'big'.");
+        let (d2, msg) = dg.close(d, m);
+        let (d3, exp) = cu.text_span(heap, d2, "'little' or 'big'");
+        let (d4, act) = cu.value_span(heap, d3, src, tape, endian);
+        ds1 = block_diag(heap, d4, dg.Rule::BlockEndiannessUnknown, bn, msg, exp, act);
+    }
+    return ds1;
+}

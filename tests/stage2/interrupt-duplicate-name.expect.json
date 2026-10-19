@@ -1,0 +1,14 @@
+{
+  "file": "tests/stage2/interrupt-duplicate-name.chw",
+  "expect": [
+    {
+      "code": "interrupt-duplicate-name",
+      "subject": {
+        "kind": "Interrupt",
+        "block": "Dev",
+        "name": "rx"
+      },
+      "message_contains": "interrupt 'rx' is declared twice in block 'Dev'."
+    }
+  ]
+}

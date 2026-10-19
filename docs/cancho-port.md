@@ -1,7 +1,9 @@
 # Porting cancho-hdl to cancho
 
-> **Status: design, a measured spike (§7), and a built and measured stage 1
-> (design §9, measurements §10).** Decision (taken before this
+> **Status: design, a measured spike (§7), a built and measured stage 1
+> (design §9, measurements §10), and a built and measured first slice of stage 2:
+> `Diagnostic` and the semantic checker (design §13, measurements §14,
+> corrections §15).** Decision (taken before this
 > document): the product is rewritten from scratch as **pure cancho**. The
 > Python under `tools/`, `gen/` and `scripts/` is the *legacy reference
 > implementation*, kept until each part is replaced and then deleted. The
@@ -9,10 +11,12 @@
 > and `tests/behavioral/scenarios.json` are language-neutral specifications
 > and do not move. Python may remain **only** as test-only oracle code (§5).
 >
-> What is measured here is two slices: the textual parser over the two textual
-> examples (§7), and the JSON wire loader, the structural validator and the
-> conformance runner (§10). Everything else in this document is a plan, and
-> every number in it that is not from those is marked *estimate*.
+> What is measured here is three slices: the textual parser over the two textual
+> examples (§7), the JSON wire loader, the structural validator and the
+> conformance runner (§10), and the semantic checker with the `Diagnostic`
+> record, its JSON and text forms, and a conformance runner that decides every
+> sidecar entry (§14). Everything else in this document is a plan, and every
+> number in it that is not from those is marked *estimate*.
 
 Written against the cancho compiler in `../cancho` (`target/release/cancho`,
 `--std`), `CONTRIBUTING.md` (the gate, no source file over 2,000 lines, every
@@ -50,7 +54,7 @@ removed.
 |---|---|---|---|---|
 | 0 | **IR + JSON out, textual parser** | `tools/parse/parser.py` (634) | nothing | **Spike, §7: done for the textual examples.** Byte-identical JSON on both examples; identical refusal text/position on 2,739 mutants |
 | 1 | **JSON wire loader** (`std.json` tape to IR) and the **structural validator** that replaces `jsonschema` | `parser.load_contract` JSON branch, `checker._validate_schema`, `scripts/verify_examples.py` (78) | 0 | 11 of the 12 refusal fixtures are in JSON form (§6), so this gates the conformance suite. Validator verdict equals `jsonschema`'s on every example and every fixture mutant (oracle). **Built and measured: §9 and §10. The criterion holds except where the port is stricter on purpose (duplicate keys, integers over 18 digits, a newline after `$`), each counted and explained in §10.** |
-| 2 | **Diagnostics + checker** | `tools/check/` (838 + 170 + 114 + 136) | 1 | `conform` passes: every sidecar matched, zero errors on the valid examples; `--output json` identical to Python's, key order included (`spec/diagnostics/README.md` §4.1) |
+| 2 | **Diagnostics + checker** | `tools/check/` (838 + 170 + 114 + 136) | 1 | `conform` passes: every sidecar matched, zero errors on the valid examples; `--output json` identical to Python's, key order included (`spec/diagnostics/README.md` §4.1). **First slice built and measured: §13 and §14. All 34 rules of `checker.py` are ported; `chw conform .` decides 19 of 19 sidecar entries; `--output json` is byte-identical on 16 of 16 valid examples and refusals; 0 unexplained differences over the mutants. What is not done is listed in §14.8.** |
 | 3 | **c-header generator** | `gen/c-header/c_header.py` (340) | 2 | Output byte-identical to Python's for both examples; gcc and clang roundtrip (oracle lane) still green; behavioral roundtrip still green against `scenarios.json` |
 | 4 | **Remaining generators**: devicetree, cancho-binding, svd, systemverilog | `gen/*` (138 + 211 + 254 + 330) | 3, and the shared emit helpers | Same, per target. SVD additionally validates against `spec/generators/CMSIS-SVD.xsd` (oracle lane) |
 | 5 | **diff / impact** | `tools/diff/diff.py` (470) | 2, 3, 4 (staleness is decided by byte-comparing generator output) | `tests/diff/` goldens, including the seeded Phase 2 change across all five targets |
@@ -641,7 +645,7 @@ examples, then its differential); `chw conform . --fixtures tests/stage1`; a
 conformance run against a copy of the tree with one sidecar altered, which must
 exit 1 (the runner can fail); the JSON differential and `stress.py`; and
 `cancho authority` diffed against `scripts/authority.expected`.
-`python3 scripts/run_gate.py` is untouched and still run by CI.
+`python3 scripts/run_gate.py` is untouched and still run by CI. Stage 2 adds to this gate (13.7): the new modules, three more unit suites, `tests/stage2`, three more "the runner can fail" trees (four, with the one 14.4 added), and step 8b.
 
 ---
 
@@ -869,12 +873,565 @@ Stage 1 (this change):
 
 ## 12. Next slice
 
-Stage 2: `Diagnostic` and the checker. The IR is now loaded from both forms and the
-structural half of every sidecar is decided, so the 14 deferred entries are the
-exit criterion: `chw conform` should report 12 of 12 with none deferred, and
-`--output json` identical to the Python checker's. Its first questions are the
-ones stage 1 raised: whether the `Diagnostic` record can stay a line of text
-(9.4) or becomes a typed value; whether the semantic rules (overlap, reset fit,
-DMA alignment) are compact enough to fit the 800-line budget per file that
-`schema.cho` has already passed; and whether `schema.cho` should be split into a
-base, a lint and a check before more is added to it.
+*Done, as §13 to §15.* The questions this section asked: whether the `Diagnostic`
+record can stay a line of text (no: §13.2), whether the semantic rules fit the
+800-line budget per file (yes, all of them, apart from the catalog: §14.6), and
+whether `schema.cho` should be split before more is added to it (nothing was
+added to it; the checker is six files of its own). The exit criterion (the 14
+deferred entries decided, `--output json` identical to the Python checker's) is
+met: §14.1 and §14.2.
+
+---
+
+## 13. Stage 2 design: `Diagnostic` and the semantic checker
+
+> **Order of work, stated plainly.** `CONTRIBUTING.md` says design before code.
+> This slice did not keep to it: the checker, its output and the differential were
+> written and run first, and this section was written during the second run of
+> the mutant differential, after the first one (408 unexplained differences) had
+> been read. So 13.5 below is **not** a prediction made in advance. It is what
+> reading `checker.py` led me to expect, written down late; section 15 says, run by
+> run, what the differential found that it did not list. The section is here so
+> that the claims can be checked, not to claim that the order was kept.
+
+### 13.1 What this slice decides
+
+Stage 1 loads both forms and decides the structural half of every sidecar. The
+checker is what is left of exit criterion 2 in section 2:
+
+* **`Diagnostic`** as the object of `spec/diagnostics/README.md` section 2, not
+  a line of text (the question 9.4 and 12 left open);
+* **`chw check` and `--output json`**, in the shape the Python checker prints, byte
+  for byte, and `chw validate --output json` for the structural half alone;
+* **every rule of `tools/check/checker.py`**, in its order and its words: 34
+  rule tags (the catalog's `parse-error` and `internal` are stage 0 and 1's);
+* **`chw conform` deciding all 19 entries** of the 12 refusal sidecars, none
+  deferred, and the same for the 16 `tests/stage1` fixtures once their sidecars
+  name the semantic diagnostics Python also emits for them.
+
+Not in this slice: the generators, `diff`, `report` (stages 3 to 7), real source
+spans for the semantic rules (every Python semantic diagnostic carries the
+whole-file span 1:1; the tape has the offsets, so a located span is a later,
+additive change), and `ran`, the argument by which `check()` tells `report.py`
+which rule groups executed (the report is still Python and reads the Python
+checker).
+
+### 13.2 The record
+
+```
+Dg { rule: Rule, subj: Subj, loc: Loc, kw: Sp, msg: Sp, exp: Sp, act: Sp, rem: Rem, kids: Kids }
+```
+
+* `Rule` is an **enum of the 36 rule tags**. The severity, the tier and the
+  subject kind are **functions of the rule** (`rule_severity`, `rule_tier`,
+  `rule_kind`), section 3 of the diagnostics spec written as code: a rule cannot
+  be emitted with another rule's tier, and a tag that is not in the enum cannot
+  be spelt. `chw catalog` prints the table and `tests/differential/catalog.py`
+  compares it with the README.
+* Text is **not owned by the record**. Every string it holds is a span (`Sp`) of
+  one byte pool the table (`Diags`) owns, the way the IR holds names (`ir.cho`).
+  A diagnostic is built by appending its pieces to the pool, closing the span,
+  and pushing the record: `mark`, `lit`/`put_*`, `close`, `push`.
+* A **related** entry or a **note** is a record of the same table, pushed right
+  after its parent and found through the parent's `Kids`. A reader that walks the
+  table skips `nest != 0`.
+* `expected` and `actual` are held as the **JSON text they print as** (a string,
+  a number, an array), formatted for a top-level diagnostic: that is all the JSON
+  form can show, and the text form does not print them.
+* The record is a `val` value, so it lives in a `std.vec`; a field of a record
+  cannot be assigned (`d.n = 5` is refused), so a diagnostic is built with `mk`
+  and rebuilt by the `with_*` functions, each of which copies the nine fields.
+
+Alternatives, and why not:
+
+| | Why not |
+|---|---|
+| keep the stage-1 line of text (`code TAB line TAB ...`) | related entries, notes, a remediation and `expected`/`actual` have no place in it without growing a parser for it; it stays, unchanged, as the validator's report (`validate --machine`) and is converted by `chw.dg_report` |
+| a record of owned `Buffer`s | a `Buffer` is a `res`; a struct holding one is a `res`; a `Vec` holds `val` only, so a table of diagnostics would be a `std.list` read newest-first |
+| JSON text built directly by the rules | the conformance runner, the text form and a test would all have to parse it back; the object is what `spec` section 5 says the text form is derived from |
+
+### 13.3 The wire
+
+* `chw check FILE [--output text|json] [--located]`: load, validate against the
+  schema, run every rule, print. Exit 0 with no Error, 1 with one, 2 for the
+  tool's own fault (`internal`). `chw validate FILE --output json` prints the
+  structural half in the same shape. `chw catalog` prints the rule table.
+* **`--output json` is `Diagnostic.to_json()` of `diagnostic.py`**, one object
+  after another, `json.dumps(indent=2)` with `ensure_ascii`, keys in the order
+  `code, severity, tier, message, related, notes, subject, span, expected,
+  actual, remediation`. The structural diagnostics are converted from the stage-1
+  report into the words `checker.py` gives them: `schema validation failed: ` +
+  the `jsonschema` message, the pointer as a list (`["block", "registers", 0]`),
+  `expected` the schema name, `actual` the message.
+* **Spans.** A semantic diagnostic and a structural one both carry the file span
+  1:1, as Python's do; a `parse-error` carries the token it stopped at, to its
+  end (`line:col` to `line:col + max(len(token), 1)`, which needed the parser to
+  expose the token it opened the refusal at). `--located` puts the position of the
+  offending node (stage 1's) on a structural diagnostic and adds the schema
+  `keyword` to its `Ir` subject: the one place the JSON is not Python's, and only
+  when asked.
+* The text form is `text_format.py`'s: the header, `--> file` (and the source
+  snippet for a real position), `= related[...]`, `= note:`, `help:`.
+
+### 13.4 Modules (all under `src/`)
+
+| Module | Does |
+|---|---|
+| `diagnostic` | the record, the catalog, the pool, `mk`/`with_*`/`push` |
+| `hexval` | `_parse_hex`: `int(s, 16)` with its underscores and trailing blanks; exact below 2^60, saturated and keyed above |
+| `check_util` | reading a node as Python would (`isinstance`, `in`, `str()`, `repr()`, `json.dumps`) and appending text to the pool |
+| `check_block`, `check_regs`, `check_intr`, `check_dma` | the rules, one concern per file, statement for statement |
+| `check` | `check()`: the order of the groups |
+| `dg_report` | the stage-1 report as records |
+| `dg_json`, `dg_text` | the two output forms |
+
+`conform`, `load`, `main`, `front`, `parse` and `diag` change: `conform` decides
+every entry from the records, `load` keeps them beside the stage-1 report, `main`
+gains `check` and `catalog`, and the parser's refusal now also says where its
+token ends.
+
+The checker runs on the **JSON tape of the contract**, not on the IR: the IR is
+lossy for it (an invalid `endianness` survives only as `big: false`, a missing
+`lsb` as 0, a kind as a span) and the Python checker reads the dict it
+`json.loads`ed. A text-form file is checked through the JSON its IR renders as,
+the document `chw.load` already validates. One checker, both forms.
+
+### 13.5 Known differences from `checker.py`, expected
+
+Listed from reading `checker.py`; see the note at the head of this section for
+when:
+
+1. *`checker.py` raises, the port answers.* The module says "the checker is
+   total" and is not: `reg.get` on a number, `kind in set` on a list. The port
+   skips an element that is not an object and treats an unhashable kind as
+   unknown; a mutant on which Python raises is counted, by exception, not compared.
+2. *Past 2^60 a hex value is saturated.* A cancho `int` traps on overflow. A hex
+   literal of more than 15 significant digits is exact for equality (its canonical
+   digits are the key), for alignment (the low 16 bits are kept) and for every
+   comparison against a bus mask or address space; it is not exact for a sum
+   (`offset + size`) or for an overlap of two such DMA fields. A JSON integer past
+   18 digits is read as +-10^18 by the checker after the validator has refused it
+   (`integer-range`, stage 1).
+3. *Floats are source text.* A float in a message or in `actual` prints as written;
+   Python prints `repr(float)` (stage 1, 9.5).
+4. *Non-ASCII digits and whitespace.* `int(s, 16)` accepts Unicode digits and
+   `str.strip()` Unicode blanks; the port reads ASCII.
+5. *Duplicate keys.* `json.loads` keeps the last, `std.json` the first; the
+   validator refuses the document (stage 1).
+6. *The width of an enum past 62 bits.* `1 << width` is a Python bignum; the
+   largest mask the port prints is 2^62 - 1 (reachable only with a negative `lsb`
+   the schema refuses).
+7. *JSON syntax errors* are worded by `std.json` (stage 1).
+
+### 13.6 The differentials (test-only Python, `tests/differential/`)
+
+* `check_json.py`, **fixtures**: every valid example, refusal, `tests/stage1` and
+  `tests/stage2` file through both command lines, `--output json` and the text
+  form, bytes compared. **Mutants**: one semantic change at a time to the JSON
+  seeds (every value of a key-aware pool wherever that key occurs, every key
+  deleted, every array element duplicated, every collision of two names or
+  offsets, every pair of field bounds), and to the textual examples (every token
+  deleted, every number replaced); the Python side in process, the cancho side
+  `chw check --output json`. A difference must fall in a class of 13.5 or fail.
+* `catalog.py`: the rule table against `spec/diagnostics/README.md` section 3, and
+  that every rule has a refusal fixture.
+* `tests/mutation/run.py`: one deliberate break per rule; 14.3.
+
+### 13.7 Gate
+
+`scripts/gate_cancho.sh` gains the new modules in its program, the three new unit
+suites, the conformance run over `tests/stage2`, three more "the runner can fail"
+trees, and step 8b (the catalog and `check_json.py`).
+
+---
+
+## 14. Stage 2 measured
+
+Reproduce everything below with `sh scripts/gate_cancho.sh` (needs the pinned
+compiler and `pip install jsonschema==4.26.0 lxml`), and the mutation table with
+`python3 tests/mutation/run.py`. Every number is from those runs on one 4-core
+Linux machine, unless a row says otherwise. The compiler was the build at
+`7ad4d50`, three commits after `.cancho-rev`; it did not refuse over the pin, so no
+flag was needed.
+
+### 14.1 The conformance runner decides every entry
+
+`chw conform .` (the 12 refusal fixtures and the 4 valid examples):
+
+| Measurement | Stage 1 | Now |
+|---|---|---|
+| refusal fixtures matched | 12 of 12, on the stage-1 rules | **12 of 12** |
+| sidecar entries decided by cancho | 5 of 19, 14 deferred and not counted as passed | **19 of 19, none deferred** |
+| valid examples | 4 of 4 clean | 4 of 4 without an error; 2 warnings (the `constraint` of `uart.chw`, in both forms), as `conformance.py` allows |
+
+`chw conform . --fixtures tests/stage1,tests/stage2`: **46 of 46 fixtures, 83 of 83
+entries** (the 12 refusals, the 16 `tests/stage1` fixtures whose sidecars now also
+name the semantic diagnostics `checker.py` emits for them, 31 entries where there
+were 19, and the 18 `tests/stage2` fixtures, 33 entries). The `tests/stage2`
+sidecars were generated from `checker.py`'s output, the oracle, and checked in;
+cancho is not their author.
+
+The runner can fail: gate step 8 and the mutation harness run it on six trees, each
+the contract-facing files with one thing changed (a sidecar naming the wrong
+structural code, the wrong semantic code, another field, another message; a
+fixture mended so its overlap is gone; a valid example made to share an offset),
+and require every one to be refused.
+
+### 14.2 Against `checker.py`, byte for byte
+
+`python3 tests/differential/check_json.py chw` (fixtures part): 50 files: the 4
+valid examples, the 12 refusals, the 16 `tests/stage1` and the 18 `tests/stage2`
+fixtures, each through both command lines.
+
+| | Files |
+|---|---|
+| `--output json` byte-identical to `checker.py --output json` | **47 of 50** |
+| the text form byte-identical to `checker.py` | **47 of 50** |
+| the target set (4 valid examples, 12 refusals), both forms | **16 of 16**, both |
+| the other 3, each a stage-1 rule that is stricter on purpose | `json-syntax` (the wording of the syntax message), `integer-range`, `duplicate-key` |
+
+### 14.3 The mutants
+
+The same check over 55,182 distinct inputs (66,620 generated, 11,438 of them
+repeats): the 2 valid JSON examples, the 11 JSON refusal fixtures and the 18
+`tests/stage2` documents (31 seeds) with one semantic change at a time: every value of
+a key-aware pool (lsb, msb, offset, reset, base address, kind, bus width,
+endianness, owner, align, size, number, written_as, name, register and field
+references, enum values, constraint, version, flags) wherever that key occurs, 15
+generic values at every node, every key deleted, every array element duplicated,
+copied under another name and emptied, every collision of two names, offsets,
+bounds or references, and every (lsb, msb) pair from a 10 by 10 grid; and the two
+textual examples and the parse-error fixture with every token deleted, every
+number replaced by 20 values and every keyword replaced by 9.
+
+| | Inputs |
+|---|---|
+| distinct inputs | 55,182 |
+| diagnostics byte-identical to `checker.py` (same objects, same order, same bytes) | **48,176** |
+| differ, each in a class below | 1,192 |
+| `checker.py` raises; compared only for "cancho answered, exit 0 or 1, no trap" | 5,814 |
+| differ and unexplained | **0** |
+| verdict (any Error) agrees | 49,362 of the 49,368 both sides answered; the other 6 are in the classes below |
+
+The 1,192 by class (an input is in exactly one):
+
+| Class | Inputs | Why |
+|---|---|---|
+| `integer-range` | 1,160 | an integer of more than 18 digits is refused by the validator (stage 1) and, in the text form, by the parser; Python reads it |
+| `pattern-trailing-newline` | 30 | Python's `$` accepts a string with a final newline (`"0.1.0\n"`); the validator does not (stage 1) |
+| `duplicate-key` | 1 | refused (stage 1) |
+| `json-syntax-wording` | 1 | the syntax message is `std.json`'s (stage 1) |
+
+The 5,814 inputs on which `checker.py` raises, by the statement that raised
+(`checker.py` line; the cancho side answered every one with exit 0 or 1):
+
+| `checker.py` line | Statement | Exception | Inputs |
+|---|---|---|---|
+| 170 | `for reg in registers`, `registers` a number | `TypeError` | 102 |
+| 171 | `reg.get`, a register that is not an object | `AttributeError` | 666 |
+| 251 | `kind not in _KNOWN_KINDS`, `kind` a list or an object | `TypeError` | 232 |
+| 310 | `f.get`, a field that is not an object | `AttributeError` | 1,006 |
+| 452 | `block.get("registers")` iterated for `registers_by_name` | `TypeError` | 118 |
+| 455 | `for intr in interrupts`, `interrupts` a number | `TypeError` | 108 |
+| 456 | `intr.get`, an interrupt that is not an object | `AttributeError` | 332 |
+| 494 | `kind not in _VALID_CLEAR_KINDS`, `kind` unhashable | `TypeError` | 72 |
+| 523 | `ref.get`, a reference that is not an object | `AttributeError` | 996 |
+| 527 | `registers_by_name.get(reg_name)`, `reg_name` unhashable | `TypeError` | 168 |
+| 544 | `reg.get("fields")` iterated, or `f.get("name")` on a non-object | `TypeError`, `AttributeError` | 404, 105 |
+| 545 | `field_name not in field_names`, `field_name` unhashable | `TypeError` | 316 |
+| 571, 572 | `for buf in buffers`; `buf.get` | `TypeError`, `AttributeError` | 108, 306 |
+| 586, 587 | `for f in fields` of a buffer; `f.get` | `TypeError`, `AttributeError` | 144, 631 |
+
+All are the same property: `checker.py` assumes a schema-valid shape (the module's
+docstring says the checker "is total", which it is not). The port skips an element
+that is not an object and treats an unhashable kind as unknown; the schema validator
+reports the shape, so such a document is still refused.
+
+Listed in 13.5 and **not exercised**: the float spelling (the pool has floats, and the
+ones in it, such as `4.0` and `16.5`, are spelt as Python's `repr` spells them; no
+mutant had one that is not), the saturated hex (the pool has six hex
+literals past 2^60, in offsets, resets and base addresses, and the messages
+agreed), and the width past 62 bits. They are not shown to be harmless; the
+corpus did not reach a difference.
+
+### 14.4 Mutation checks: one deliberate break per rule
+
+`python3 tests/mutation/run.py` copies `src/`, changes one expression in the copy
+(the old text must occur exactly once), builds `chw` from the copy and runs, in
+order: the four new unit suites against the copy; `chw conform . --fixtures
+tests/stage1,tests/stage2` with the mutant; the "runner can fail" trees with it;
+and, for a mutant none of those noticed, the fixtures and then the full mutant
+differential against `checker.py`. A mutant is killed when any of them fails.
+50 mutations: one or more per rule of the catalog (at its boundary where it has
+one), the reading of hex (`int(s, 16)`), the catalog's tier, severity and
+subject, the JSON writer (key order, the related list, pointers, escapes), the
+conversion of the stage-1 report, the text form's caret, and three in the
+conformance runner.
+
+First run of all 50 (a runner with six trees, and five fewer assertions in the
+unit tests): **44 were killed by the unit tests, the runner or its trees, 4 by the
+differential alone, 2 survived everything.**
+
+* The 4 that only the differential noticed were an empty name accepted for a
+  field, a DMA field and a DMA buffer, and a version of four numbers: the unit
+  tests had tried an empty *register*, interrupt and block name and a version
+  with a dot too many, not these. The differential reported 78, 45, 22 and 30
+  unexplained differences. The unit tests now try each, and the four are killed by
+  them (the table).
+* Of the 2 survivors, one was **not a defect**: `dma-align-illegal` replaced
+  `> 4096` by `> 8192`, which cannot change an answer because the power-of-two test
+  next to it already refuses 8192 (an equivalent mutant). It was replaced by a
+  break of the power-of-two test itself (`k == n` to `k >= n`), which 1 unit test
+  kills. The other was **a gap in the runner's own tests**: `conform-ignores-unexpected`
+  (the runner stops counting a diagnostic nothing expects) passed all six trees,
+  because none removed an expectation. The seventh tree (a sidecar that expects
+  nothing of a fixture that is refused) was added to the gate and to the harness,
+  and the runner now fails it (11 of 12).
+* The 6 mutations that were killed by unit tests alone and that `conform` did not
+  see (`field-overlap`, `field-bounds-overflow`, `register-offset-non-aligned`,
+  `register-offset-overflow`, `reset-overflow`, `block-bus-width-invalid`: the
+  fixtures hold none of the values at the edge) were also run against the full
+  differential: **525, 783, 124, 56, 27 and 31 unexplained differences**, so the
+  differential would have noticed each by itself.
+
+Table, after the gaps were closed (a mutant killed by the unit tests is not run
+against the differential, so that column is empty except for the 6 above and, for
+the 4, the first run's count):
+
+| Mutation | What it breaks | unit tests failing (of 50) | `conform` fixtures failing (of 46) | runner trees accepted | full differential: unexplained |
+|---|---|---|---|---|---|
+| `field-overlap` | overlap tests touching fields as overlapping | 1 | - | - | 525 |
+| `field-bounds-overflow` | msb == bus_width allowed | 1 | - | - | 783 |
+| `field-bounds-inverted` | one-bit fields refused | 9 | 31 of 46 fail | - | not run |
+| `field-enum-overflow` | the largest value refused | 1 | 16 of 46 fail | - | not run |
+| `field-enum-negative` | -1 allowed | 1 | 1 of 46 fail | - | not run |
+| `field-name-missing` | an empty name accepted | 1 | - | - | 78 before the unit test was added |
+| `field-bounds-missing` | one missing bound accepted | 1 | 1 of 46 fail | - | not run |
+| `register-offset-duplicate` | 0x08 and 0x8 are different offsets | 3 | - | - | not run |
+| `register-offset-non-aligned` | an offset off by one byte accepted | 2 | - | - | 124 |
+| `register-offset-overflow` | the last register of the space refused | 1 | - | - | 56 |
+| `register-offset-missing` | an unreadable offset accepted | 1 | 1 of 46 fail | - | not run |
+| `register-kind-unknown` | W0S not a kind | 1 | - | - | not run |
+| `reset-overflow` | the largest reset refused | 1 | - | - | 27 |
+| `reset-wo-nonzero` | warns on a zero reset | 2 | 1 of 46 fail | - | not run |
+| `dma-overlap` | adjacent fields overlap | 1 | 15 of 46 fail | - | not run |
+| `dma-align-unsatisfied` | an offset one past the alignment accepted | 2 | 1 of 46 fail | - | not run |
+| `dma-align-illegal` | any alignment up to a power of two is legal | 1 | 1 of 46 fail | - | 0 before the unit test was added |
+| `dma-owner-unknown` | DEVICE refused | 1 | 16 of 46 fail | - | not run |
+| `dma-field-size` | a DMA field is three bytes | 1 | 1 of 46 fail | - | not run |
+| `dma-field-name-missing` | an empty field name accepted | 1 | - | - | 45 before the unit test was added |
+| `dma-name-missing` | an empty buffer name accepted | 1 | - | - | 22 before the unit test was added |
+| `block-bus-width-invalid` | 16 refused | 6 | - | - | 31 |
+| `block-endianness-unknown` | big refused | 1 | - | - | not run |
+| `block-base-address-missing` | a zero base address accepted | 1 | - | - | not run |
+| `block-name-missing` | an empty block name accepted | 1 | 1 of 46 fail | - | not run |
+| `schema-version-unsupported` | 0.2 supported, 0.1 not | 28 | 42 of 46 fail | - | not run |
+| `version-shape` | four-part versions accepted | 1 | - | - | 30 before the unit test was added |
+| `interrupt-unresolved-field` | a field resolves to any other field | 3 | 17 of 46 fail | - | not run |
+| `interrupt-unresolved-register` | no register ever resolves | 3 | 17 of 46 fail | - | not run |
+| `interrupt-clear-kind` | RC refused | 1 | - | - | not run |
+| `interrupt-duplicate-name` | duplicates not noticed | 1 | 1 of 46 fail | - | not run |
+| `interrupt-role-order` | enable reported as status | 1 | 4 of 46 fail | - | not run |
+| `interrupt-name-missing` | an empty interrupt name accepted | 1 | - | - | not run |
+| `register-name-missing` | an empty register name accepted | 1 | - | - | not run |
+| `hex-underscore` | int(s, 16) underscore rule dropped | 2 | - | - | not run |
+| `hex-trailing-space` | trailing whitespace refused | 1 | - | - | not run |
+| `remedy-confidence` | the remediation says High | 1 | - | - | not run |
+| `json-key-order` | severity and tier swapped | 3 | - | - | not run |
+| `json-related-dropped` | related never printed | 1 | - | - | not run |
+| `tier-runtime` | the version rule is Static | 1 | - | - | not run |
+| `severity-warning` | a warning is an error | 3 | - | - | not run |
+| `subject-kind` | field-overlap has a Register subject | 0 | 2 of 46 fail | - | not run |
+| `json-pointer-index` | an array index printed as a string | 2 | - | - | not run |
+| `json-escape-undone` | ~1 not undone in a pointer | 1 | - | - | not run |
+| `report-prefix` | the schema message loses Python's prefix | 2 | - | - | not run |
+| `report-parse-span` | a parse error ends where it starts | 1 | - | - | not run |
+| `text-snippet` | the caret is one column off | 1 | - | - | not run |
+| `conform-ignores-code` | the runner does not compare the code | 0 | - | 2 | not run |
+| `conform-ignores-subject` | the runner does not compare the subject | 0 | - | 1 | not run |
+| `conform-ignores-unexpected` | the runner ignores a diagnostic nothing expects | 0 | - | 1 | 0 before the unit test was added |
+
+All 50 are killed. The cost: a mutant is about two minutes of compiler time (a
+build and four suites), so the harness took 30 minutes for 50 on a machine that
+was also running someone else's builds (load average 7 to 14).
+
+### 14.5 Tests
+
+`cancho test`: **144 tests in 11 suites**, all passing (stage 1: 94 in 7). The 50
+new: `check` 29, `dg_output` 7, `diagnostic` 6, `hexval` 8. The `check` suite tests
+each rule at its edge, the value just inside and the one just outside (a field
+ending at the bus width and one bit past it; an enum value equal to the mask and one
+over; an offset of `0xfffffffc` and `0x100000000`; adjacent and overlapping DMA
+fields; an alignment of 4096, 4097, 0, -4, 6 and 4.0), and the
+hostile inputs (integers past 18 digits, hex literals past 2^60, elements that are
+not objects). Its expectations are what `checker.py` says; the differential is what
+checks that.
+
+### 14.6 Size, speed, authority
+
+| | Value |
+|---|---|
+| new product modules, lines | `diagnostic` 877, `check_regs` 449, `check_util` 442, `dg_json` 312, `check_intr` 236, `check_dma` 222, `check_block` 194, `dg_text` 153, `hexval` 133, `dg_report` 88, `check` 57: **3,163**. Changed: `conform` 482 to 536, `main` 214 to 324, `load` 196 to 245, `diag`, `front`, `parse`, `json_out` by a few lines each |
+| the Python they replace, lines | `checker.py` 838 (80 of them, `_validate_schema`, `check_file` and the CLI loop, were already stage 1's), `diagnostic.py` 114, `text_format.py` 136: **1,088**; `conformance.py` 170 was stage 1's |
+| ratio | 2.9x. Not like for like: the port also does Python's `repr`, `str`, `int(s, 16)` and `json.dumps(indent=2)` for the values it quotes, and keeps the catalog as code |
+| largest files | `schema.cho` 984 and `diagnostic.cho` 877 (the catalog is 568 of them): both over the 800-line design budget, under the 2,000 ceiling |
+| program | 25 files, 7,842 lines (stage 1: 14 files, 4,422 lines of the program) |
+| `cancho build` | 13.1 s (machine idle), 14.8 s (load average 5) |
+| `cancho check` of the program | 8.0 s (idle), 15.5 s (loaded) |
+| binary | 807,320 bytes (stage 1: 374,912) |
+| `chw check uart.chw` | 2.0 ms (20-run mean, machine busy) against 172.0 ms for `checker.py` in a fresh interpreter, most of which is start-up and import |
+| `chw conform .` | 6.2 ms for the 12 refusals and 4 valid examples, 9.6 ms with the 34 `tests/stage1` and `tests/stage2` fixtures; `conformance.py` 188.8 ms for the first |
+| hostile inputs | `stress.py` now runs 19 inputs through both `chw validate` and `chw check`, 38 runs, each exit 0 or 1 as wanted in under 20 s: the slowest is 500 fields on the same 32 bits, 124,750 overlap diagnostics, 2.35 s (quadratic, as `checker.py` is). No trap |
+| the gate | 12 min 45 s, `exit 0`, on a machine whose load average was 7 to 14 from other work; `python3 scripts/run_gate.py` 5.0 s, `GATE PASSED` |
+| `cancho authority` | unchanged: `args`, `dir_read`, `err_write`, `file_read`, `fs_read("")`, `heap`, `io_write`; never the network, signals, other programs or foreign code. `scripts/authority.expected` was not touched, and no `Ffi` or foreign call is used |
+
+### 14.7 What was easy, and what was not (cancho)
+
+Easy: translating `checker.py`. Each rule is its Python statement and its
+f-string; the compiler's refusals during the whole slice were about ten (below), each a
+local edit. A match over an enum with 36 arms is checked for exhaustiveness, which
+is the property the catalog wants. `std.map` made `registers_by_name`, the offset
+table and the duplicate-interrupt set linear without a thought. Every integer that
+came from a document is read through a clamp or a saturating hex parse, and no input
+in 55,182 reached a trap.
+
+Not easy, with the measure where there is one:
+
+* **A struct field cannot be assigned** (`d.n = 5` is refused: "`Dg` is not a
+  reference, so this would write one field and leave the rest"). A diagnostic is
+  built once and rebuilt by `with_expected`, `with_remedy`, `with_loc`,
+  `with_keyword`, `with_pointer`, `with_nest`, each copying the nine fields:
+  about 45 of `diagnostic.cho`'s lines, but the shape forced the sub-records
+  (`Subj`, `Loc`, `Rem`, `Kids`) that keep the copy at nine.
+* **An enum has no `==` and no iteration.** `rule_name`, `rule_severity`,
+  `rule_tier` and `rule_kind` are four matches of 36 arms (the catalog is 568 of
+  `diagnostic.cho`'s 877 lines, 110 of them `rule_at`), and "every rule" is a hand-written `rule_at(i)`
+  that a unit test pins to `rule_count()`. A `static` table of structs would
+  replace most of it.
+* **Text is built by appending to a threaded `Buffer`.** The message of
+  `field-overlap` is 14 appends where Python has one f-string; `Diags` (which
+  owns the pool) must be taken apart and put back by every helper that appends
+  to it (60 sites mention `Diags {`). The same cost as stage 1's 6.
+* **No hex formatting in `std`** (`std.fmt` has floats only): `put_hex` is 12 lines.
+  **No Python `repr`** for floats (stage 1) or `int(s, 16)`; `hexval.cho` is 133
+  lines for what `int(s, 16)` does with its underscores and blanks.
+* **A pure test takes no parameters and a test that takes `heap` must use it**
+  (`declares heap but never performs it`), which cost three rewrites.
+* **`\u` is not an escape** in a string literal; the em dash and the section sign in
+  two messages are written as the characters.
+* **`val` is a reserved word** (`let val = ...` is "expected an identifier").
+* **`cancho fmt` removes the parentheses of `(1 << bw)`** (`a + b > 1 << bw` is
+  `a + b > (1 << bw)`: shift binds tighter than comparison), which a mutation
+  harness that matches source text has to know.
+* **The compiler is slow to say no:** `cancho check` of the program is 8 s,
+  `cancho build` 13 s, and a `cancho test` of one suite against the whole library
+  about 15 s, so a mutation run is about two minutes a mutation.
+
+### 14.8 What stage 2 does not show, and what is not done
+
+Not done:
+
+* **Located spans for the semantic rules.** Every semantic diagnostic carries the
+  whole-file span 1:1, as Python's do. The tape has the offsets (stage 1 already
+  uses them), so a located span is additive.
+* **`ran`**, the argument by which `check()` tells `tools/report/report.py` which
+  rule groups executed. The report is still Python and reads the Python checker;
+  the cancho checker does not yet expose it.
+* **Several files in one invocation** (`checker.py FILE...`), and `chw check -`
+  (standard input). `chw check` takes one file.
+* **`Warning` severity in the exit status of the structural half** is as Python's
+  (warnings do not fail), but `chw conform` cannot yet pin a *severity* in a
+  sidecar; the sidecar format has no field for it.
+* The rule `dma-written-by-binding` and the generator and roundtrip rules of the
+  catalog (`generator-*`, `roundtrip-failed`, `evidence-over-claim`,
+  `ir-version-unsupported`) are not the checker's: no cancho tool emits them yet.
+
+Not shown by this slice:
+
+* Non-ASCII digits and blanks in `int(s, 16)` (the port reads ASCII), `splitlines`
+  on `\x0b`, `\x0c`, `\x1c` to `\x1e`, U+2028 in the text form's snippet, and a
+  non-ASCII character that `repr` escapes and `pyrepr` does not (all as in stage 1).
+* A float quoted in a message (source text, not `repr(float)`).
+* A DMA field whose `offset` is past 2^60 *and* overlaps another such field: the
+  offsets saturate to the same value, so the pair is reported as overlapping where
+  Python decides by the exact sum.
+* Memory and time on a very large contract: the checker is quadratic in the number
+  of fields of one register and of one DMA buffer, as `checker.py` is, and linear in
+  everything else; `tests/differential/stress.py` (stage 1) runs the 11 hostile
+  inputs through `chw validate`, not through `chw check`.
+
+---
+
+## 15. Corrections (stage 2)
+
+Stage 2 (this change):
+
+1. **The order of work.** This slice wrote the design (13) after the checker
+   existed and after the first mutant run, not before; `CONTRIBUTING.md` asks for the
+   design first. Stated in 13 as well.
+2. **§12** asked whether the `Diagnostic` could stay a line of text. It could not
+   (13.2), and whether the semantic rules fit 800 lines a file. They do, in six
+   files of 57 to 449 lines. The catalog does not: `diagnostic.cho` is 877 lines,
+   over the budget the way `schema.cho` (984) is, for the reason in 14.7.
+3. **§3's estimates for `check/`**, from the 1.75 ratio: block 200, registers 450,
+   fields 600, interrupts 250, dma 450, driver 200, `diag` 250, `diag_text` 250:
+   2,650 lines. Measured: `check_block` 194, `check_regs` (registers and fields)
+   449, `check_intr` 236, `check_dma` 222, `check` 57, `diagnostic` 877 + `check_util`
+   442 + `hexval` 133, `dg_json` 312 + `dg_text` 153 + `dg_report` 88: 3,163 lines. The
+   rules came in at 1,158 against 2,000 estimated (the ratio overstated them, as
+   §3 said it probably would: the checker is comparisons and the fields of a
+   register fit one function), and everything around them at 2,005 against 650
+   (the catalog, the reading of values as Python reads them, and the two output
+   forms were not in the estimate).
+4. **§9.4's report line** gains a seventh field for a `parse-error` (the column its
+   token ends at), after the message so that every reader of the first six is
+   unchanged; the Python tool's span ends `max(len(token), 1)` columns on, and its
+   end-of-file token is the text `<end of file>`, 13 wide, which is what the
+   differential found (3 inputs) after the first version used 1.
+5. **§10.1** says 14 of 19 entries are deferred. That was true of stage 1 and is
+   left as it was; §14.1 is the present.
+6. **What §13.5 did not list and the differential found.** The first run of the
+   mutants had 408 unexplained differences; the classes, in the order they were
+   found and fixed:
+   * *The block's `name` is not always a string in Python's subject* (276 + 48
+     inputs): `block.get("name", "<missing>")` is whatever the document held, a
+     number, `null`, an array, and the subject dict carries it as that value, while
+     messages say `str()` of it. The `Sp` of a name now carries the JSON text of
+     such a value after its plain text (`dg.Sp.x`), and the JSON form prints it
+     re-indented to the depth it sits at (10 inputs found the indent wrong the first time:
+     a related entry is deeper than its parent).
+   * *Hand-built JSON strings in `actual`* (4 inputs): `"offset shared with " + name`
+     was assembled with literal quotes, so a name with a `"` or a non-ASCII
+     character was not escaped. Every JSON string is now written by one function
+     (`jquote`, `put_jtext`).
+   * *`pattern-trailing-newline` applies to the version string too* (72 inputs), not
+     only to hex strings as 13.5 and stage 1's table suggested.
+   * *The text parser's refusal of a decimal past 18 digits* (stage 0) was a
+     class of the check differential as well (1 input).
+7. **The gate** takes about thirteen minutes now (12 min 45 s on a loaded machine),
+   not the "about five" of §10: the checker differential is 3.5 of them and the
+   unit suites compile against a library twice the size.
+8. **The differential itself** was changed three times by what it found (the above)
+   and once by its own report: the exception type alone ("`AttributeError`: 4,042")
+   hid which statements raise, so it now names the `checker.py` line.
+
+---
+
+## 16. Next slice
+
+Stage 3: the c-header generator (stage 3 of section 2), which reads the IR, not the
+tape: the IR is still there, loaded from both forms, and the generators are the
+first consumers that need its typed records rather than a document. What stage 2
+leaves it:
+
+* the `Diagnostic` record and its two output forms, which `generator-target-unknown`
+  and `generator-unimplemented` (catalog 3.5) will use without a new shape;
+* the open question of the IR's losses (an invalid enum value survives only as a
+  default): a generator is run on a contract the checker accepted, so it may not
+  matter, and the first generator is where to find out;
+* the `ran` argument of `check()`, which `report` (stage 6) needs, and located spans
+  for the semantic rules, both additive (14.8);
+* the first question stage 3 asks: whether text assembly under linear ownership
+  (8.1) is as costly as the 14 appends of one message suggests. The C header is
+  about 340 lines of Python; the budget to beat is 14.7's, that a message built from
+  pieces costs about three lines a piece.

@@ -1,0 +1,119 @@
+// test_hexval.cho -- Python's `_parse_hex` (src/hexval.cho): what `int(s, 16)`
+// accepts after a lowercase `0x`, the saturation past 2^60, and the canonical
+// digits that identify a value.
+//
+//     cancho test tests/unit/test_hexval.cho src/hexval.cho --std
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.hexval;
+
+fn value_of[&t](text: &t [byte]) -> [] int {
+    let hv = hexval.parse(text);
+    if !hv.ok {
+        return 0 - 1;
+    }
+    return hv.v;
+}
+
+fn test_plain_hex_digits_in_either_case() -> [] int {
+    test.assert_eq(value_of("0x0"), 0);
+    test.assert_eq(value_of("0x10"), 16);
+    test.assert_eq(value_of("0xfF"), 255);
+    test.assert_eq(value_of("0x00000010"), 16);
+    return test.assert_eq(value_of("0xffffffff"), 4294967295);
+}
+
+fn test_only_a_lowercase_0x_prefix_is_a_hex_literal() -> [] int {
+    test.assert_eq(value_of("0X10"), 0 - 1);
+    test.assert_eq(value_of("10"), 0 - 1);
+    test.assert_eq(value_of(""), 0 - 1);
+    test.assert_eq(value_of("0x"), 0 - 1);
+    test.assert_eq(value_of("x10"), 0 - 1);
+    test.assert_eq(value_of(" 0x10"), 0 - 1);
+    test.assert_eq(value_of("0x-1"), 0 - 1);
+    test.assert_eq(value_of("0x+1"), 0 - 1);
+    return test.assert_eq(value_of("0x1g"), 0 - 1);
+}
+
+fn test_one_underscore_may_sit_between_digits_or_after_the_prefix() -> [] int {
+    test.assert_eq(value_of("0x1_0"), 16);
+    test.assert_eq(value_of("0x_10"), 16);
+    test.assert_eq(value_of("0x1_0_0"), 256);
+    test.assert_eq(value_of("0x10_"), 0 - 1);
+    test.assert_eq(value_of("0x1__0"), 0 - 1);
+    test.assert_eq(value_of("0x__10"), 0 - 1);
+    return test.assert_eq(value_of("0x_"), 0 - 1);
+}
+
+fn test_trailing_whitespace_is_ignored_but_not_inner_whitespace() -> [] int {
+    test.assert_eq(value_of("0x10 "), 16);
+    test.assert_eq(value_of("0x10\t\n"), 16);
+    test.assert_eq(value_of("0x 10"), 0 - 1);
+    return test.assert_eq(value_of("0x1 0"), 0 - 1);
+}
+
+fn test_zero_is_noticed_however_it_is_spelt() -> [] int {
+    test.assert(hexval.parse("0x0").zero);
+    test.assert(hexval.parse("0x0000").zero);
+    test.assert(hexval.parse("0x0_0").zero);
+    return test.assert(!hexval.parse("0x00001").zero);
+}
+
+fn test_a_value_past_2_to_the_60_saturates_and_keeps_its_low_bits() -> [] int {
+    let edge = hexval.parse("0xfffffffffffffff");
+    test.assert(!edge.big);
+    test.assert_eq(edge.v, 1152921504606846975);
+    let over = hexval.parse("0x10000000000000000");
+    test.assert(over.big);
+    test.assert_eq(over.v, hexval.cap());
+    test.assert_eq(over.low, 0);
+    let odd = hexval.parse("0x1ffffffffffffffffff");
+    test.assert(odd.big);
+    return test.assert_eq(odd.low, 65535);
+}
+
+fn test_leading_zeros_do_not_make_a_value_big() -> [] int {
+    let hv = hexval.parse("0x0000000000000000000000000004");
+    test.assert(!hv.big);
+    return test.assert_eq(hv.v, 4);
+}
+
+fn key_of[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] buffer.Buffer {
+    return hexval.canon_into(heap, buffer.empty(heap, 16), text);
+}
+
+fn test_the_canonical_digits_identify_a_value_of_any_size[&h](heap: &!h Heap) -> [heap] int {
+    let a = key_of(heap, "0x0008");
+    let b = key_of(heap, "0x8");
+    let c = key_of(heap, "0x_0_8 ");
+    let z = key_of(heap, "0x000");
+    let big1 = key_of(heap, "0x10000000000000000000000");
+    let big2 = key_of(heap, "0x010000000000000000000000");
+    let big3 = key_of(heap, "0x10000000000000000000001");
+    var ok = false;
+    borrow a as &ar in {
+        borrow b as &br in {
+            borrow c as &cr in {
+                borrow z as &zr in {
+                    borrow big1 as &b1 in {
+                        borrow big2 as &b2 in {
+                            borrow big3 as &b3 in {
+                                ok = bytes.equal(buffer.bytes(ar), buffer.bytes(br)) && bytes.equal(buffer.bytes(ar), buffer.bytes(cr)) && bytes.equal(buffer.bytes(zr), "0") && bytes.equal(buffer.bytes(b1), buffer.bytes(b2)) && !bytes.equal(buffer.bytes(b1), buffer.bytes(b3)) && bytes.equal(buffer.bytes(br), "8");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    buffer.drop(heap, a);
+    buffer.drop(heap, b);
+    buffer.drop(heap, c);
+    buffer.drop(heap, z);
+    buffer.drop(heap, big1);
+    buffer.drop(heap, big2);
+    buffer.drop(heap, big3);
+    return test.assert(ok);
+}

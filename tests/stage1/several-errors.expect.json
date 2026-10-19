@@ -40,6 +40,31 @@
       "keyword": "enum",
       "line": 13,
       "column": 17
+    },
+    {
+      "code": "block-bus-width-invalid",
+      "subject": {
+        "kind": "RegisterBlock",
+        "name": "T"
+      },
+      "message_contains": "block T has bus_width 64 must be 8, 16, or 32."
+    },
+    {
+      "code": "block-endianness-unknown",
+      "subject": {
+        "kind": "RegisterBlock",
+        "name": "T"
+      },
+      "message_contains": "block 'T' has endianness='middle'; must be 'little' or 'big'."
+    },
+    {
+      "code": "register-offset-missing",
+      "subject": {
+        "kind": "Register",
+        "block": "T",
+        "name": "CTRL"
+      },
+      "message_contains": "register 'CTRL' is missing a valid hex 'offset' (expected '0x...')."
     }
   ]
 }

@@ -1,0 +1,157 @@
+// test_dg_output.cho -- the stage-1 report as `Diagnostic` records
+// (src/dg_report.cho) and the two output forms (src/dg_json.cho, src/dg_text.cho):
+// the words and the shape `checker.py` prints, and the one switch (`located`).
+//
+//     cancho test tests/unit/test_dg_output.cho src/*.cho --std
+//     (all of src/ except main.cho and conform.cho)
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.dg_json;
+import chw.dg_report;
+import chw.dg_text;
+import chw.diag;
+import chw.diagnostic as dg;
+
+// A table made from one stage-1 record.
+fn table[&h](heap: &!h Heap, rec: buffer.Buffer) -> [heap] dg.Diags {
+    var ds = dg.empty(heap);
+    borrow rec as &r in {
+        ds = dg_report.convert(heap, ds, buffer.bytes(r));
+    }
+    buffer.drop(heap, rec);
+    return ds;
+}
+
+fn json_of[&h, &q](heap: &!h Heap, ds: &q dg.Diags, located: bool) -> [heap] buffer.Buffer {
+    return dg_json.render(heap, buffer.empty(heap, 256), ds, "f.chw", located);
+}
+
+fn schema_record[&h](heap: &!h Heap) -> [heap] buffer.Buffer {
+    return diag.add(heap, buffer.empty(heap, 64), "schema-invalid", 7, 18, "enum", "/block/registers/0/fields/1/msb", "64 is not one of [8, 16, 32]");
+}
+
+fn test_a_schema_record_is_the_jsonschema_diagnostic_of_checker_py[&h](heap: &!h Heap) -> [heap] int {
+    let ds = table(heap, schema_record(heap));
+    var ok = false;
+    borrow ds as &q in {
+        let out = json_of(heap, q, false);
+        borrow out as &o in {
+            ok = bytes.equal(buffer.bytes(o), "{\n  \"code\": \"schema-invalid\",\n  \"severity\": \"Error\",\n  \"tier\": \"Static\",\n  \"message\": \"schema validation failed: 64 is not one of [8, 16, 32]\",\n  \"related\": [],\n  \"notes\": [],\n  \"subject\": {\n    \"kind\": \"Ir\",\n    \"path\": \"f.chw\",\n    \"pointer\": [\n      \"block\",\n      \"registers\",\n      0,\n      \"fields\",\n      1,\n      \"msb\"\n    ]\n  },\n  \"span\": {\n    \"file\": \"f.chw\",\n    \"start\": {\n      \"line\": 1,\n      \"column\": 1\n    },\n    \"end\": {\n      \"line\": 1,\n      \"column\": 1\n    }\n  },\n  \"expected\": \"valid against cancho-hdl-contract.schema.json\",\n  \"actual\": \"64 is not one of [8, 16, 32]\"\n}\n");
+        }
+        buffer.drop(heap, out);
+    }
+    dg.drop(heap, ds);
+    return test.assert(ok);
+}
+
+fn test_located_puts_the_position_and_the_keyword_in[&h](heap: &!h Heap) -> [heap] int {
+    let ds = table(heap, schema_record(heap));
+    var ok = false;
+    borrow ds as &q in {
+        let out = json_of(heap, q, true);
+        borrow out as &o in {
+            ok = bytes.find(buffer.bytes(o), "\"keyword\": \"enum\"") > 0 && bytes.find(buffer.bytes(o), "\"start\": {\n      \"line\": 7,\n      \"column\": 18\n    }") > 0;
+        }
+        buffer.drop(heap, out);
+    }
+    dg.drop(heap, ds);
+    return test.assert(ok);
+}
+
+fn test_the_root_pointer_is_an_empty_list_and_a_syntax_error_has_no_pointer[&h](heap: &!h Heap) -> [heap] int {
+    var rec = diag.add(heap, buffer.empty(heap, 64), "schema-invalid", 1, 1, "required", "", "'block' is a required property");
+    rec = diag.add(heap, rec, "schema-invalid", 2, 3, "json-syntax", "", "file is not valid JSON: unexpected character");
+    let ds = table(heap, rec);
+    var ok = false;
+    borrow ds as &q in {
+        let out = json_of(heap, q, false);
+        borrow out as &o in {
+            let text = buffer.bytes(o);
+            ok = bytes.find(text, "\"pointer\": []") > 0 && bytes.find(text, "\"message\": \"file is not valid JSON: unexpected character\"") > 0 && bytes.count_byte(text, 'p') > 0;
+            // exactly one record carries a pointer key
+            var n = 0;
+            var at = 0;
+            while at >= 0 {
+                let found = bytes.find(text[at..len(text)], "\"pointer\"");
+                if found < 0 {
+                    at = 0 - 1;
+                } else {
+                    n = n + 1;
+                    at = at + found + 1;
+                }
+            }
+            ok = ok && n == 1;
+        }
+        buffer.drop(heap, out);
+    }
+    dg.drop(heap, ds);
+    return test.assert(ok);
+}
+
+fn test_a_pointer_segment_that_is_not_an_index_stays_a_string_and_escapes_are_undone[&h](heap: &!h Heap) -> [heap] int {
+    let rec = diag.add(heap, buffer.empty(heap, 64), "schema-invalid", 0, 0, "type", "/a~1b/c~0d/10/x1", "m");
+    let ds = table(heap, rec);
+    var ok = false;
+    borrow ds as &q in {
+        let out = json_of(heap, q, false);
+        borrow out as &o in {
+            ok = bytes.find(buffer.bytes(o), "\"pointer\": [\n      \"a/b\",\n      \"c~d\",\n      10,\n      \"x1\"\n    ]") > 0;
+        }
+        buffer.drop(heap, out);
+    }
+    dg.drop(heap, ds);
+    return test.assert(ok);
+}
+
+fn test_a_parse_error_is_always_located_and_ends_with_its_token[&h](heap: &!h Heap) -> [heap] int {
+    let rec = diag.add_ended(heap, buffer.empty(heap, 64), "parse-error", 2, 26, 28, "-", "", "parse error: expected ':' after the register offset (before the access kind), found 'RW'.");
+    let ds = table(heap, rec);
+    var ok = false;
+    borrow ds as &q in {
+        let out = json_of(heap, q, false);
+        borrow out as &o in {
+            ok = bytes.find(buffer.bytes(o), "\"start\": {\n      \"line\": 2,\n      \"column\": 26\n    },\n    \"end\": {\n      \"line\": 2,\n      \"column\": 28\n    }") > 0 && bytes.find(buffer.bytes(o), "\"message\": \"parse error: expected") > 0 && bytes.find(buffer.bytes(o), "\"expected\"") < 0;
+        }
+        buffer.drop(heap, out);
+    }
+    dg.drop(heap, ds);
+    return test.assert(ok);
+}
+
+fn test_the_text_form_has_a_snippet_only_for_a_real_span[&h](heap: &!h Heap) -> [heap] int {
+    var rec = diag.add_ended(heap, buffer.empty(heap, 64), "parse-error", 2, 5, 7, "-", "", "parse error: x");
+    rec = diag.add(heap, rec, "schema-invalid", 3, 4, "enum", "/a", "bad");
+    let ds = table(heap, rec);
+    var ok = false;
+    borrow ds as &q in {
+        let out = dg_text.render(heap, buffer.empty(heap, 128), q, "f.chw", "line one\n    two here\nthree\n", false);
+        borrow out as &o in {
+            ok = bytes.equal(buffer.bytes(o), "error[parse-error]: parse error: x\n   --> f.chw:2:5\n   |\n  2 |     two here\n   |     ^\nerror[schema-invalid]: schema validation failed: bad\n   --> f.chw\n");
+        }
+        buffer.drop(heap, out);
+        let again = dg_text.render(heap, buffer.empty(heap, 128), q, "f.chw", "line one\n    two here\nthree\n", true);
+        borrow again as &a in {
+            ok = ok && bytes.find(buffer.bytes(a), "   --> f.chw:3:4\n   |\n  3 | three\n   |    ^\n") > 0;
+        }
+        buffer.drop(heap, again);
+    }
+    dg.drop(heap, ds);
+    return test.assert(ok);
+}
+
+fn test_an_internal_record_is_tier_unknown_and_has_no_pointer[&h](heap: &!h Heap) -> [heap] int {
+    let rec = diag.add(heap, buffer.empty(heap, 64), "internal", 0, 0, "unsupported-keyword", "", "the schema uses 'maxLength'");
+    let ds = table(heap, rec);
+    var ok = false;
+    borrow ds as &q in {
+        let out = json_of(heap, q, false);
+        borrow out as &o in {
+            ok = bytes.find(buffer.bytes(o), "\"code\": \"internal\",\n  \"severity\": \"Error\",\n  \"tier\": \"Unknown\",\n  \"message\": \"the schema uses 'maxLength'\"") > 0 && bytes.find(buffer.bytes(o), "pointer") < 0;
+        }
+        buffer.drop(heap, out);
+    }
+    dg.drop(heap, ds);
+    return test.assert(ok);
+}

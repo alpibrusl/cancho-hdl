@@ -10,6 +10,16 @@
       "keyword": "minimum",
       "line": 21,
       "column": 20
+    },
+    {
+      "code": "field-enum-overflow",
+      "subject": {
+        "kind": "Field",
+        "block": "T",
+        "register": "CTRL",
+        "name": "EN"
+      },
+      "message_contains": "field EN: enum value -1 does not fit in 1 bits (declared as B=-1)."
     }
   ]
 }

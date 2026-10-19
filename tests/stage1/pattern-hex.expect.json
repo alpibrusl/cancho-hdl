@@ -10,6 +10,14 @@
       "keyword": "pattern",
       "line": 6,
       "column": 21
+    },
+    {
+      "code": "block-base-address-missing",
+      "subject": {
+        "kind": "RegisterBlock",
+        "name": "T"
+      },
+      "message_contains": "block 'T' has no valid hex 'base_address' (expected '0x...')."
     }
   ]
 }

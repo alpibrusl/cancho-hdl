@@ -1,0 +1,153 @@
+module chw.dg_text;
+
+// dg_text.cho -- the text form of a diagnostic table, as
+// tools/check/text_format.py prints it (spec/diagnostics/README.md, 5): the
+// header, the span with a source snippet when it is a real position, the
+// related entries, the notes and the help line. Like the Python formatter it
+// reads only what the JSON form carries, so a diagnostic with no remediation
+// prints no `help:` and a whole-file span prints no snippet.
+
+import std.buffer;
+import chw.dg_json;
+import chw.diagnostic as dg;
+
+fn word_of(s: dg.Severity) -> [] &static [byte] {
+    match s {
+        dg.Severity::Error => {
+            return "error";
+        }
+        dg.Severity::Warning => {
+            return "warning";
+        }
+    }
+}
+
+// Line `n` (1-based) of `source`, without its line end; empty if there is none.
+fn line_of[&s](source: &s [byte], n: int) -> [] &s [byte] {
+    var at = 0;
+    var line = 1;
+    while line < n && at < len(source) {
+        if int_of(source[at]) == '\n' {
+            line = line + 1;
+        }
+        at = at + 1;
+    }
+    if line < n {
+        return source[0..0];
+    }
+    var end = at;
+    while end < len(source) && int_of(source[end]) != '\n' {
+        end = end + 1;
+    }
+    if end > at && int_of(source[end - 1]) == '\r' {
+        end = end - 1;
+    }
+    return source[at..end];
+}
+
+fn has_line[&s](source: &s [byte], n: int) -> [] bool {
+    var line = 1;
+    var i = 0;
+    while i < len(source) {
+        if int_of(source[i]) == '\n' {
+            line = line + 1;
+        }
+        i = i + 1;
+    }
+    // a final line without a newline counts; a trailing newline adds none
+    var last = len(source);
+    if last > 0 && int_of(source[last - 1]) == '\n' {
+        line = line - 1;
+    }
+    return n >= 1 && n <= line;
+}
+
+fn digits(n: int) -> [] int {
+    var k = 1;
+    var rest = n;
+    while rest >= 10 {
+        rest = rest / 10;
+        k = k + 1;
+    }
+    return k;
+}
+
+fn spaces[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var k = 0;
+    while k < n {
+        o = buffer.push(heap, o, byte_of(' '));
+        k = k + 1;
+    }
+    return o;
+}
+
+fn span_lines[&h, &p, &s](heap: &!h Heap, out: buffer.Buffer, loc: dg.Loc, path: &p [byte], source: &s [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, "   --> ");
+    o = buffer.append(heap, o, path);
+    let point = loc.sl == 1 && loc.sc == 1 && loc.el == 1 && loc.ec == 1;
+    if point {
+        return buffer.push(heap, o, byte_of('\n'));
+    }
+    o = buffer.push(heap, o, byte_of(':'));
+    o = buffer.push_nat(heap, o, loc.sl);
+    o = buffer.push(heap, o, byte_of(':'));
+    o = buffer.push_nat(heap, o, loc.sc);
+    o = buffer.push(heap, o, byte_of('\n'));
+    if !has_line(source, loc.sl) {
+        return o;
+    }
+    var width = digits(loc.sl);
+    if width < 2 {
+        width = 2;
+    }
+    o = buffer.append(heap, o, "   |\n ");
+    o = spaces(heap, o, width - digits(loc.sl));
+    o = buffer.push_nat(heap, o, loc.sl);
+    o = buffer.append(heap, o, " | ");
+    o = buffer.append(heap, o, line_of(source, loc.sl));
+    o = buffer.append(heap, o, "\n   | ");
+    o = spaces(heap, o, loc.sc - 1);
+    return buffer.append(heap, o, "^\n");
+}
+
+pub fn render[&h, &q, &p, &s](heap: &!h Heap, out: buffer.Buffer, ds: &q dg.Diags, path: &p [byte], source: &s [byte], located: bool) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = 0;
+    while i < dg.size(ds) {
+        let d = dg.get(ds, i);
+        if d.kids.nest == 0 {
+            o = buffer.append(heap, o, word_of(dg.rule_severity(d.rule)));
+            o = buffer.push(heap, o, byte_of('['));
+            o = buffer.append(heap, o, dg.rule_name(d.rule));
+            o = buffer.append(heap, o, "]: ");
+            o = buffer.append(heap, o, dg.text(ds, d.msg));
+            o = buffer.push(heap, o, byte_of('\n'));
+            o = span_lines(heap, o, dg_json.effective(d.loc, located), path, source);
+            var r = 0;
+            while r < d.kids.rel_n {
+                let rel = dg.get(ds, d.kids.rel_first + r);
+                o = buffer.append(heap, o, "   = related[");
+                o = buffer.append(heap, o, dg.rule_name(rel.rule));
+                o = buffer.append(heap, o, "]: ");
+                o = buffer.append(heap, o, dg.text(ds, rel.msg));
+                o = buffer.push(heap, o, byte_of('\n'));
+                r = r + 1;
+            }
+            var n = 0;
+            while n < d.kids.note_n {
+                o = buffer.append(heap, o, "   = note: ");
+                o = buffer.append(heap, o, dg.text(ds, dg.get(ds, d.kids.note_first + n).msg));
+                o = buffer.push(heap, o, byte_of('\n'));
+                n = n + 1;
+            }
+            if dg.present(d.rem.text) {
+                o = buffer.append(heap, o, "help: ");
+                o = buffer.append(heap, o, dg.text(ds, d.rem.text));
+                o = buffer.push(heap, o, byte_of('\n'));
+            }
+        }
+        i = i + 1;
+    }
+    return o;
+}

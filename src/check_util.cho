@@ -1,0 +1,442 @@
+module chw.check_util;
+
+// check_util.cho -- what the semantic rules share: reading a node as Python
+// would, and appending text to a diagnostic pool (chw.diagnostic).
+//
+// The Python checker works on the dicts `json.loads` made; this port works on
+// the JSON tape of the same document. Every question the Python code asks of
+// a value has one function here, named for the Python it answers:
+//
+//   isinstance(x, str) and x     -> is_name       isinstance(x, int)  -> int_like
+//   x in (8, 16, 32)             -> num_is        f"{x}"              -> put_py
+//   f"{x!r}"                     -> put_repr      json.dumps(x)       -> put_jnode
+//
+// A bool is an int in Python, so `int_like` accepts one and `int_val` reads it
+// as 0 or 1; the messages then say `True`, as Python's do.
+
+import std.buffer;
+import std.json;
+import chw.diagnostic as dg;
+import chw.hexval;
+import chw.json_out;
+import chw.pyrepr;
+
+// ------------------------------------------------------------- reading ---
+
+// A JSON integer past 18 digits is refused by the structural validator
+// (docs/cancho-port.md, 9.4); the checker still reads the document, so it
+// reads such an integer as +-10^18 and never adds two values that could
+// overflow.
+pub fn big() -> [] int {
+    return 999999999999999999;
+}
+
+pub fn clamp(n: int) -> [] int {
+    if n > big() {
+        return big();
+    }
+    if n < 0 - big() {
+        return 0 - big();
+    }
+    return n;
+}
+
+pub fn is_none[&t](tape: &t [int], node: int) -> [] bool {
+    return node < 0 || json.is_null(tape, node);
+}
+
+// `isinstance(x, str) and x`
+pub fn is_name[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] bool {
+    return json.is_string(tape, node) && json.string_length(src, tape, node) > 0;
+}
+
+// `isinstance(x, int)`: a bool is one.
+pub fn int_like[&t](tape: &t [int], node: int) -> [] bool {
+    return json.is_int(tape, node) || json.is_bool(tape, node);
+}
+
+pub fn int_val[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] int {
+    if json.is_bool(tape, node) {
+        if json.to_bool(tape, node) {
+            return 1;
+        }
+        return 0;
+    }
+    return clamp(json.to_int(src, tape, node));
+}
+
+// `x in (k, ...)` for one member: a number equal to `k`, 8.0 included.
+pub fn num_is[&s, &t](src: &s [byte], tape: &t [int], node: int, k: int) -> [] bool {
+    if json.is_int(tape, node) {
+        return json.to_int(src, tape, node) == k;
+    }
+    if json.is_number(tape, node) {
+        return json.to_float(src, tape, node) == float_of(k);
+    }
+    return false;
+}
+
+// `x.get(key)` truthiness for a container child: true unless absent, null,
+// false, 0, "", [] or {}.
+pub fn truthy[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] bool {
+    if node < 0 {
+        return false;
+    }
+    if json.is_null(tape, node) {
+        return false;
+    }
+    if json.is_bool(tape, node) {
+        return json.to_bool(tape, node);
+    }
+    if json.is_int(tape, node) {
+        return json.to_int(src, tape, node) != 0;
+    }
+    if json.is_number(tape, node) {
+        return json.to_float(src, tape, node) != 0.0;
+    }
+    if json.is_string(tape, node) {
+        return json.string_length(src, tape, node) > 0;
+    }
+    return json.count(tape, node) > 0;
+}
+
+// The decoded string at `node` in a box the caller frees (empty if it is not
+// a string).
+pub fn decoded[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], node: int) -> [heap] Box[[byte]] {
+    var n = json.string_length(src, tape, node);
+    if n < 0 {
+        n = 0;
+    }
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(src, tape, node, contents(w));
+    }
+    return tmp;
+}
+
+// Is the string at `node` equal to `text`?
+pub fn str_is[&s, &t](src: &s [byte], tape: &t [int], node: int, text: &static [byte]) -> [] bool {
+    return json.string_equals(src, tape, node, text);
+}
+
+// Do the strings at `a` and `b` (one document) read the same?
+pub fn same_str[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], a: int, b: int) -> [heap] bool {
+    if !json.is_string(tape, a) || !json.is_string(tape, b) {
+        return false;
+    }
+    if json.string_plain(tape, a) && json.string_plain(tape, b) {
+        let x = json.string_view(src, tape, a);
+        let y = json.string_view(src, tape, b);
+        if len(x) != len(y) {
+            return false;
+        }
+        var i = 0;
+        while i < len(x) {
+            if x[i] != y[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    let x = decoded(heap, src, tape, a);
+    var same = false;
+    borrow x as &xr in {
+        same = json.string_equals(src, tape, b, contents(xr));
+    }
+    unbox_slice(heap, x);
+    return same;
+}
+
+// `_parse_hex(x)`: None (not ok) for a non-string.
+pub fn hex_of[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], node: int) -> [heap] hexval.Hv {
+    if !json.is_string(tape, node) {
+        return hexval.bad();
+    }
+    if json.string_plain(tape, node) {
+        return hexval.parse(json.string_view(src, tape, node));
+    }
+    let tmp = decoded(heap, src, tape, node);
+    var hv = hexval.bad();
+    borrow tmp as &r in {
+        hv = hexval.parse(contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return hv;
+}
+
+// The canonical digits of the hex string at `node` appended to `out`.
+pub fn hex_key[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    if json.string_plain(tape, node) {
+        return hexval.canon_into(heap, out, json.string_view(src, tape, node));
+    }
+    let tmp = decoded(heap, src, tape, node);
+    var o = out;
+    borrow tmp as &r in {
+        o = hexval.canon_into(heap, o, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return o;
+}
+
+// ------------------------------------------------------------- writing ---
+
+pub fn put_str[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], node: int) -> [heap] dg.Diags {
+    if !json.is_string(tape, node) {
+        return ds;
+    }
+    if json.string_plain(tape, node) {
+        return dg.lit(heap, ds, json.string_view(src, tape, node));
+    }
+    let tmp = decoded(heap, src, tape, node);
+    var out = ds;
+    borrow tmp as &r in {
+        out = dg.lit(heap, out, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return out;
+}
+
+// `repr(x)`: an absent key is `None`.
+pub fn put_repr[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], node: int) -> [heap] dg.Diags {
+    if node < 0 {
+        return dg.lit(heap, ds, "None");
+    }
+    let dg.Diags { pool, items } = ds;
+    return dg.Diags { pool: pyrepr.repr(heap, pool, src, tape, node), items: items };
+}
+
+// `str(x)`: a string as it is, anything else as `repr`.
+pub fn put_py[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], node: int) -> [heap] dg.Diags {
+    if json.is_string(tape, node) {
+        return put_str(heap, ds, src, tape, node);
+    }
+    return put_repr(heap, ds, src, tape, node);
+}
+
+pub fn put_int[&h](heap: &!h Heap, ds: dg.Diags, n: int) -> [heap] dg.Diags {
+    let dg.Diags { pool, items } = ds;
+    return dg.Diags { pool: json_out.num(heap, pool, n), items: items };
+}
+
+fn hex_digits[&h](heap: &!h Heap, out: buffer.Buffer, n: int, min: int) -> [heap] buffer.Buffer {
+    var o = out;
+    if n >= 16 || min > 1 {
+        o = hex_digits(heap, o, n / 16, min - 1);
+    }
+    let d = n % 16;
+    if d < 10 {
+        return buffer.push(heap, o, byte_of('0' + d));
+    }
+    return buffer.push(heap, o, byte_of('a' + d - 10));
+}
+
+// `{n:0{min}x}`: lowercase hex of a non-negative `n`, at least `min` digits.
+pub fn put_hex[&h](heap: &!h Heap, ds: dg.Diags, n: int, min: int) -> [heap] dg.Diags {
+    let dg.Diags { pool, items } = ds;
+    return dg.Diags { pool: hex_digits(heap, pool, n, min), items: items };
+}
+
+// A JSON string literal (`json.dumps`, ensure_ascii) of the text `t`.
+pub fn put_jtext[&h, &t](heap: &!h Heap, ds: dg.Diags, t: &t [byte]) -> [heap] dg.Diags {
+    let dg.Diags { pool, items } = ds;
+    return dg.Diags { pool: json_out.quoted(heap, pool, t, 0, len(t)), items: items };
+}
+
+fn indent[&h](heap: &!h Heap, out: buffer.Buffer, level: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var k = 0;
+    while k < level {
+        o = buffer.append(heap, o, "  ");
+        k = k + 1;
+    }
+    return o;
+}
+
+fn jstring[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    if json.string_plain(tape, node) {
+        return json_out.quoted(heap, out, src, tape[3 * node + 1], tape[3 * node + 2]);
+    }
+    let tmp = decoded(heap, src, tape, node);
+    var o = out;
+    borrow tmp as &r in {
+        o = json_out.quoted(heap, o, contents(r), 0, len(contents(r)));
+    }
+    unbox_slice(heap, tmp);
+    return o;
+}
+
+// The value at `node` as `json.dumps(value, indent=2)` writes it when it sits
+// at nesting `level`. A float is its source text (Python writes the shortest
+// round-trip form; docs/cancho-port.md, 13.5).
+pub fn jnode[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int, level: int) -> [heap] buffer.Buffer {
+    let k = json.kind(tape, node);
+    if k == json.kind_true() {
+        return buffer.append(heap, out, "true");
+    }
+    if k == json.kind_false() {
+        return buffer.append(heap, out, "false");
+    }
+    if k == json.kind_int() {
+        let text = src[tape[3 * node + 1]..tape[3 * node + 2]];
+        if len(text) == 2 && int_of(text[0]) == '-' && int_of(text[1]) == '0' {
+            return buffer.push(heap, out, byte_of('0'));
+        }
+        return buffer.append(heap, out, text);
+    }
+    if k == json.kind_float() {
+        return buffer.append(heap, out, src[tape[3 * node + 1]..tape[3 * node + 2]]);
+    }
+    if k == json.kind_string() {
+        return jstring(heap, out, src, tape, node);
+    }
+    var o = out;
+    if k == json.kind_array() {
+        if json.count(tape, node) == 0 {
+            return buffer.append(heap, o, "[]");
+        }
+        o = buffer.append(heap, o, "[\n");
+        var j = node + 1;
+        var left = json.count(tape, node);
+        while left > 0 {
+            o = indent(heap, o, level + 1);
+            o = jnode(heap, o, src, tape, j, level + 1);
+            j = json.skip(tape, j);
+            left = left - 1;
+            if left > 0 {
+                o = buffer.append(heap, o, ",\n");
+            }
+        }
+        o = buffer.push(heap, o, byte_of('\n'));
+        o = indent(heap, o, level);
+        return buffer.push(heap, o, byte_of(']'));
+    }
+    if k == json.kind_object() {
+        if json.count(tape, node) == 0 {
+            return buffer.append(heap, o, "{}");
+        }
+        o = buffer.append(heap, o, "{\n");
+        var j = node + 1;
+        var left = json.count(tape, node);
+        while left > 0 {
+            o = indent(heap, o, level + 1);
+            o = jstring(heap, o, src, tape, j);
+            o = buffer.append(heap, o, ": ");
+            o = jnode(heap, o, src, tape, j + 1, level + 1);
+            j = json.skip(tape, j + 1);
+            left = left - 1;
+            if left > 0 {
+                o = buffer.append(heap, o, ",\n");
+            }
+        }
+        o = buffer.push(heap, o, byte_of('\n'));
+        o = indent(heap, o, level);
+        return buffer.push(heap, o, byte_of('}'));
+    }
+    return buffer.append(heap, o, "null");
+}
+
+// `actual=x`: the value as a span of the pool, absent when Python's is None
+// (an absent key or a null), which the JSON form then omits.
+pub fn value_span[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], node: int) -> [heap] (dg.Diags, dg.Sp) {
+    if is_none(tape, node) {
+        return (ds, dg.none());
+    }
+    let (d1, m) = dg.mark(ds);
+    let dg.Diags { pool, items } = d1;
+    return dg.close(dg.Diags { pool: jnode(heap, pool, src, tape, node, 1), items: items }, m);
+}
+
+// A string value as a span: its JSON literal.
+pub fn text_span[&h, &t](heap: &!h Heap, ds: dg.Diags, t: &t [byte]) -> [heap] (dg.Diags, dg.Sp) {
+    let (d1, m) = dg.mark(ds);
+    return dg.close(put_jtext(heap, d1, t), m);
+}
+
+// A list of strings (`joined` is "a|b|c") as a span: the array as it prints
+// under a key of a top-level diagnostic.
+pub fn list_span[&h](heap: &!h Heap, ds: dg.Diags, joined: &static [byte]) -> [heap] (dg.Diags, dg.Sp) {
+    let (d1, m) = dg.mark(ds);
+    var d = dg.lit(heap, d1, "[");
+    var start = 0;
+    var i = 0;
+    var first = true;
+    while i <= len(joined) {
+        if i == len(joined) || int_of(joined[i]) == '|' {
+            if !first {
+                d = dg.lit(heap, d, ",");
+            }
+            d = dg.lit(heap, d, "\n    ");
+            d = put_jtext(heap, d, joined[start..i]);
+            first = false;
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return dg.close(dg.lit(heap, d, "\n  ]"), m);
+}
+
+// The string at `node` copied to the pool as a span of its own.
+pub fn str_span[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], node: int) -> [heap] (dg.Diags, dg.Sp) {
+    let (d1, m) = dg.mark(ds);
+    return dg.close(put_str(heap, d1, src, tape, node), m);
+}
+
+// The pool text `sp`, copied to the end of the pool as a JSON string literal.
+pub fn jquote[&h](heap: &!h Heap, ds: dg.Diags, sp: dg.Sp) -> [heap] (dg.Diags, dg.Sp) {
+    if sp.s < 0 {
+        return (ds, dg.none());
+    }
+    let n = sp.e - sp.s;
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow ds as &q in {
+        borrow mut tmp as &!w in {
+            let all = dg.text(q, sp);
+            let out = contents(w);
+            var i = 0;
+            while i < n {
+                out[i] = all[i];
+                i = i + 1;
+            }
+        }
+    }
+    var d = ds;
+    var quoted = dg.none();
+    borrow tmp as &r in {
+        let (d2, q) = text_span(heap, d, contents(r));
+        d = d2;
+        quoted = q;
+    }
+    unbox_slice(heap, tmp);
+    return (d, quoted);
+}
+
+// `{n:x}` with a sign, for a sum that a hostile document could make negative.
+pub fn put_hexs[&h](heap: &!h Heap, ds: dg.Diags, n: int, min: int) -> [heap] dg.Diags {
+    if n < 0 {
+        return put_hex(heap, dg.lit(heap, ds, "-"), 0 - n, min);
+    }
+    return put_hex(heap, ds, n, min);
+}
+
+// The offset at `node`, as `0x{offset:02x}` prints it without the `0x`:
+// exact even when the value is past 2^60.
+pub fn put_offset[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], node: int, hv: hexval.Hv) -> [heap] dg.Diags {
+    if !hv.big {
+        return put_hex(heap, ds, hv.v, 2);
+    }
+    let dg.Diags { pool, items } = ds;
+    return dg.Diags { pool: hex_key(heap, pool, src, tape, node), items: items };
+}
+
+// The value at `node` appended to the pool as JSON at nesting `level`; answers
+// the pool size afterwards.
+pub fn put_json[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], node: int, level: int) -> [heap] (dg.Diags, int) {
+    let dg.Diags { pool, items } = ds;
+    let grown = jnode(heap, pool, src, tape, node, level);
+    var at = 0;
+    borrow grown as &g in {
+        at = buffer.size(g);
+    }
+    return (dg.Diags { pool: grown, items: items }, at);
+}

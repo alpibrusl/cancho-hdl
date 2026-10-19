@@ -1,0 +1,15 @@
+{
+  "file": "tests/stage2/field-bounds-inverted.chw",
+  "expect": [
+    {
+      "code": "field-bounds-inverted",
+      "subject": {
+        "kind": "Field",
+        "block": "Dev",
+        "register": "CTRL",
+        "name": "MODE"
+      },
+      "message_contains": "field 'MODE' has msb=2 < lsb=5."
+    }
+  ]
+}

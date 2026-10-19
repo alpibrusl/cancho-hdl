@@ -1,0 +1,88 @@
+module chw.dg_report;
+
+// dg_report.cho -- the stage-1 report (the tab-separated records of chw.diag
+// that the loaders and the structural validator write) as `Dg` records, in
+// the words `checker.py` gives the same refusals (docs/cancho-port.md, 13.3):
+//
+//   parse-error        the parser's message, at the token, to its end
+//   json-syntax        `schema-invalid` with the syntax message, no pointer
+//   any other keyword  `schema-invalid`, "schema validation failed: " + the
+//                      jsonschema message, the JSON Pointer, and
+//                      expected = "valid against cancho-hdl-contract.schema.json",
+//                      actual = the message
+//   internal           the validator's own fault, tier Unknown
+//
+// The record's position is kept but not fixed: it is printed only when the
+// caller asks for located spans.
+
+import std.bytes;
+import chw.check_util as cu;
+import chw.diag;
+import chw.diagnostic as dg;
+
+fn rule_of[&c](code: &c [byte]) -> [] dg.Rule {
+    if bytes.equal(code, "parse-error") {
+        return dg.Rule::ParseError;
+    }
+    if bytes.equal(code, "schema-invalid") {
+        return dg.Rule::SchemaInvalid;
+    }
+    return dg.Rule::Internal;
+}
+
+fn one[&h, &r](heap: &!h Heap, ds: dg.Diags, rec: &r [byte]) -> [heap] dg.Diags {
+    let rule = rule_of(diag.code(rec));
+    let kw = diag.keyword(rec);
+    let line = diag.line(rec);
+    let col = diag.column(rec);
+    var is_parse = false;
+    match rule {
+        dg.Rule::ParseError => {
+            is_parse = true;
+        }
+        _ => {
+            is_parse = false;
+        }
+    }
+    let structural = !is_parse && !bytes.equal(kw, "json-syntax") && !bytes.equal(kw, "-") && !bytes.equal(kw, "unsupported-keyword");
+    let (d1, m) = dg.mark(ds);
+    var d = d1;
+    if structural {
+        d = dg.lit(heap, d, "schema validation failed: ");
+    }
+    d = dg.lit(heap, d, diag.message(rec));
+    let (d2, msg) = dg.close(d, m);
+    var dd2 = d2;
+    var kws = dg.none();
+    if !bytes.equal(kw, "-") {
+        let (x, k) = dg.word(heap, dd2, kw);
+        dd2 = x;
+        kws = k;
+    }
+    var rec_dg = dg.with_keyword(dg.mk(rule, dg.none(), dg.none(), dg.none(), msg), kws);
+    var loc = dg.Loc { has: line > 0, fixed: is_parse, sl: line, sc: col, el: line, ec: col };
+    if is_parse {
+        loc = dg.Loc { has: true, fixed: true, sl: line, sc: col, el: line, ec: diag.end_column(rec) };
+    }
+    rec_dg = dg.with_loc(rec_dg, loc);
+    if structural {
+        let (d3, p) = dg.word(heap, dd2, diag.pointer(rec));
+        let (d4, exp) = cu.text_span(heap, d3, "valid against cancho-hdl-contract.schema.json");
+        let (d5, act) = cu.text_span(heap, d4, diag.message(rec));
+        rec_dg = dg.with_expected(dg.with_pointer(rec_dg, p), exp, act);
+        return dg.push(heap, d5, rec_dg);
+    }
+    return dg.push(heap, dd2, rec_dg);
+}
+
+// Append every record of `report` to the table.
+pub fn convert[&h, &r](heap: &!h Heap, ds: dg.Diags, report: &r [byte]) -> [heap] dg.Diags {
+    var out = ds;
+    var at = 0;
+    while at < len(report) {
+        let e = diag.end_of(report, at);
+        out = one(heap, out, report[at..e]);
+        at = e + 1;
+    }
+    return out;
+}

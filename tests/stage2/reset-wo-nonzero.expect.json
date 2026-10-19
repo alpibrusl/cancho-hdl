@@ -1,0 +1,14 @@
+{
+  "file": "tests/stage2/reset-wo-nonzero.chw",
+  "expect": [
+    {
+      "code": "reset-wo-nonzero",
+      "subject": {
+        "kind": "Register",
+        "block": "Dev",
+        "name": "CTRL"
+      },
+      "message_contains": "register 'CTRL' is WO with non-zero reset '0x00000001'; this is unusual (WO registers are typically ignored at reset)."
+    }
+  ]
+}

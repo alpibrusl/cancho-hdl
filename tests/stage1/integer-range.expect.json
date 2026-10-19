@@ -10,6 +10,16 @@
       "keyword": "integer-range",
       "line": 20,
       "column": 22
+    },
+    {
+      "code": "field-enum-overflow",
+      "subject": {
+        "kind": "Field",
+        "block": "T",
+        "register": "CTRL",
+        "name": "EN"
+      },
+      "message_contains": "field EN: enum value 99999999999999999999 does not fit in 1 bits (declared as BIG=99999999999999999999)."
     }
   ]
 }

@@ -1,0 +1,21 @@
+{
+  "file": "tests/stage2/dma-name-missing.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "'name' is a required property"
+    },
+    {
+      "code": "dma-name-missing",
+      "subject": {
+        "kind": "DmaBuffer",
+        "block": "Dev",
+        "name": "<missing>"
+      },
+      "message_contains": "DMA buffer is missing required 'name' (non-empty string)."
+    }
+  ]
+}

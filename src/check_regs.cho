@@ -1,0 +1,449 @@
+module chw.check_regs;
+
+// check_regs.cho -- the register and field rules of tools/check/checker.py
+// (`_check_registers`, `_check_fields`).
+//
+// Python's per-register `continue`s are early returns here; a register that is
+// not an object is skipped (the Python checker raises on it, and the schema
+// validator reports it: docs/cancho-port.md, 13.5).
+
+import std.buffer;
+import std.json;
+import std.map;
+import std.vec;
+import chw.check_util as cu;
+import chw.diagnostic as dg;
+
+// A field already placed in the register: its bounds (the nodes, to print as
+// written, and the values, to compare) and its name.
+struct Occ {
+    lsb_node: int,
+    msb_node: int,
+    lsb: int,
+    msb: int,
+    name: int,
+}
+
+fn reg_diag[&h](heap: &!h Heap, ds: dg.Diags, rule: dg.Rule, bn: dg.Sp, rn: dg.Sp, msg: dg.Sp, exp: dg.Sp, act: dg.Sp) -> [heap] dg.Diags {
+    let d = dg.mk(rule, bn, rn, dg.none(), msg);
+    return dg.push(heap, ds, dg.with_expected(d, exp, act));
+}
+
+fn field_subject(rule: dg.Rule, bn: dg.Sp, rn: dg.Sp, fname: dg.Sp, msg: dg.Sp) -> [] dg.Dg {
+    return dg.mk(rule, bn, rn, fname, msg);
+}
+
+fn mask_of(bw: int) -> [] int {
+    return (1 << bw) - 1;
+}
+
+// ------------------------------------------------------------------ fields ---
+
+fn overlap[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bn: dg.Sp, rn: dg.Sp, reg_name: int, fname: dg.Sp, fnode: int, lsb_node: int, msb_node: int, lsb: int, msb: int, o: Occ) -> [heap] dg.Diags {
+    let (d1, oname) = cu.str_span(heap, ds, src, tape, o.name);
+    // message
+    let (d2, m) = dg.mark(d1);
+    var d = dg.lit(heap, d2, "field ");
+    d = cu.put_repr(heap, d, src, tape, fnode_name(src, tape, fnode));
+    d = dg.lit(heap, d, " bits [");
+    d = cu.put_py(heap, d, src, tape, lsb_node);
+    d = dg.lit(heap, d, "..");
+    d = cu.put_py(heap, d, src, tape, msb_node);
+    d = dg.lit(heap, d, "] overlap with ");
+    d = cu.put_str(heap, d, src, tape, o.name);
+    d = dg.lit(heap, d, " bits [");
+    d = cu.put_py(heap, d, src, tape, o.lsb_node);
+    d = dg.lit(heap, d, "..");
+    d = cu.put_py(heap, d, src, tape, o.msb_node);
+    d = dg.lit(heap, d, "] in register ");
+    d = cu.put_repr(heap, d, src, tape, reg_name);
+    d = dg.lit(heap, d, ".");
+    let (d3, msg) = dg.close(d, m);
+    // remediation: start just after the other field, keep the width
+    let width = msb - lsb + 1;
+    let new_lsb = o.msb + 1;
+    let new_msb = new_lsb + width - 1;
+    let (d4, r0) = dg.mark(d3);
+    var e = dg.lit(heap, d4, "start ");
+    e = cu.put_str(heap, e, src, tape, fnode_name(src, tape, fnode));
+    e = dg.lit(heap, e, " at bits [");
+    e = cu.put_int(heap, e, new_lsb);
+    e = dg.lit(heap, e, "..");
+    e = cu.put_int(heap, e, new_msb);
+    e = dg.lit(heap, e, "] (just after ");
+    e = cu.put_str(heap, e, src, tape, o.name);
+    e = dg.lit(heap, e, ", bits [");
+    e = cu.put_py(heap, e, src, tape, o.lsb_node);
+    e = dg.lit(heap, e, "..");
+    e = cu.put_py(heap, e, src, tape, o.msb_node);
+    e = dg.lit(heap, e, "]), or shrink / move either field — the toolchain cannot say which side the hardware semantics live on");
+    let (d5, rem) = dg.close(e, r0);
+    // related: where the other field sits
+    let (d6, q0) = dg.mark(d5);
+    var f = dg.lit(heap, d6, "field ");
+    f = cu.put_repr(heap, f, src, tape, o.name);
+    f = dg.lit(heap, f, " occupies bits [");
+    f = cu.put_py(heap, f, src, tape, o.lsb_node);
+    f = dg.lit(heap, f, "..");
+    f = cu.put_py(heap, f, src, tape, o.msb_node);
+    f = dg.lit(heap, f, "] in register ");
+    f = cu.put_repr(heap, f, src, tape, reg_name);
+    f = dg.lit(heap, f, ".");
+    let (d7, rmsg) = dg.close(f, q0);
+    let main = dg.with_remedy(field_subject(dg.Rule::FieldOverlap, bn, rn, fname, msg), rem, dg.Confidence::Low);
+    let d8 = dg.push_parent(heap, d7, main, 1, 0);
+    return dg.push(heap, d8, dg.with_nest(field_subject(dg.Rule::FieldOverlap, bn, rn, oname, rmsg), 1));
+}
+
+fn fnode_name[&s, &t](src: &s [byte], tape: &t [int], fnode: int) -> [] int {
+    return json.get(src, tape, fnode, "name");
+}
+
+fn enum_overflow[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bn: dg.Sp, rn: dg.Sp, fname: dg.Sp, fnode: int, width: int) -> [heap] dg.Diags {
+    let en = json.get(src, tape, fnode, "enum");
+    var ds1 = ds;
+    var mask = 4611686018427387903;
+    if width <= 62 {
+        mask = mask_of(width);
+    }
+    var j = en + 1;
+    var left = json.count(tape, en);
+    while left > 0 {
+        let ev = j + 1;
+        let fits = cu.int_like(tape, ev) && cu.int_val(src, tape, ev) >= 0 && cu.int_val(src, tape, ev) <= mask;
+        if !fits {
+            let (d1, m) = dg.mark(ds1);
+            var d = dg.lit(heap, d1, "field ");
+            d = cu.put_str(heap, d, src, tape, json.get(src, tape, fnode, "name"));
+            d = dg.lit(heap, d, ": enum value ");
+            d = cu.put_py(heap, d, src, tape, ev);
+            d = dg.lit(heap, d, " does not fit in ");
+            d = cu.put_int(heap, d, width);
+            d = dg.lit(heap, d, " bits (declared as ");
+            d = cu.put_str(heap, d, src, tape, j);
+            d = dg.lit(heap, d, "=");
+            d = cu.put_py(heap, d, src, tape, ev);
+            d = dg.lit(heap, d, ").");
+            let (d2, msg) = dg.close(d, m);
+            let (d3, e0) = dg.mark(d2);
+            var sb = dg.lit(heap, d3, "\"0 <= value <= ");
+            sb = cu.put_int(heap, sb, mask);
+            let (d4, exp) = dg.close(dg.lit(heap, sb, "\""), e0);
+            let (d5, act) = cu.value_span(heap, d4, src, tape, ev);
+            ds1 = dg.push(heap, d5, dg.with_expected(field_subject(dg.Rule::FieldEnumOverflow, bn, rn, fname, msg), exp, act));
+        }
+        j = json.skip(tape, ev);
+        left = left - 1;
+    }
+    return ds1;
+}
+
+fn constraint_ignored[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bn: dg.Sp, rn: dg.Sp, fname: dg.Sp, fnode: int, cons: int) -> [heap] dg.Diags {
+    let (d1, m) = dg.mark(ds);
+    var d = dg.lit(heap, d1, "field ");
+    d = cu.put_repr(heap, d, src, tape, json.get(src, tape, fnode, "name"));
+    d = dg.lit(heap, d, " declares constraint ");
+    d = cu.put_repr(heap, d, src, tape, cons);
+    d = dg.lit(heap, d, "; the Phase 0 checker does not parse constraint semantics (see docs/contract-design.md §5 question 3).");
+    let (d2, msg) = dg.close(d, m);
+    let (d3, note) = dg.word(heap, d2, "constraints are documented but not enforced until 0.2.0");
+    let d4 = dg.push_parent(heap, d3, field_subject(dg.Rule::FieldConstraintIgnored, bn, rn, fname, msg), 0, 1);
+    return dg.push(heap, d4, dg.with_nest(dg.mk(dg.Rule::FieldConstraintIgnored, dg.none(), dg.none(), dg.none(), note), 2));
+}
+
+// One field. Answers the diagnostics and the occupied list.
+fn one_field[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, occ: vec.Vec[Occ], src: &s [byte], tape: &t [int], bn: dg.Sp, rn: dg.Sp, reg_name: int, bw: int, f: int) -> [heap] (dg.Diags, vec.Vec[Occ]) {
+    let name = json.get(src, tape, f, "name");
+    if !cu.is_name(src, tape, name) {
+        let (d1, missing) = dg.word(heap, ds, "<missing>");
+        let (d2, m) = dg.mark(d1);
+        var d = dg.lit(heap, d2, "field in register ");
+        d = cu.put_repr(heap, d, src, tape, reg_name);
+        d = dg.lit(heap, d, " is missing required 'name'.");
+        let (d3, msg) = dg.close(d, m);
+        return (dg.push(heap, d3, field_subject(dg.Rule::FieldNameMissing, bn, rn, missing, msg)), occ);
+    }
+    let (d1, fname) = cu.str_span(heap, ds, src, tape, name);
+    let lsb_node = json.get(src, tape, f, "lsb");
+    let msb_node = json.get(src, tape, f, "msb");
+    if !cu.int_like(tape, lsb_node) || !cu.int_like(tape, msb_node) {
+        let (d2, m) = dg.mark(d1);
+        var d = dg.lit(heap, d2, "field ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " is missing required 'lsb' / 'msb' (integers).");
+        let (d3, msg) = dg.close(d, m);
+        return (dg.push(heap, d3, field_subject(dg.Rule::FieldBoundsMissing, bn, rn, fname, msg)), occ);
+    }
+    let lsb = cu.int_val(src, tape, lsb_node);
+    let msb = cu.int_val(src, tape, msb_node);
+    if msb < lsb {
+        let (d2, m) = dg.mark(d1);
+        var d = dg.lit(heap, d2, "field ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " has msb=");
+        d = cu.put_py(heap, d, src, tape, msb_node);
+        d = dg.lit(heap, d, " < lsb=");
+        d = cu.put_py(heap, d, src, tape, lsb_node);
+        d = dg.lit(heap, d, ".");
+        let (d3, msg) = dg.close(d, m);
+        return (dg.push(heap, d3, field_subject(dg.Rule::FieldBoundsInverted, bn, rn, fname, msg)), occ);
+    }
+    if msb >= bw {
+        let (d2, m) = dg.mark(d1);
+        var d = dg.lit(heap, d2, "field ");
+        d = cu.put_str(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " has msb ");
+        d = cu.put_py(heap, d, src, tape, msb_node);
+        d = dg.lit(heap, d, " >= bus_width ");
+        d = cu.put_int(heap, d, bw);
+        d = dg.lit(heap, d, "; field extends past the register.");
+        let (d3, msg) = dg.close(d, m);
+        let (d4, e0) = dg.mark(d3);
+        var sb = dg.lit(heap, d4, "\"msb < ");
+        sb = cu.put_int(heap, sb, bw);
+        let (d5, exp) = dg.close(dg.lit(heap, sb, "\""), e0);
+        let (d6, a0) = dg.mark(d5);
+        var ab = dg.lit(heap, d6, "\"msb=");
+        ab = cu.put_py(heap, ab, src, tape, msb_node);
+        let (d7, act) = dg.close(dg.lit(heap, ab, "\""), a0);
+        return (dg.push(heap, d7, dg.with_expected(field_subject(dg.Rule::FieldBoundsOverflow, bn, rn, fname, msg), exp, act)), occ);
+    }
+
+    var ds2 = d1;
+    var k = 0;
+    var n = 0;
+    borrow occ as &ov in {
+        n = vec.size(ov);
+    }
+    while k < n {
+        var o = Occ { lsb_node: 0, msb_node: 0, lsb: 0, msb: 0, name: 0 };
+        borrow occ as &ov in {
+            o = vec.get(ov, k);
+        }
+        if !(msb < o.lsb || lsb > o.msb) {
+            ds2 = overlap(heap, ds2, src, tape, bn, rn, reg_name, fname, f, lsb_node, msb_node, lsb, msb, o);
+        }
+        k = k + 1;
+    }
+    let occ2 = vec.push(heap, occ, Occ { lsb_node: lsb_node, msb_node: msb_node, lsb: lsb, msb: msb, name: name });
+
+    let en = json.get(src, tape, f, "enum");
+    if json.is_object(tape, en) {
+        ds2 = enum_overflow(heap, ds2, src, tape, bn, rn, fname, f, msb - lsb + 1);
+    }
+    let cons = json.get(src, tape, f, "constraint");
+    if json.is_string(tape, cons) {
+        ds2 = constraint_ignored(heap, ds2, src, tape, bn, rn, fname, f, cons);
+    }
+    return (ds2, occ2);
+}
+
+fn fields[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bn: dg.Sp, rn: dg.Sp, reg_name: int, bw: int, list: int) -> [heap] dg.Diags {
+    var ds1 = ds;
+    var occ = vec.empty(heap, 8, Occ { lsb_node: 0, msb_node: 0, lsb: 0, msb: 0, name: 0 });
+    var j = list + 1;
+    var left = json.count(tape, list);
+    while left > 0 {
+        if json.is_object(tape, j) {
+            let (d, o) = one_field(heap, ds1, occ, src, tape, bn, rn, reg_name, bw, j);
+            ds1 = d;
+            occ = o;
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    vec.drop(heap, occ);
+    return ds1;
+}
+
+// --------------------------------------------------------------- registers ---
+
+fn known_kind[&s, &t](src: &s [byte], tape: &t [int], k: int) -> [] bool {
+    return cu.str_is(src, tape, k, "RO") || cu.str_is(src, tape, k, "WO") || cu.str_is(src, tape, k, "RW") || cu.str_is(src, tape, k, "RC") || cu.str_is(src, tape, k, "W1C") || cu.str_is(src, tape, k, "W0C") || cu.str_is(src, tape, k, "W1S") || cu.str_is(src, tape, k, "W0S");
+}
+
+fn size_text(size: int) -> [] &static [byte] {
+    if size == 1 {
+        return "\"offset % 1 == 0\"";
+    }
+    if size == 2 {
+        return "\"offset % 2 == 0\"";
+    }
+    return "\"offset % 4 == 0\"";
+}
+
+fn reset_text(bw: int) -> [] &static [byte] {
+    if bw == 8 {
+        return "\"0 <= reset <= 0xff\"";
+    }
+    if bw == 16 {
+        return "\"0 <= reset <= 0xffff\"";
+    }
+    return "\"0 <= reset <= 0xffffffff\"";
+}
+
+// One register; answers the diagnostics and the offsets seen so far (the
+// canonical offset -> the node of the first register's name).
+fn one_register[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, seen: map.Map[int], src: &s [byte], tape: &t [int], bn: dg.Sp, bw: int, reg: int) -> [heap] (dg.Diags, map.Map[int]) {
+    let name = json.get(src, tape, reg, "name");
+    if !cu.is_name(src, tape, name) {
+        let (d1, missing) = dg.word(heap, ds, "<missing>");
+        let (d2, msg) = dg.word(heap, d1, "register is missing required 'name' (non-empty string).");
+        return (reg_diag(heap, d2, dg.Rule::RegisterNameMissing, bn, missing, msg, dg.none(), dg.none()), seen);
+    }
+    let (ds1, rn) = cu.str_span(heap, ds, src, tape, name);
+    let offn = json.get(src, tape, reg, "offset");
+    let off = cu.hex_of(heap, src, tape, offn);
+    if !off.ok {
+        let (d2, m) = dg.mark(ds1);
+        var d = dg.lit(heap, d2, "register ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " is missing a valid hex 'offset' (expected '0x...').");
+        let (d3, msg) = dg.close(d, m);
+        return (reg_diag(heap, d3, dg.Rule::RegisterOffsetMissing, bn, rn, msg, dg.none(), dg.none()), seen);
+    }
+    var ds2 = ds1;
+    let size = bw / 8;
+    if off.low % size != 0 {
+        let (d2, m) = dg.mark(ds2);
+        var d = dg.lit(heap, d2, "register ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " offset ");
+        d = cu.put_py(heap, d, src, tape, offn);
+        d = dg.lit(heap, d, " is not a multiple of register size ");
+        d = cu.put_int(heap, d, size);
+        d = dg.lit(heap, d, " bytes (bus_width ");
+        d = cu.put_int(heap, d, bw);
+        d = dg.lit(heap, d, ").");
+        let (d3, msg) = dg.close(d, m);
+        let (d4, exp) = dg.word(heap, d3, size_text(size));
+        let (d5, a0) = dg.mark(d4);
+        var ab = dg.lit(heap, d5, "offset ");
+        ab = cu.put_py(heap, ab, src, tape, offn);
+        let (d6, aplain) = dg.close(ab, a0);
+        let (d7, act) = cu.jquote(heap, d6, aplain);
+        ds2 = reg_diag(heap, d7, dg.Rule::RegisterOffsetNonAligned, bn, rn, msg, exp, act);
+    }
+    if off.v + size > 1 << bw {
+        let (d2, m) = dg.mark(ds2);
+        var d = dg.lit(heap, d2, "register ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " offset ");
+        d = cu.put_py(heap, d, src, tape, offn);
+        d = dg.lit(heap, d, " pushes the register past the block's addressable range.");
+        let (d3, msg) = dg.close(d, m);
+        ds2 = reg_diag(heap, d3, dg.Rule::RegisterOffsetOverflow, bn, rn, msg, dg.none(), dg.none());
+    }
+
+    var seen2 = seen;
+    var key = cu.hex_key(heap, buffer.empty(heap, 16), src, tape, offn);
+    var other = 0 - 1;
+    borrow key as &kr in {
+        borrow seen2 as &sm in {
+            other = map.get(sm, buffer.bytes(kr), 0 - 1);
+        }
+        if other < 0 {
+            seen2 = map.put(heap, seen2, buffer.bytes(kr), name);
+        }
+    }
+    buffer.drop(heap, key);
+    if other >= 0 {
+        let (d2, on) = cu.str_span(heap, ds2, src, tape, other);
+        let (d3, m) = dg.mark(d2);
+        var d = dg.lit(heap, d3, "registers ");
+        d = cu.put_str(heap, d, src, tape, other);
+        d = dg.lit(heap, d, " and ");
+        d = cu.put_str(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " share offset ");
+        d = cu.put_py(heap, d, src, tape, offn);
+        d = dg.lit(heap, d, " in block ");
+        d = dg.lit_sp(heap, d, bn);
+        d = dg.lit(heap, d, ".");
+        let (d4, msg) = dg.close(d, m);
+        let (d5, exp) = dg.word(heap, d4, "\"unique offset within block\"");
+        let (d6, a0) = dg.mark(d5);
+        var ab = dg.lit(heap, d6, "offset shared with ");
+        ab = cu.put_str(heap, ab, src, tape, name);
+        let (d6b, aplain) = dg.close(ab, a0);
+        let (d7, act) = cu.jquote(heap, d6b, aplain);
+        let (d8, r0) = dg.mark(d7);
+        var rb = dg.lit(heap, d8, "register ");
+        rb = cu.put_str(heap, rb, src, tape, name);
+        rb = dg.lit(heap, rb, " is also at offset ");
+        rb = cu.put_py(heap, rb, src, tape, offn);
+        rb = dg.lit(heap, rb, ".");
+        let (d9, rmsg) = dg.close(rb, r0);
+        let main = dg.with_expected(dg.mk(dg.Rule::RegisterOffsetDuplicate, bn, on, dg.none(), msg), exp, act);
+        let d10 = dg.push_parent(heap, d9, main, 1, 0);
+        ds2 = dg.push(heap, d10, dg.with_nest(dg.mk(dg.Rule::RegisterOffsetDuplicate, bn, rn, dg.none(), rmsg), 1));
+    }
+
+    let kind = json.get(src, tape, reg, "kind");
+    if !known_kind(src, tape, kind) {
+        let (d2, m) = dg.mark(ds2);
+        var d = dg.lit(heap, d2, "register ");
+        d = cu.put_str(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " has kind '");
+        d = cu.put_py(heap, d, src, tape, kind);
+        d = dg.lit(heap, d, "'; kind '");
+        d = cu.put_py(heap, d, src, tape, kind);
+        d = dg.lit(heap, d, "' is not a known access kind. Known kinds: RC, RO, RW, W0C, W0S, W1C, W1S, WO.");
+        let (d3, msg) = dg.close(d, m);
+        let (d4, exp) = cu.list_span(heap, d3, "RC|RO|RW|W0C|W0S|W1C|W1S|WO");
+        let (d5, act) = cu.value_span(heap, d4, src, tape, kind);
+        return (reg_diag(heap, d5, dg.Rule::RegisterKindUnknown, bn, rn, msg, exp, act), seen2);
+    }
+
+    let resetn = json.get(src, tape, reg, "reset");
+    if resetn >= 0 {
+        let rv = cu.hex_of(heap, src, tape, resetn);
+        if !rv.ok || rv.v > mask_of(bw) {
+            let (d2, m) = dg.mark(ds2);
+            var d = dg.lit(heap, d2, "register ");
+            d = cu.put_str(heap, d, src, tape, name);
+            d = dg.lit(heap, d, " reset ");
+            d = cu.put_py(heap, d, src, tape, resetn);
+            d = dg.lit(heap, d, " does not fit in bus_width ");
+            d = cu.put_int(heap, d, bw);
+            d = dg.lit(heap, d, ".");
+            let (d3, msg) = dg.close(d, m);
+            let (d4, exp) = dg.word(heap, d3, reset_text(bw));
+            let (d5, act) = cu.value_span(heap, d4, src, tape, resetn);
+            ds2 = reg_diag(heap, d5, dg.Rule::ResetOverflow, bn, rn, msg, exp, act);
+        } else if cu.str_is(src, tape, kind, "WO") && !rv.zero {
+            let (d2, m) = dg.mark(ds2);
+            var d = dg.lit(heap, d2, "register ");
+            d = cu.put_repr(heap, d, src, tape, name);
+            d = dg.lit(heap, d, " is WO with non-zero reset ");
+            d = cu.put_repr(heap, d, src, tape, resetn);
+            d = dg.lit(heap, d, "; this is unusual (WO registers are typically ignored at reset).");
+            let (d3, msg) = dg.close(d, m);
+            ds2 = reg_diag(heap, d3, dg.Rule::ResetWoNonzero, bn, rn, msg, dg.none(), dg.none());
+        }
+    }
+
+    let list = json.get(src, tape, reg, "fields");
+    if json.is_array(tape, list) {
+        ds2 = fields(heap, ds2, src, tape, bn, rn, name, bw, list);
+    }
+    return (ds2, seen2);
+}
+
+// `_check_registers`: every register of the array `regs`, in order.
+pub fn registers[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], regs: int, bn: dg.Sp, bw: int) -> [heap] dg.Diags {
+    var ds1 = ds;
+    var seen = map.empty(heap, json.count(tape, regs) + 1, 0, 11);
+    var j = regs + 1;
+    var left = json.count(tape, regs);
+    while left > 0 {
+        if json.is_object(tape, j) {
+            let (d, m) = one_register(heap, ds1, seen, src, tape, bn, bw, j);
+            ds1 = d;
+            seen = m;
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    map.drop(heap, seen);
+    return ds1;
+}
