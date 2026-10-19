@@ -55,6 +55,26 @@ pub fn add[&h, &p, &m](heap: &!h Heap, out: buffer.Buffer, code: &static [byte],
     return buffer.push(heap, o, byte_of('\n'));
 }
 
+// A record whose span has an end: the token the parser stopped at ends at
+// `end_col` of the same line. The end is a seventh field, after the message
+// (which holds no TAB), so every reader of the first six is unchanged.
+pub fn add_ended[&h, &p, &m](heap: &!h Heap, out: buffer.Buffer, code: &static [byte], line: int, col: int, end_col: int, keyword: &static [byte], pointer: &p [byte], message: &m [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, code);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.push_nat(heap, o, line);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.push_nat(heap, o, col);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, keyword);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, pointer);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.append(heap, o, message);
+    o = buffer.push(heap, o, byte_of('\t'));
+    o = buffer.push_nat(heap, o, end_col);
+    return buffer.push(heap, o, byte_of('\n'));
+}
+
 // The record `rec` again, with another line and column.
 pub fn relocate[&h, &r](heap: &!h Heap, out: buffer.Buffer, rec: &r [byte], new_line: int, new_col: int) -> [heap] buffer.Buffer {
     var o = buffer.append(heap, out, bytes.field(rec, '\t', 1));
@@ -116,6 +136,15 @@ fn nat_of[&r](text: &r [byte]) -> [] int {
         i = i + 1;
     }
     return n;
+}
+
+// The end column of a record written by `add_ended`; the start column of one
+// that was not.
+pub fn end_column[&r](rec: &r [byte]) -> [] int {
+    if bytes.count_byte(rec, '\t') >= 6 {
+        return nat_of(bytes.field(rec, '\t', 7));
+    }
+    return nat_of(bytes.field(rec, '\t', 3));
 }
 
 pub fn line[&r](rec: &r [byte]) -> [] int {

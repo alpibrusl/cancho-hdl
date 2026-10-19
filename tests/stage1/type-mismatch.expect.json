@@ -20,6 +20,14 @@
       "keyword": "enum",
       "line": 7,
       "column": 18
+    },
+    {
+      "code": "block-bus-width-invalid",
+      "subject": {
+        "kind": "RegisterBlock",
+        "name": "T"
+      },
+      "message_contains": "block T has bus_width 32 must be 8, 16, or 32."
     }
   ]
 }

@@ -1,0 +1,222 @@
+module chw.check_dma;
+
+// check_dma.cho -- the DMA rules of tools/check/checker.py (`_check_dma`).
+//
+// A field is 4 bytes unless it declares a `size` (the schema has none; a
+// document that bypasses it may). Offsets past 2^60 are saturated for the
+// overlap test (docs/cancho-port.md, 13.5); alignment is exact for any offset.
+
+import std.json;
+import std.vec;
+import chw.check_util as cu;
+import chw.diagnostic as dg;
+import chw.hexval;
+
+// A field already placed in the buffer.
+struct Slot {
+    start: int,
+    end: int,
+    name: int,
+    off_node: int,
+    big: bool,
+}
+
+fn blank_slot() -> [] Slot {
+    return Slot { start: 0, end: 0, name: 0 - 1, off_node: 0 - 1, big: false };
+}
+
+fn dma_field(rule: dg.Rule, bn: dg.Sp, buf: dg.Sp, fname: dg.Sp, msg: dg.Sp) -> [] dg.Dg {
+    return dg.mk(rule, bn, buf, fname, msg);
+}
+
+fn overlap[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bn: dg.Sp, buf: dg.Sp, buf_name: int, fname: dg.Sp, name: int, off_node: int, hv: hexval.Hv, start: int, end: int, o: Slot) -> [heap] dg.Diags {
+    let (d1, oname) = cu.str_span(heap, ds, src, tape, o.name);
+    let ohv = hexval.Hv { ok: true, zero: false, big: o.big, v: o.start, low: 0 };
+    let (d2, m) = dg.mark(d1);
+    var d = dg.lit(heap, d2, "DMA field ");
+    d = cu.put_str(heap, d, src, tape, name);
+    d = dg.lit(heap, d, " at offset 0x");
+    d = cu.put_offset(heap, d, src, tape, off_node, hv);
+    d = dg.lit(heap, d, "..0x");
+    d = cu.put_hexs(heap, d, end, 2);
+    d = dg.lit(heap, d, " overlaps ");
+    d = cu.put_str(heap, d, src, tape, o.name);
+    d = dg.lit(heap, d, " at 0x");
+    d = cu.put_offset(heap, d, src, tape, o.off_node, ohv);
+    d = dg.lit(heap, d, "..0x");
+    d = cu.put_hexs(heap, d, o.end, 2);
+    d = dg.lit(heap, d, " in buffer ");
+    d = cu.put_str(heap, d, src, tape, buf_name);
+    d = dg.lit(heap, d, ".");
+    let (d3, msg) = dg.close(d, m);
+    let (d4, r0) = dg.mark(d3);
+    var r = dg.lit(heap, d4, "DMA field ");
+    r = cu.put_str(heap, r, src, tape, o.name);
+    r = dg.lit(heap, r, " occupies 0x");
+    r = cu.put_offset(heap, r, src, tape, o.off_node, ohv);
+    r = dg.lit(heap, r, "..0x");
+    r = cu.put_hexs(heap, r, o.end, 2);
+    r = dg.lit(heap, r, " in buffer ");
+    r = cu.put_str(heap, r, src, tape, buf_name);
+    r = dg.lit(heap, r, ".");
+    let (d5, rmsg) = dg.close(r, r0);
+    let d6 = dg.push_parent(heap, d5, dma_field(dg.Rule::DmaOverlap, bn, buf, fname, msg), 1, 0);
+    return dg.push(heap, d6, dg.with_nest(dma_field(dg.Rule::DmaOverlap, bn, buf, oname, rmsg), 1));
+}
+
+fn align_checks[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bn: dg.Sp, buf: dg.Sp, fname: dg.Sp, name: int, off_node: int, hv: hexval.Hv, align: int) -> [heap] dg.Diags {
+    if !cu.int_like(tape, align) || cu.int_val(src, tape, align) < 1 || cu.int_val(src, tape, align) > 4096 || !is_power_of_two(cu.int_val(src, tape, align)) {
+        let (d1, m) = dg.mark(ds);
+        var d = dg.lit(heap, d1, "DMA field ");
+        d = cu.put_repr(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " has align=");
+        d = cu.put_repr(heap, d, src, tape, align);
+        d = dg.lit(heap, d, "; must be a power of two in [1, 4096].");
+        let (d2, msg) = dg.close(d, m);
+        let (d3, exp) = cu.text_span(heap, d2, "power of two in [1, 4096]");
+        let (d4, act) = cu.value_span(heap, d3, src, tape, align);
+        return dg.push(heap, d4, dg.with_expected(dma_field(dg.Rule::DmaAlignIllegal, bn, buf, fname, msg), exp, act));
+    }
+    let a = cu.int_val(src, tape, align);
+    if hv.low % a == 0 {
+        return ds;
+    }
+    let (d1, m) = dg.mark(ds);
+    var d = dg.lit(heap, d1, "DMA field ");
+    d = cu.put_str(heap, d, src, tape, name);
+    d = dg.lit(heap, d, ": offset 0x");
+    d = cu.put_offset(heap, d, src, tape, off_node, hv);
+    d = dg.lit(heap, d, " not divisible by align ");
+    d = cu.put_py(heap, d, src, tape, align);
+    d = dg.lit(heap, d, ".");
+    let (d2, msg) = dg.close(d, m);
+    let (d3, e0) = dg.mark(d2);
+    var eb = dg.lit(heap, d3, "offset % ");
+    eb = cu.put_py(heap, eb, src, tape, align);
+    eb = dg.lit(heap, eb, " == 0");
+    let (d4, eplain) = dg.close(eb, e0);
+    let (d5, exp) = cu.jquote(heap, d4, eplain);
+    let (d6, a0) = dg.mark(d5);
+    var ab = dg.lit(heap, d6, "0x");
+    ab = cu.put_offset(heap, ab, src, tape, off_node, hv);
+    ab = dg.lit(heap, ab, " % ");
+    ab = cu.put_py(heap, ab, src, tape, align);
+    ab = dg.lit(heap, ab, " = ");
+    ab = cu.put_int(heap, ab, hv.low % a);
+    let (d7, aplain) = dg.close(ab, a0);
+    let (d8, act) = cu.jquote(heap, d7, aplain);
+    return dg.push(heap, d8, dg.with_expected(dma_field(dg.Rule::DmaAlignUnsatisfied, bn, buf, fname, msg), exp, act));
+}
+
+fn is_power_of_two(n: int) -> [] bool {
+    var k = 1;
+    while k < n && k < 4096 {
+        k = k * 2;
+    }
+    return k == n;
+}
+
+fn one_field[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, slots: vec.Vec[Slot], src: &s [byte], tape: &t [int], bn: dg.Sp, buf: dg.Sp, buf_name: int, f: int) -> [heap] (dg.Diags, vec.Vec[Slot]) {
+    let name = json.get(src, tape, f, "name");
+    let off_node = json.get(src, tape, f, "offset");
+    let hv = cu.hex_of(heap, src, tape, off_node);
+    if !cu.is_name(src, tape, name) {
+        let (d1, missing) = dg.word(heap, ds, "<missing>");
+        let (d2, m) = dg.mark(d1);
+        var d = dg.lit(heap, d2, "DMA buffer ");
+        d = cu.put_repr(heap, d, src, tape, buf_name);
+        d = dg.lit(heap, d, " has a field without a name.");
+        let (d3, msg) = dg.close(d, m);
+        return (dg.push(heap, d3, dma_field(dg.Rule::DmaFieldNameMissing, bn, buf, missing, msg)), slots);
+    }
+    if !hv.ok {
+        return (ds, slots);
+    }
+    let (d1, fname) = cu.str_span(heap, ds, src, tape, name);
+    var ds2 = d1;
+    let owner = json.get(src, tape, f, "owner");
+    if !(cu.str_is(src, tape, owner, "CPU") || cu.str_is(src, tape, owner, "DEVICE")) {
+        let (d2, m) = dg.mark(ds2);
+        var d = dg.lit(heap, d2, "DMA field ");
+        d = cu.put_str(heap, d, src, tape, name);
+        d = dg.lit(heap, d, " has owner '");
+        d = cu.put_py(heap, d, src, tape, owner);
+        d = dg.lit(heap, d, "'; owner '");
+        d = cu.put_py(heap, d, src, tape, owner);
+        d = dg.lit(heap, d, "' is not CPU or DEVICE.");
+        let (d3, msg) = dg.close(d, m);
+        let (d4, exp) = cu.text_span(heap, d3, "'CPU' or 'DEVICE'");
+        let (d5, act) = cu.value_span(heap, d4, src, tape, owner);
+        ds2 = dg.push(heap, d5, dg.with_expected(dma_field(dg.Rule::DmaOwnerUnknown, bn, buf, fname, msg), exp, act));
+    }
+    var size = 4;
+    let size_node = json.get(src, tape, f, "size");
+    if size_node >= 0 && cu.int_like(tape, size_node) {
+        size = cu.int_val(src, tape, size_node);
+    }
+    let start = hv.v;
+    let end = start + size;
+    var k = 0;
+    var n = 0;
+    borrow slots as &sv in {
+        n = vec.size(sv);
+    }
+    while k < n {
+        var o = blank_slot();
+        borrow slots as &sv in {
+            o = vec.get(sv, k);
+        }
+        if !(end <= o.start || start >= o.end) {
+            ds2 = overlap(heap, ds2, src, tape, bn, buf, buf_name, fname, name, off_node, hv, start, end, o);
+        }
+        k = k + 1;
+    }
+    let slots2 = vec.push(heap, slots, Slot { start: start, end: end, name: name, off_node: off_node, big: hv.big });
+    let align = json.get(src, tape, f, "align");
+    if !cu.is_none(tape, align) {
+        ds2 = align_checks(heap, ds2, src, tape, bn, buf, fname, name, off_node, hv, align);
+    }
+    return (ds2, slots2);
+}
+
+fn one_buffer[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bn: dg.Sp, b: int) -> [heap] dg.Diags {
+    let name = json.get(src, tape, b, "name");
+    if !cu.is_name(src, tape, name) {
+        let (d1, missing) = dg.word(heap, ds, "<missing>");
+        let (d2, msg) = dg.word(heap, d1, "DMA buffer is missing required 'name' (non-empty string).");
+        return dg.push(heap, d2, dg.mk(dg.Rule::DmaNameMissing, bn, missing, dg.none(), msg));
+    }
+    let (d1, buf) = cu.str_span(heap, ds, src, tape, name);
+    var ds2 = d1;
+    let list = json.get(src, tape, b, "fields");
+    if json.is_array(tape, list) {
+        var slots = vec.empty(heap, 8, blank_slot());
+        var j = list + 1;
+        var left = json.count(tape, list);
+        while left > 0 {
+            if json.is_object(tape, j) {
+                let (d, s2) = one_field(heap, ds2, slots, src, tape, bn, buf, name, j);
+                ds2 = d;
+                slots = s2;
+            }
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+        vec.drop(heap, slots);
+    }
+    return ds2;
+}
+
+pub fn dma[&h, &s, &t](heap: &!h Heap, ds: dg.Diags, src: &s [byte], tape: &t [int], bufs: int, bn: dg.Sp) -> [heap] dg.Diags {
+    var ds1 = ds;
+    var j = bufs + 1;
+    var left = json.count(tape, bufs);
+    while left > 0 {
+        if json.is_object(tape, j) {
+            ds1 = one_buffer(heap, ds1, src, tape, bn, j);
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return ds1;
+}

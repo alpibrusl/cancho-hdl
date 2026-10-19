@@ -1,0 +1,382 @@
+// test_check.cho -- the semantic rules (src/check*.cho), one rule at a time and
+// at the edge of each: the value that is just inside and the one just outside.
+// A document is built around the part under test, run through the checker, and
+// the rule tags of what came out are compared as a comma-separated list.
+//
+//     cancho test tests/unit/test_check.cho src/*.cho --std
+//     (all of src/ except main.cho and conform.cho)
+
+import std.buffer;
+import std.bytes;
+import std.json;
+import std.test;
+import chw.check;
+import chw.diagnostic as dg;
+import chw.dg_json;
+
+// `{"version", "block": {..., "bus_width": bw, "registers": [regs], "interrupts": [intrs]}, "dma_buffers": [dma]}`
+fn wrap[&h, &a, &b, &c](heap: &!h Heap, bw: &static [byte], regs: &a [byte], intrs: &b [byte], dma: &c [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, buffer.empty(heap, 256), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":");
+    o = buffer.append(heap, o, bw);
+    o = buffer.append(heap, o, ",\"endianness\":\"little\",\"registers\":[");
+    o = buffer.append(heap, o, regs);
+    o = buffer.append(heap, o, "],\"interrupts\":[");
+    o = buffer.append(heap, o, intrs);
+    o = buffer.append(heap, o, "]},\"dma_buffers\":[");
+    o = buffer.append(heap, o, dma);
+    return buffer.append(heap, o, "]}");
+}
+
+// The rule tags of the top-level diagnostics of `doc`, comma-separated.
+fn tags[&h, &d](heap: &!h Heap, doc: &d [byte]) -> [heap] buffer.Buffer {
+    let tape = box_slice(heap, json.tape_len(doc), 0);
+    borrow mut tape as &!w in {
+        json.parse(doc, contents(w));
+    }
+    var out = buffer.empty(heap, 64);
+    borrow tape as &t in {
+        let ds = check.run(heap, dg.empty(heap), doc, contents(t));
+        borrow ds as &q in {
+            var i = 0;
+            var first = true;
+            while i < dg.size(q) {
+                let x = dg.get(q, i);
+                if x.kids.nest == 0 {
+                    if !first {
+                        out = buffer.push(heap, out, byte_of(','));
+                    }
+                    out = buffer.append(heap, out, dg.rule_name(x.rule));
+                    first = false;
+                }
+                i = i + 1;
+            }
+        }
+        dg.drop(heap, ds);
+    }
+    unbox_slice(heap, tape);
+    return out;
+}
+
+fn expect[&h, &d, &w](heap: &!h Heap, doc: &d [byte], want: &w [byte]) -> [heap] int {
+    let got = tags(heap, doc);
+    var same = false;
+    borrow got as &g in {
+        same = bytes.equal(buffer.bytes(g), want);
+    }
+    buffer.drop(heap, got);
+    return test.assert(same);
+}
+
+// The same, for a document built by `wrap`.
+fn expect_in[&h, &a, &b, &c, &w](heap: &!h Heap, bw: &static [byte], regs: &a [byte], intrs: &b [byte], dma: &c [byte], want: &w [byte]) -> [heap] int {
+    let doc = wrap(heap, bw, regs, intrs, dma);
+    var r = 0;
+    borrow doc as &dr in {
+        r = expect(heap, buffer.bytes(dr), want);
+    }
+    buffer.drop(heap, doc);
+    return r;
+}
+
+// ------------------------------------------------------------------ block ---
+
+fn test_a_clean_contract_has_no_diagnostics[&h](heap: &!h Heap) -> [heap] int {
+    return expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":31}]}", "", "", "");
+}
+
+fn test_the_version_must_be_major_minor_patch_and_0_1[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect(heap, "{\"version\":\"0.1.0\",\"block\":{}}", "block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"00.01.007\",\"block\":{}}", "block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"0.2.0\",\"block\":{}}", "schema-version-unsupported,block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"1.1.0\",\"block\":{}}", "schema-version-unsupported,block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"0.10.0\",\"block\":{}}", "schema-version-unsupported,block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"0.1\",\"block\":{}}", "schema-invalid,block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"0.1.0.\",\"block\":{}}", "schema-invalid,block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"0.1.0.0\",\"block\":{}}", "schema-invalid,block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"0..1\",\"block\":{}}", "schema-invalid,block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":5,\"block\":{}}", "schema-invalid,block-name-missing") == 0);
+    return expect(heap, "{\"version\":\"0.1.0\"}", "schema-invalid");
+}
+
+fn test_a_block_needs_a_name_a_base_address_a_width_and_an_endianness[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"\"}}", "block-name-missing") == 0);
+    test.assert(expect(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\"}}", "block-base-address-missing,block-bus-width-invalid,block-endianness-unknown") == 0);
+    return expect(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x0\",\"bus_width\":16,\"endianness\":\"big\"}}", "block-base-address-missing");
+}
+
+fn test_the_bus_width_is_exactly_8_16_or_32[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "8", "", "", "", "") == 0);
+    test.assert(expect_in(heap, "16", "", "", "", "") == 0);
+    test.assert(expect_in(heap, "8.0", "", "", "", "") == 0);
+    test.assert(expect_in(heap, "9", "", "", "", "block-bus-width-invalid") == 0);
+    test.assert(expect_in(heap, "64", "", "", "", "block-bus-width-invalid") == 0);
+    test.assert(expect_in(heap, "\"32\"", "", "", "", "block-bus-width-invalid") == 0);
+    return expect_in(heap, "true", "", "", "", "block-bus-width-invalid");
+}
+
+// -------------------------------------------------------------- registers ---
+
+fn test_a_register_needs_a_name_and_a_hex_offset[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"offset\":\"0x0\",\"kind\":\"RW\"}", "", "", "register-name-missing") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"\",\"offset\":\"0x0\",\"kind\":\"RW\"}", "", "", "register-name-missing") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"kind\":\"RW\"}", "", "", "register-offset-missing") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0X0\",\"kind\":\"RW\"}", "", "", "register-offset-missing") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x\",\"kind\":\"RW\"}", "", "", "register-offset-missing") == 0);
+    return expect_in(heap, "32", "{\"name\":\"R\",\"offset\":12,\"kind\":\"RW\"}", "", "", "register-offset-missing");
+}
+
+fn test_an_offset_is_a_multiple_of_the_register_size[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x4\",\"kind\":\"RW\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x6\",\"kind\":\"RW\"}", "", "", "register-offset-non-aligned") == 0);
+    test.assert(expect_in(heap, "16", "{\"name\":\"R\",\"offset\":\"0x6\",\"kind\":\"RW\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "16", "{\"name\":\"R\",\"offset\":\"0x7\",\"kind\":\"RW\"}", "", "", "register-offset-non-aligned") == 0);
+    return expect_in(heap, "8", "{\"name\":\"R\",\"offset\":\"0x7\",\"kind\":\"RW\"}", "", "", "");
+}
+
+fn test_a_register_must_end_inside_the_bus_width_address_space[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0xfffffffc\",\"kind\":\"RW\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x100000000\",\"kind\":\"RW\"}", "", "", "register-offset-overflow") == 0);
+    test.assert(expect_in(heap, "8", "{\"name\":\"R\",\"offset\":\"0xff\",\"kind\":\"RW\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "8", "{\"name\":\"R\",\"offset\":\"0x100\",\"kind\":\"RW\"}", "", "", "register-offset-overflow") == 0);
+    test.assert(expect_in(heap, "16", "{\"name\":\"R\",\"offset\":\"0xfffe\",\"kind\":\"RW\"}", "", "", "") == 0);
+    return expect_in(heap, "16", "{\"name\":\"R\",\"offset\":\"0x10000\",\"kind\":\"RW\"}", "", "", "register-offset-overflow");
+}
+
+fn test_two_registers_may_not_share_an_offset_however_it_is_written[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x8\",\"kind\":\"RW\"},{\"name\":\"B\",\"offset\":\"0x08\",\"kind\":\"RW\"}", "", "", "register-offset-duplicate") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x8\",\"kind\":\"RW\"},{\"name\":\"B\",\"offset\":\"0x0000000008\",\"kind\":\"RW\"}", "", "", "register-offset-duplicate") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x8\",\"kind\":\"RW\"},{\"name\":\"B\",\"offset\":\"0x0C\",\"kind\":\"RW\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0xA\",\"kind\":\"RW\"},{\"name\":\"B\",\"offset\":\"0xa\",\"kind\":\"RW\"}", "", "", "register-offset-non-aligned,register-offset-non-aligned,register-offset-duplicate") == 0);
+    // three at one offset: each later one is reported against the first
+    return expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"RW\"},{\"name\":\"B\",\"offset\":\"0x0\",\"kind\":\"RW\"},{\"name\":\"C\",\"offset\":\"0x0\",\"kind\":\"RW\"}", "", "", "register-offset-duplicate,register-offset-duplicate");
+}
+
+fn test_the_access_kind_is_one_of_eight[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"W0S\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"rw\"}", "", "", "register-kind-unknown") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\"}", "", "", "register-kind-unknown") == 0);
+    // an unknown kind ends the register: its reset and fields are not examined
+    return expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"X\",\"reset\":\"0x1ffffffff\",\"fields\":[{\"name\":\"F\",\"lsb\":9,\"msb\":99}]}", "", "", "register-kind-unknown");
+}
+
+fn test_a_reset_fits_the_bus_width_and_a_write_only_register_should_reset_to_zero[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"RW\",\"reset\":\"0xffffffff\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"RW\",\"reset\":\"0x100000000\"}", "", "", "reset-overflow") == 0);
+    test.assert(expect_in(heap, "8", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"RW\",\"reset\":\"0xff\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "8", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"RW\",\"reset\":\"0x100\"}", "", "", "reset-overflow") == 0);
+    test.assert(expect_in(heap, "16", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"RW\",\"reset\":\"0x10000\"}", "", "", "reset-overflow") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"RW\",\"reset\":\"nothex\"}", "", "", "reset-overflow") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"WO\",\"reset\":\"0x0\"}", "", "", "") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"WO\",\"reset\":\"0x1\"}", "", "", "reset-wo-nonzero") == 0);
+    // an overflowing reset is an error, not also a warning
+    return expect_in(heap, "8", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"WO\",\"reset\":\"0x100\"}", "", "", "reset-overflow");
+}
+
+fn test_a_warning_is_not_an_error[&h](heap: &!h Heap) -> [heap] int {
+    let doc = wrap(heap, "32", "{\"name\":\"A\",\"offset\":\"0x0\",\"kind\":\"WO\",\"reset\":\"0x1\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":0,\"constraint\":\"c\"}]}", "", "");
+    var warnings = 0;
+    var errors = 0;
+    borrow doc as &dr in {
+        let tape = box_slice(heap, json.tape_len(buffer.bytes(dr)), 0);
+        borrow mut tape as &!w in {
+            json.parse(buffer.bytes(dr), contents(w));
+        }
+        borrow tape as &t in {
+            let ds = check.run(heap, dg.empty(heap), buffer.bytes(dr), contents(t));
+            borrow ds as &q in {
+                errors = dg.count_errors(q);
+                warnings = dg.count_top(q) - errors;
+            }
+            dg.drop(heap, ds);
+        }
+        unbox_slice(heap, tape);
+    }
+    buffer.drop(heap, doc);
+    test.assert_eq(warnings, 2);
+    return test.assert_eq(errors, 0);
+}
+
+// ----------------------------------------------------------------- fields ---
+
+fn test_a_field_needs_a_name_and_integer_bounds[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"lsb\":0,\"msb\":0}]}", "", "", "field-name-missing") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"\",\"lsb\":0,\"msb\":0}]}", "", "", "field-name-missing") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":7,\"lsb\":0,\"msb\":0}]}", "", "", "field-name-missing") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"msb\":0}]}", "", "", "field-bounds-missing") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0.0,\"msb\":0}]}", "", "", "field-bounds-missing") == 0);
+    return expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":\"0\",\"msb\":0}]}", "", "", "field-bounds-missing");
+}
+
+fn test_msb_may_equal_lsb_but_not_be_below_it[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":3,\"msb\":3}]}", "", "", "") == 0);
+    return expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":3,\"msb\":2}]}", "", "", "field-bounds-inverted");
+}
+
+fn test_a_field_must_end_below_the_bus_width[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "8", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":7}]}", "", "", "") == 0);
+    test.assert(expect_in(heap, "8", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":8}]}", "", "", "field-bounds-overflow") == 0);
+    test.assert(expect_in(heap, "16", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":15,\"msb\":16}]}", "", "", "field-bounds-overflow") == 0);
+    // out of bounds is not also an overlap
+    return expect_in(heap, "8", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"A\",\"lsb\":0,\"msb\":7},{\"name\":\"B\",\"lsb\":4,\"msb\":9}]}", "", "", "field-bounds-overflow");
+}
+
+fn test_fields_may_touch_but_not_share_a_bit[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"A\",\"lsb\":0,\"msb\":3},{\"name\":\"B\",\"lsb\":4,\"msb\":7}]}", "", "", "") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"A\",\"lsb\":0,\"msb\":3},{\"name\":\"B\",\"lsb\":3,\"msb\":7}]}", "", "", "field-overlap") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"A\",\"lsb\":4,\"msb\":7},{\"name\":\"B\",\"lsb\":0,\"msb\":4}]}", "", "", "field-overlap") == 0);
+    // contained, and one field overlapping two
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"A\",\"lsb\":0,\"msb\":9},{\"name\":\"B\",\"lsb\":2,\"msb\":3}]}", "", "", "field-overlap") == 0);
+    return expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"A\",\"lsb\":0,\"msb\":1},{\"name\":\"B\",\"lsb\":2,\"msb\":3},{\"name\":\"C\",\"lsb\":1,\"msb\":2}]}", "", "", "field-overlap,field-overlap");
+}
+
+fn test_an_enum_value_must_fit_the_width_of_its_field[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":2,\"msb\":3,\"enum\":{\"A\":0,\"B\":3}}]}", "", "", "") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":2,\"msb\":3,\"enum\":{\"A\":0,\"B\":4}}]}", "", "", "field-enum-overflow") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":2,\"msb\":3,\"enum\":{\"A\":-1}}]}", "", "", "field-enum-overflow") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":2,\"msb\":3,\"enum\":{\"A\":1.5}}]}", "", "", "field-enum-overflow") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":2,\"msb\":3,\"enum\":{\"A\":\"1\"}}]}", "", "", "field-enum-overflow") == 0);
+    test.assert(expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":0,\"enum\":{\"A\":0,\"B\":1,\"C\":2}}]}", "", "", "field-enum-overflow") == 0);
+    // a one-bit-wide field holds 0 and 1, a 32-bit one holds 4294967295
+    return expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":31,\"enum\":{\"A\":4294967295}}]}", "", "", "");
+}
+
+fn test_a_constraint_is_a_warning_the_checker_cannot_enforce[&h](heap: &!h Heap) -> [heap] int {
+    return expect_in(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":0,\"constraint\":\"x\"}]}", "", "", "field-constraint-ignored");
+}
+
+// ------------------------------------------------------------- interrupts ---
+
+fn linkage_regs() -> [] &static [byte] {
+    return "{\"name\":\"S\",\"offset\":\"0x0\",\"kind\":\"RO\",\"fields\":[{\"name\":\"X\",\"lsb\":0,\"msb\":0}]},{\"name\":\"C\",\"offset\":\"0x4\",\"kind\":\"RW\",\"fields\":[{\"name\":\"Y\",\"lsb\":0,\"msb\":0}]}";
+}
+
+fn test_an_interrupt_needs_a_name_and_a_unique_one[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"number\":1}", "", "interrupt-name-missing") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"\"}", "", "interrupt-name-missing") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\"},{\"name\":\"b\"}", "", "") == 0);
+    return expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\"},{\"name\":\"a\"}", "", "interrupt-duplicate-name");
+}
+
+fn test_a_reference_names_an_existing_register_and_field[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"source\":{\"register\":\"S\",\"field\":\"X\"},\"enable\":{\"register\":\"C\",\"field\":\"Y\"},\"status\":{\"register\":\"S\",\"field\":\"X\"},\"clear\":{\"register\":\"C\",\"field\":\"Y\",\"kind\":\"RC\"}}", "", "") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"source\":{\"register\":\"Z\",\"field\":\"X\"}}", "", "interrupt-source-unresolved") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"enable\":{\"register\":\"C\",\"field\":\"X\"}}", "", "interrupt-enable-unresolved") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"status\":{\"register\":\"\",\"field\":\"X\"}}", "", "interrupt-status-unresolved") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"clear\":{\"register\":\"C\",\"field\":\"\"}}", "", "interrupt-clear-unresolved") == 0);
+    // the match is exact, not a prefix or a case fold
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"source\":{\"register\":\"s\",\"field\":\"X\"}}", "", "interrupt-source-unresolved") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"source\":{\"register\":\"S\",\"field\":\"XX\"}}", "", "interrupt-source-unresolved") == 0);
+    // all four at once, in the order source, enable, status, clear
+    return expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"clear\":{\"register\":\"N\",\"field\":\"N\"},\"status\":{\"register\":\"N\",\"field\":\"N\"},\"enable\":{\"register\":\"N\",\"field\":\"N\"},\"source\":{\"register\":\"N\",\"field\":\"N\"}}", "", "interrupt-source-unresolved,interrupt-enable-unresolved,interrupt-status-unresolved,interrupt-clear-unresolved");
+}
+
+fn test_a_clear_kind_is_w1c_w0c_or_rc_and_defaults_to_w1c[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"clear\":{\"register\":\"C\",\"field\":\"Y\"}}", "", "") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"clear\":{\"register\":\"C\",\"field\":\"Y\",\"kind\":\"W0C\"}}", "", "") == 0);
+    test.assert(expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"clear\":{\"register\":\"C\",\"field\":\"Y\",\"kind\":\"W1S\"}}", "", "interrupt-clear-kind-invalid") == 0);
+    return expect_in(heap, "32", linkage_regs(), "{\"name\":\"a\",\"clear\":{\"register\":\"C\",\"field\":\"Y\",\"kind\":null}}", "", "interrupt-clear-kind-invalid");
+}
+
+fn test_when_register_names_repeat_the_last_one_is_the_one_a_reference_finds[&h](heap: &!h Heap) -> [heap] int {
+    let regs = "{\"name\":\"S\",\"offset\":\"0x0\",\"kind\":\"RO\",\"fields\":[{\"name\":\"X\",\"lsb\":0,\"msb\":0}]},{\"name\":\"S\",\"offset\":\"0x4\",\"kind\":\"RO\",\"fields\":[{\"name\":\"Z\",\"lsb\":0,\"msb\":0}]}";
+    test.assert(expect_in(heap, "32", regs, "{\"name\":\"a\",\"source\":{\"register\":\"S\",\"field\":\"Z\"}}", "", "") == 0);
+    return expect_in(heap, "32", regs, "{\"name\":\"a\",\"source\":{\"register\":\"S\",\"field\":\"X\"}}", "", "interrupt-source-unresolved");
+}
+
+// -------------------------------------------------------------------- dma ---
+
+fn test_a_dma_buffer_and_its_fields_need_names[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "", "", "{\"fields\":[]}", "dma-name-missing") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"\",\"fields\":[]}", "dma-name-missing") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"\",\"offset\":\"0x0\",\"owner\":\"CPU\"}]}", "dma-field-name-missing") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"offset\":\"0x0\",\"owner\":\"CPU\"}]}", "dma-field-name-missing") == 0);
+    // a field with no offset is skipped without a word (the schema reports it)
+    return expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"owner\":\"CPU\"}]}", "");
+}
+
+fn test_a_dma_owner_is_cpu_or_device[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"DEVICE\"}]}", "") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"cpu\"}]}", "dma-owner-unknown") == 0);
+    // an unknown owner does not stop the alignment check that follows it
+    return expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x1\",\"owner\":\"GPU\",\"align\":4}]}", "dma-owner-unknown,dma-align-unsatisfied");
+}
+
+fn test_dma_fields_are_four_bytes_wide_and_may_not_overlap[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"b\",\"offset\":\"0x4\",\"owner\":\"CPU\"}]}", "") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"b\",\"offset\":\"0x3\",\"owner\":\"CPU\"}]}", "dma-overlap") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x4\",\"owner\":\"CPU\"},{\"name\":\"b\",\"offset\":\"0x0\",\"owner\":\"CPU\"}]}", "") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x4\",\"owner\":\"CPU\"},{\"name\":\"b\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"c\",\"offset\":\"0x2\",\"owner\":\"CPU\"}]}", "dma-overlap,dma-overlap") == 0);
+    // buffers are independent of each other
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\"}]},{\"name\":\"E\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\"}]}", "") == 0);
+    // a document that bypasses the schema may give a field a size
+    return expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"size\":8},{\"name\":\"b\",\"offset\":\"0x4\",\"owner\":\"CPU\"}]}", "dma-overlap");
+}
+
+fn test_an_alignment_is_a_power_of_two_up_to_4096_and_divides_the_offset[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x1000\",\"owner\":\"CPU\",\"align\":4096}]}", "") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x800\",\"owner\":\"CPU\",\"align\":4096}]}", "dma-align-unsatisfied") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"align\":8192}]}", "dma-align-illegal") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"align\":0}]}", "dma-align-illegal") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"align\":-4}]}", "dma-align-illegal") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"align\":6}]}", "dma-align-illegal") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"align\":4.0}]}", "dma-align-illegal") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x3\",\"owner\":\"CPU\",\"align\":1}]}", "") == 0);
+    test.assert(expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x6\",\"owner\":\"CPU\",\"align\":2}]}", "") == 0);
+    return expect_in(heap, "32", "", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x7\",\"owner\":\"CPU\",\"align\":2}]}", "dma-align-unsatisfied");
+}
+
+// ---------------------------------------------------------------- hostile ---
+
+fn test_numbers_past_what_an_int_holds_do_not_trap[&h](heap: &!h Heap) -> [heap] int {
+    // exact outcomes are not the point: the checker answers, it does not trap
+    let doc = wrap(heap, "32", "{\"name\":\"R\",\"offset\":\"0xfffffffffffffffffffffffffffff\",\"kind\":\"RW\",\"reset\":\"0xffffffffffffffffffffffffffffffff\",\"fields\":[{\"name\":\"A\",\"lsb\":-99999999999999999999,\"msb\":99999999999999999999,\"enum\":{\"x\":99999999999999999999,\"y\":-99999999999999999999}},{\"name\":\"B\",\"lsb\":-9223372036854775807,\"msb\":9223372036854775807}]}", "", "{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0xfffffffffffffffffffffffffffff\",\"owner\":\"CPU\",\"size\":9223372036854775807,\"align\":4096},{\"name\":\"b\",\"offset\":\"0xfffffffffffffffffffffffffffff\",\"owner\":\"CPU\",\"size\":-9223372036854775807}]}");
+    var n = 0;
+    borrow doc as &dr in {
+        let got = tags(heap, buffer.bytes(dr));
+        borrow got as &g in {
+            n = len(buffer.bytes(g));
+        }
+        buffer.drop(heap, got);
+    }
+    buffer.drop(heap, doc);
+    return test.assert(n > 0);
+}
+
+fn test_a_huge_hex_offset_is_still_a_duplicate_of_itself_and_of_nothing_else[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x10000000000000000000000\",\"kind\":\"RW\"},{\"name\":\"B\",\"offset\":\"0x10000000000000000000001\",\"kind\":\"RW\"}", "", "", "register-offset-overflow,register-offset-non-aligned,register-offset-overflow") == 0);
+    return expect_in(heap, "32", "{\"name\":\"A\",\"offset\":\"0x10000000000000000000000\",\"kind\":\"RW\"},{\"name\":\"B\",\"offset\":\"0x010000000000000000000000\",\"kind\":\"RW\"}", "", "", "register-offset-overflow,register-offset-overflow,register-offset-duplicate");
+}
+
+fn test_elements_that_are_not_objects_are_skipped_not_trapped_on[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(expect_in(heap, "32", "1,\"x\",null,[],{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[3,{\"name\":\"F\",\"lsb\":0,\"msb\":0}]}", "5,{\"name\":\"a\",\"source\":3}", "7,{\"name\":\"D\",\"fields\":[8]}", "") == 0);
+    test.assert(expect(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x1\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":{\"a\":1},\"interrupts\":7},\"dma_buffers\":\"no\"}", "") == 0);
+    return expect(heap, "{\"version\":\"0.1.0\",\"block\":3}", "schema-invalid");
+}
+
+// ------------------------------------------------------------------- text ---
+
+fn test_a_diagnostic_prints_as_the_python_checker_prints_it[&h](heap: &!h Heap) -> [heap] int {
+    let doc = wrap(heap, "32", "{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"A\",\"lsb\":0,\"msb\":3},{\"name\":\"B\",\"lsb\":2,\"msb\":4}]}", "", "");
+    var same = false;
+    borrow doc as &dr in {
+        let tape = box_slice(heap, json.tape_len(buffer.bytes(dr)), 0);
+        borrow mut tape as &!w in {
+            json.parse(buffer.bytes(dr), contents(w));
+        }
+        borrow tape as &t in {
+            let ds = check.run(heap, dg.empty(heap), buffer.bytes(dr), contents(t));
+            borrow ds as &q in {
+                let out = dg_json.render(heap, buffer.empty(heap, 64), q, "f.chw", false);
+                borrow out as &o in {
+                    same = bytes.starts_with(buffer.bytes(o), "{\n  \"code\": \"field-overlap\",\n  \"severity\": \"Error\",\n  \"tier\": \"Static\",\n  \"message\": \"field 'B' bits [2..4] overlap with A bits [0..3] in register 'R'.\",\n  \"related\": [\n    {\n      \"code\": \"field-overlap\",");
+                    same = same && bytes.find(buffer.bytes(o), "\"remediation\": {\n    \"description\": \"start B at bits [4..6] (just after A, bits [0..3]), or shrink / move either field \\u2014 the toolchain cannot say which side the hardware semantics live on\",\n    \"suggestion\": null,\n    \"confidence\": \"Low\"\n  }\n}\n") > 0;
+                }
+                buffer.drop(heap, out);
+            }
+            dg.drop(heap, ds);
+        }
+        unbox_slice(heap, tape);
+    }
+    buffer.drop(heap, doc);
+    return test.assert(same);
+}

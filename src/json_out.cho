@@ -21,7 +21,7 @@ fn lit[&h](heap: &!h Heap, out: buffer.Buffer, text: &static [byte]) -> [heap] b
 // a document the validator refused (`chw parse` prints the IR it could read);
 // its digits come out of the negative number directly, because negating the
 // most negative `int` would trap.
-fn num[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+pub fn num[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
     if n >= 0 {
         return buffer.push_nat(heap, out, n);
     }
@@ -56,7 +56,7 @@ fn uescape[&h](heap: &!h Heap, out: buffer.Buffer, cp: int) -> [heap] buffer.Buf
 // A JSON string holding src[a..b], escaped the way `ensure_ascii` does:
 // `"` `\` and C0 controls, and every non-ASCII code point as `\uXXXX` (a
 // surrogate pair above U+FFFF). The source is UTF-8 by construction.
-fn quoted[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], a: int, b: int) -> [heap] buffer.Buffer {
+pub fn quoted[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], a: int, b: int) -> [heap] buffer.Buffer {
     var o = buffer.push(heap, out, byte_of('"'));
     var i = a;
     while i < b {

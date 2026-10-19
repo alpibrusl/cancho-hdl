@@ -44,6 +44,11 @@ pub fn err_col[&p](st: &!p [int]) -> [] int {
     return st[5];
 }
 
+// The index of the token the refusal was opened at.
+pub fn err_tok[&p](st: &!p [int]) -> [] int {
+    return st[2];
+}
+
 pub fn msg_len[&p](st: &!p [int]) -> [] int {
     return st[3];
 }

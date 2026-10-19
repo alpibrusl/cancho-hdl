@@ -35,7 +35,7 @@ fn test_a_clean_text_form_contract_has_an_empty_report[&h](heap: &!h Heap) -> [h
 }
 
 fn test_a_text_form_syntax_error_is_a_parse_error_with_a_span[&h](heap: &!h Heap) -> [heap] int {
-    return reported(heap, "register-block B @ 0x0 width 8, little { }", "parse-error\t1\t24\t-\t\tparse error: expected ',' before 'width', found 'width'.\n");
+    return reported(heap, "register-block B @ 0x0 width 8, little { }", "parse-error\t1\t24\t-\t\tparse error: expected ',' before 'width', found 'width'.\t29\n");
 }
 
 fn test_json_form_is_chosen_by_the_first_non_blank_byte[&h](heap: &!h Heap) -> [heap] int {
@@ -45,11 +45,11 @@ fn test_json_form_is_chosen_by_the_first_non_blank_byte[&h](heap: &!h Heap) -> [
 }
 
 fn test_an_empty_file_is_a_text_form_refusal_not_a_trap[&h](heap: &!h Heap) -> [heap] int {
-    return reported(heap, "", "parse-error\t1\t1\t-\t\tparse error: a contract file must contain a 'register-block', found end of file.\n");
+    return reported(heap, "", "parse-error\t1\t1\t-\t\tparse error: a contract file must contain a 'register-block', found end of file.\t14\n");
 }
 
 fn test_a_file_that_is_not_a_contract_at_all_is_refused[&h](heap: &!h Heap) -> [heap] int {
-    return reported(heap, "[1, 2]", "parse-error\t1\t1\t-\t\tparse error: expected a 'register-block' or 'dma-buffer' declaration, found '['.\n");
+    return reported(heap, "[1, 2]", "parse-error\t1\t1\t-\t\tparse error: expected a 'register-block' or 'dma-buffer' declaration, found '['.\t2\n");
 }
 
 fn test_a_json_syntax_error_is_reported_with_the_position_it_is_at[&h](heap: &!h Heap) -> [heap] int {

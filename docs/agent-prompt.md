@@ -12,7 +12,7 @@ Install cancho-hdl and check it on this machine. Work in a new empty directory, 
    export CANCHO="$PWD/cancho/target/release/cancho"
    pip install jsonschema==4.26.0 lxml
 
-4. Prove the install works. This needs no network, no key and no model. It takes about five minutes:
+4. Prove the install works. This needs no network, no key and no model. It takes about fifteen minutes:
    cd cancho-hdl
    sh scripts/gate_cancho.sh ; echo "exit $?"     # must print exit 0 (the script prints no final PASS line)
    python3 scripts/run_gate.py                     # must end with: GATE PASSED
@@ -21,6 +21,7 @@ Install cancho-hdl and check it on this machine. Work in a new empty directory, 
    /tmp/chw validate examples/uart-contract/uart.chw ; echo "exit $?"            # expect exit 0
    /tmp/chw validate examples/refusal/bus-width-invalid.chw ; echo "exit $?"     # expect schema-invalid at a line:column, exit 1
    /tmp/chw parse examples/refusal/parse-error.chw ; echo "exit $?"              # expect parse-error at 2:26, exit 1
+   /tmp/chw check examples/refusal/field-overlap.chw ; echo "exit $?"           # expect error[field-overlap] with a related line and a help line, exit 1
    /tmp/chw conform .                                                            # the refusal fixtures, a table
    python3 tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
    The last command is the Python reference implementation (being replaced). It lists which generated artifacts a register-map change makes stale.

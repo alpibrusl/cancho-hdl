@@ -1,0 +1,22 @@
+{
+  "file": "tests/stage2/interrupt-clear-kind-invalid.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "'W1S' is not one of ['W1C', 'W0C', 'RC']"
+    },
+    {
+      "code": "interrupt-clear-kind-invalid",
+      "subject": {
+        "kind": "InterruptLinkage",
+        "block": "Dev",
+        "interrupt": "rx",
+        "role": "clear"
+      },
+      "message_contains": "interrupt 'rx' clear.kind='W1S'; must be one of RC, W0C, W1C."
+    }
+  ]
+}

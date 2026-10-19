@@ -1,0 +1,21 @@
+{
+  "file": "tests/stage2/interrupt-name-missing.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "'name' is a required property"
+    },
+    {
+      "code": "interrupt-name-missing",
+      "subject": {
+        "kind": "Interrupt",
+        "block": "Dev",
+        "name": "<missing>"
+      },
+      "message_contains": "interrupt is missing required 'name' (non-empty string)."
+    }
+  ]
+}

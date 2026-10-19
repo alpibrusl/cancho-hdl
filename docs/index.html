@@ -157,7 +157,9 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
     <div class="num"><b>2,765 / 2,767</b><span>mutated inputs: the cancho parser matches the Python one exactly; 2 known differences</span></div>
     <div class="num"><b>1.75×</b><span>lines: lexer, IR and parser in cancho against the Python parser</span></div>
     <div class="num"><b>0 / 55,093</b><span>mutated JSON inputs the cancho validator and Python's <code>jsonschema</code> disagree on without a known reason (212 deliberate differences)</span></div>
-    <div class="num"><b>12 / 12</b><span>refusal fixtures matched on the schema-level rules by the cancho conformance runner; 14 of 19 sidecar entries (semantic rules) are still Python's</span></div>
+    <div class="num"><b>19 / 19</b><span>sidecar entries of the 12 refusal fixtures decided by the cancho conformance runner; none deferred to Python</span></div>
+    <div class="num"><b>16 / 16</b><span>valid examples and refusals on which the cancho checker's <code>--output json</code> equals the Python checker's byte for byte</span></div>
+    <div class="num"><b>0 / 55,182</b><span>mutated inputs the cancho checker and Python's differ on without a known reason (1,192 deliberate or known differences; 5,814 inputs on which the Python checker itself raises)</span></div>
   </div>
   <p class="fine">The generated C header executes the scenario corpus op-for-op against the reference model under gcc and clang. Seeded drift makes the comparison fail, which shows it can.</p>
 </div></section>
@@ -168,7 +170,7 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
   <div class="cards">
     <div class="card"><h3>Not working hardware</h3><p>Timing, area and vendor IP are trust boundaries, never labelled verified.</p></div>
     <div class="card"><h3>No SystemVerilog behaviour check yet</h3><p>That needs Verilator or cocotb. Only structure is checked today.</p></div>
-    <div class="card"><h3>Mostly still Python</h3><p>The textual parser, the JSON loader, the schema validator and the schema-level conformance run are ported. The semantic checker, generators, diff and report remain the Python reference, being replaced.</p></div>
+    <div class="card"><h3>Mostly still Python</h3><p>The textual parser, the JSON loader, the schema validator, the semantic checker and the conformance run are ported. The generators, diff and report remain the Python reference, being replaced.</p></div>
   </div>
 </div></section>
 
@@ -226,7 +228,7 @@ python3 scripts/run_gate.py           # the reference gate</code></pre>
 <section><div class="wrap">
   <h2>Go deeper</h2>
   <div class="cards">
-    <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/cancho-port.md">Port to cancho</a></h3><p>The plan, the spike, stage 1 and their measurements.</p></div>
+    <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/cancho-port.md">Port to cancho</a></h3><p>The plan, the spike, stages 1 and 2 and their measurements.</p></div>
     <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/guarantees.md">Guarantees</a></h3><p>What each tier does and does not claim.</p></div>
     <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/contract-design.md">Contract design</a></h3><p>The schema and the textual syntax.</p></div>
   </div>
@@ -247,8 +249,8 @@ python3 scripts/run_gate.py           # the reference gate</code></pre>
     ["d", "$ chw validate examples/uart-contract/uart.chw"],
     ["g", "exit 0"],
     ["d", "$ chw conform ."],
-    ["g", "== 12 of 12 fixtures matched on the stage-1 rules"],
-    ["g", "   4 of 4 valid examples clean"],
+    ["g", "== 12 of 12 fixtures matched (19 of 19 sidecar entries, all decided by this tool)"],
+    ["g", "   4 of 4 valid examples without an error (2 warnings)"],
     ["d", "$ python3 tools/diff/diff.py impact uart.chw uart_rebase.chw"],
     ["b", "c-header        stale  moved_registers=5; widened_fields=1", {t: 0, c: "hot"}],
     ["g", "cancho-binding  no change (byte-identical output)", {t: 1, c: "ok"}],

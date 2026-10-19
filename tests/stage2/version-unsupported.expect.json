@@ -1,0 +1,13 @@
+{
+  "file": "tests/stage2/version-unsupported.chw",
+  "expect": [
+    {
+      "code": "schema-version-unsupported",
+      "subject": {
+        "kind": "Ir",
+        "path": "tests/stage2/version-unsupported.chw"
+      },
+      "message_contains": "schema version 0.2.0 is not supported by this toolchain (expected 0.1.x)."
+    }
+  ]
+}

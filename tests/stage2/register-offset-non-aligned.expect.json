@@ -1,0 +1,14 @@
+{
+  "file": "tests/stage2/register-offset-non-aligned.chw",
+  "expect": [
+    {
+      "code": "register-offset-non-aligned",
+      "subject": {
+        "kind": "Register",
+        "block": "Dev",
+        "name": "ST"
+      },
+      "message_contains": "register 'ST' offset 0x06 is not a multiple of register size 4 bytes (bus_width 32)."
+    }
+  ]
+}

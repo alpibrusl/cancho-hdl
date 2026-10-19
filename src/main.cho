@@ -4,13 +4,19 @@ edition 6;
 //
 //     chw parse FILE                  load FILE (text or JSON form), print the IR as one
 //                                     line of JSON; no schema check (parser.py FILE)
-//     chw validate FILE [--schema S] [--machine]
+//     chw validate FILE [--schema S] [--machine] [--output json] [--located]
 //                                     load and validate against the schema S (default
 //                                     spec/contract-schema/cancho-hdl-contract.schema.json),
 //                                     print every refusal
-//     chw conform [ROOT] [--fixtures DIR]
+//     chw check FILE [--schema S] [--output text|json] [--located]
+//                                     validate, then run every semantic rule (checker.py FILE):
+//                                     the text form, or the JSON of `--output json`, which is
+//                                     the Python checker's byte for byte (--located adds the
+//                                     position of the node a structural refusal names)
+//     chw catalog                     every rule with its subject, severity and tier
+//     chw conform [ROOT] [--fixtures DIR[,DIR...]]
 //                                     run the examples and the refusal fixtures under ROOT
-//                                     (default .) through the loader and validator
+//                                     (default .) through the loader, validator and checker
 //
 // Exit 0 clean, 1 something was refused or mismatched, 2 usage or the tool itself could
 // not run (an unreadable file or schema, a schema keyword this validator lacks).
@@ -19,12 +25,15 @@ import std.buffer;
 import std.bytes;
 import std.io as console;
 import chw.conform;
+import chw.dg_json;
+import chw.dg_text;
 import chw.diag;
+import chw.diagnostic as dg;
 import chw.io as chwio;
 import chw.load;
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] | chw conform [ROOT] [--fixtures DIR]\n");
+    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] [--output json] [--located] | chw check FILE [--schema S] [--output text|json] [--located] | chw catalog | chw conform [ROOT] [--fixtures DIR[,DIR...]]\n");
     return 2;
 }
 
@@ -46,6 +55,39 @@ fn schema_path[&g](g: &g Args) -> [args] &g [byte] {
         return arg(g, at + 1);
     }
     return "spec/contract-schema/cancho-hdl-contract.schema.json";
+}
+
+fn output_is_json[&g](g: &g Args) -> [args] bool {
+    let at = flag_at(g, "--output");
+    return at > 0 && at + 1 < arg_count(g) && bytes.equal(arg(g, at + 1), "json");
+}
+
+// Print the diagnostics `ds` of the file `path` (whose text is `source`) as
+// JSON or as text, to standard output; the answer is the exit status: 1 if any
+// is an Error, 2 if any is the tool's own fault, else 0.
+fn show_diags[&h, &i, &q, &p, &s](heap: &!h Heap, io: &!i Io, ds: &q dg.Diags, path: &p [byte], source: &s [byte], as_json: bool, located: bool) -> [heap, io_write] int {
+    var out = buffer.empty(heap, 256);
+    if as_json {
+        out = dg_json.render(heap, out, ds, path, located);
+    } else {
+        out = dg_text.render(heap, out, ds, path, source, located);
+    }
+    borrow out as &o in {
+        buffer.write(io, o);
+    }
+    buffer.drop(heap, out);
+    var status = 0;
+    if dg.count_errors(ds) > 0 {
+        status = 1;
+    }
+    var k = 0;
+    while k < dg.size(ds) {
+        if dg.is_internal(dg.get(ds, k).rule) && dg.get(ds, k).kids.nest == 0 {
+            status = 2;
+        }
+        k = k + 1;
+    }
+    return status;
 }
 
 // Print the refusals of `doc`; the answer is the exit status.
@@ -129,7 +171,15 @@ fn run_validate[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g
                 borrow sch as &s in {
                     let doc = load.load(heap, buffer.bytes(t), s);
                     borrow doc as &dr in {
-                        status = show_refusals(heap, io, load.report(dr), arg(g, 2), flag_at(g, "--machine") > 0, true);
+                        if output_is_json(g) && flag_at(g, "--machine") < 0 {
+                            let structural = load.structural(heap, dr);
+                            borrow structural as &sd in {
+                                status = show_diags(heap, io, sd, arg(g, 2), buffer.bytes(t), true, flag_at(g, "--located") > 0);
+                            }
+                            dg.drop(heap, structural);
+                        } else {
+                            status = show_refusals(heap, io, load.report(dr), arg(g, 2), flag_at(g, "--machine") > 0, true);
+                        }
                     }
                     load.drop(heap, doc);
                 }
@@ -139,6 +189,62 @@ fn run_validate[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g
     }
     load.drop_schema(heap, sch);
     return status;
+}
+
+fn run_check[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args) -> [heap, io_write, err_write, fs_read(""), file_read, args] int {
+    let (stext, sgot) = chwio.read_file(heap, fs, schema_path(g), buffer.empty(heap, 8192));
+    let sch = load.open_schema(heap, stext);
+    var status = 2;
+    var usable = false;
+    borrow sch as &sr in {
+        usable = load.schema_ok(sr);
+    }
+    if sgot < 0 || !usable {
+        console.error_all(io, "cannot read the schema, or it is not JSON\n");
+    } else {
+        let (text, got) = chwio.read_file(heap, fs, arg(g, 2), buffer.empty(heap, 4096));
+        if got < 0 {
+            console.error_all(io, "cannot read file\n");
+        } else {
+            borrow text as &t in {
+                borrow sch as &s in {
+                    let doc = load.load(heap, buffer.bytes(t), s);
+                    borrow doc as &dr in {
+                        status = show_diags(heap, io, load.diags(dr), arg(g, 2), buffer.bytes(t), output_is_json(g), flag_at(g, "--located") > 0);
+                    }
+                    load.drop(heap, doc);
+                }
+            }
+        }
+        buffer.drop(heap, text);
+    }
+    load.drop_schema(heap, sch);
+    return status;
+}
+
+// `chw catalog`: every rule with the subject, severity and tier the code gives
+// it, one per line, tab-separated (checked against the spec by
+// tests/differential/catalog.py).
+fn run_catalog[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
+    var out = buffer.empty(heap, 1024);
+    var k = 0;
+    while k < dg.rule_count() {
+        let r = dg.rule_at(k);
+        out = buffer.append(heap, out, dg.rule_name(r));
+        out = buffer.push(heap, out, byte_of('\t'));
+        out = buffer.append(heap, out, dg.kind_name(dg.rule_kind(r)));
+        out = buffer.push(heap, out, byte_of('\t'));
+        out = buffer.append(heap, out, dg.severity_name(dg.rule_severity(r)));
+        out = buffer.push(heap, out, byte_of('\t'));
+        out = buffer.append(heap, out, dg.tier_name(dg.rule_tier(r)));
+        out = buffer.push(heap, out, byte_of('\n'));
+        k = k + 1;
+    }
+    borrow out as &o in {
+        buffer.write(io, o);
+    }
+    buffer.drop(heap, out);
+    return 0;
 }
 
 fn run_conform[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args) -> [heap, io_write, err_write, fs_read(""), dir_read, file_read, args] int {
@@ -197,6 +303,10 @@ fn main(world: World) -> [] int {
                         status = run_parse(h, i, f, g);
                     } else if bytes.equal(arg(g, 1), "validate") && arg_count(g) >= 3 {
                         status = run_validate(h, i, f, g);
+                    } else if bytes.equal(arg(g, 1), "check") && arg_count(g) >= 3 {
+                        status = run_check(h, i, f, g);
+                    } else if bytes.equal(arg(g, 1), "catalog") {
+                        status = run_catalog(h, i);
                     } else if bytes.equal(arg(g, 1), "conform") {
                         status = run_conform(h, i, f, g);
                     } else {

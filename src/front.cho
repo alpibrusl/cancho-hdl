@@ -34,8 +34,18 @@ pub fn parse_text[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] (model.Ir, 
                     msg = buffer.push(heap, msg, byte_of(parse.msg_byte(contents(sw), k)));
                     k = k + 1;
                 }
+                // The Python tool's span ends `max(len(token), 1)` columns on.
+                let tok = contents(tr)[parse.err_tok(contents(sw))];
+                var width = tok.e - tok.s;
+                if width < 1 {
+                    width = 1;
+                }
+                if tok.kind == lx.k_eof() {
+                    // the Python tokeniser's end-of-file token is the text "<end of file>"
+                    width = 13;
+                }
                 borrow msg as &m in {
-                    report = diag.add(heap, report, "parse-error", parse.err_line(contents(sw)), parse.err_col(contents(sw)), "-", "", buffer.bytes(m));
+                    report = diag.add_ended(heap, report, "parse-error", parse.err_line(contents(sw)), parse.err_col(contents(sw)), parse.err_col(contents(sw)) + width, "-", "", buffer.bytes(m));
                 }
                 buffer.drop(heap, msg);
             }

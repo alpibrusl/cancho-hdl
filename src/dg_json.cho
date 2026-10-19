@@ -1,0 +1,312 @@
+module chw.dg_json;
+
+// dg_json.cho -- `--output json`: a diagnostic table as the JSON that
+// `Diagnostic.to_json()` of tools/check/diagnostic.py prints,
+// `json.dumps(d.to_dict(), indent=2)`, one object after another, byte for byte
+// (spec/diagnostics/README.md, 4; docs/cancho-port.md, 13.3).
+//
+// Key order is the Python dict's: code, severity, tier, message, related,
+// notes, subject, span, expected, actual, remediation. Strings are escaped
+// as `ensure_ascii` escapes them. The path is the one the tool was run with:
+// it is the file of every span and the path of an `Ir` subject.
+//
+// `located` is the one switch. Without it every structural diagnostic carries
+// the whole-file span of 1:1 that the Python checker gives it, and nothing
+// else is added; with it a stage-1 diagnostic carries the position of the
+// offending node, and an `Ir` subject names the schema keyword that refused.
+
+import std.buffer;
+import chw.diagnostic as dg;
+import chw.json_out;
+
+fn ind[&h](heap: &!h Heap, out: buffer.Buffer, level: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var k = 0;
+    while k < level {
+        o = buffer.append(heap, o, "  ");
+        k = k + 1;
+    }
+    return o;
+}
+
+fn str[&h, &t](heap: &!h Heap, out: buffer.Buffer, t: &t [byte]) -> [heap] buffer.Buffer {
+    return json_out.quoted(heap, out, t, 0, len(t));
+}
+
+// `"key": ` at `level`.
+fn key[&h](heap: &!h Heap, out: buffer.Buffer, level: int, name: &static [byte]) -> [heap] buffer.Buffer {
+    var o = ind(heap, out, level);
+    o = str(heap, o, name);
+    return buffer.append(heap, o, ": ");
+}
+
+fn pair[&h, &t](heap: &!h Heap, out: buffer.Buffer, level: int, name: &static [byte], t: &t [byte]) -> [heap] buffer.Buffer {
+    return str(heap, key(heap, out, level, name), t);
+}
+
+fn number[&h](heap: &!h Heap, out: buffer.Buffer, level: int, name: &static [byte], n: int) -> [heap] buffer.Buffer {
+    return json_out.num(heap, key(heap, out, level, name), n);
+}
+
+fn is_digits[&t](t: &t [byte]) -> [] bool {
+    if len(t) == 0 {
+        return false;
+    }
+    var i = 0;
+    while i < len(t) {
+        if int_of(t[i]) < '0' || int_of(t[i]) > '9' {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// One segment of a JSON Pointer: `~1` is `/`, `~0` is `~`.
+fn segment[&h, &t](heap: &!h Heap, out: buffer.Buffer, t: &t [byte]) -> [heap] buffer.Buffer {
+    if is_digits(t) && len(t) < 16 {
+        return buffer.append(heap, out, t);
+    }
+    var raw = buffer.empty(heap, len(t) + 1);
+    var i = 0;
+    while i < len(t) {
+        if int_of(t[i]) == '~' && i + 1 < len(t) && int_of(t[i + 1]) == '1' {
+            raw = buffer.push(heap, raw, byte_of('/'));
+            i = i + 2;
+        } else if int_of(t[i]) == '~' && i + 1 < len(t) && int_of(t[i + 1]) == '0' {
+            raw = buffer.push(heap, raw, byte_of('~'));
+            i = i + 2;
+        } else {
+            raw = buffer.push(heap, raw, t[i]);
+            i = i + 1;
+        }
+    }
+    var o = out;
+    borrow raw as &r in {
+        o = str(heap, o, buffer.bytes(r));
+    }
+    buffer.drop(heap, raw);
+    return o;
+}
+
+// `list(e.absolute_path)`: the pointer `/block/registers/0` as
+// ["block", "registers", 0], an empty pointer as [].
+fn pointer_list[&h, &t](heap: &!h Heap, out: buffer.Buffer, level: int, p: &t [byte]) -> [heap] buffer.Buffer {
+    if len(p) == 0 {
+        return buffer.append(heap, out, "[]");
+    }
+    var o = buffer.append(heap, out, "[\n");
+    var start = 1;
+    var i = 1;
+    while i <= len(p) {
+        if i == len(p) || int_of(p[i]) == '/' {
+            o = ind(heap, o, level + 1);
+            o = segment(heap, o, p[start..i]);
+            if i < len(p) {
+                o = buffer.append(heap, o, ",\n");
+            } else {
+                o = buffer.push(heap, o, byte_of('\n'));
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    o = ind(heap, o, level);
+    return buffer.push(heap, o, byte_of(']'));
+}
+
+// `t` (JSON written at nesting 0) with every line after the first moved in by
+// `level` steps, so that it reads as `json.dumps` writes it at that depth.
+fn indented[&h, &t](heap: &!h Heap, out: buffer.Buffer, t: &t [byte], level: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = 0;
+    while i < len(t) {
+        o = buffer.push(heap, o, t[i]);
+        if int_of(t[i]) == '\n' {
+            o = ind(heap, o, level);
+        }
+        i = i + 1;
+    }
+    return o;
+}
+
+fn subject[&h, &q, &p](heap: &!h Heap, out: buffer.Buffer, ds: &q dg.Diags, d: dg.Dg, level: int, path: &p [byte], located: bool) -> [heap] buffer.Buffer {
+    let kind = dg.rule_kind(d.rule);
+    var o = key(heap, out, level, "subject");
+    o = buffer.append(heap, o, "{\n");
+    o = pair(heap, o, level + 1, "kind", dg.kind_name(kind));
+    var is_ir = false;
+    match kind {
+        dg.Kind::Ir => {
+            is_ir = true;
+        }
+        _ => {
+            is_ir = false;
+        }
+    }
+    if is_ir {
+        o = buffer.append(heap, o, ",\n");
+        o = pair(heap, o, level + 1, "path", path);
+        if dg.present(d.subj.ptr) {
+            o = buffer.append(heap, o, ",\n");
+            o = key(heap, o, level + 1, "pointer");
+            o = pointer_list(heap, o, level + 1, dg.text(ds, d.subj.ptr));
+        }
+        if located && dg.present(d.kw) {
+            o = buffer.append(heap, o, ",\n");
+            o = pair(heap, o, level + 1, "keyword", dg.text(ds, d.kw));
+        }
+    } else {
+        o = buffer.append(heap, o, ",\n");
+        if dg.has_raw(d.subj.a) {
+            o = key(heap, o, level + 1, dg.key_a(kind));
+            o = indented(heap, o, dg.text(ds, dg.raw_of(d.subj.a)), level + 1);
+        } else {
+            o = pair(heap, o, level + 1, dg.key_a(kind), dg.text(ds, d.subj.a));
+        }
+        if len(dg.key_b(kind)) > 0 {
+            o = buffer.append(heap, o, ",\n");
+            o = pair(heap, o, level + 1, dg.key_b(kind), dg.text(ds, d.subj.b));
+        }
+        if len(dg.key_c(kind)) > 0 {
+            o = buffer.append(heap, o, ",\n");
+            o = pair(heap, o, level + 1, dg.key_c(kind), dg.text(ds, d.subj.c));
+        }
+    }
+    o = buffer.push(heap, o, byte_of('\n'));
+    o = ind(heap, o, level);
+    return buffer.push(heap, o, byte_of('}'));
+}
+
+fn position[&h](heap: &!h Heap, out: buffer.Buffer, level: int, name: &static [byte], line: int, col: int) -> [heap] buffer.Buffer {
+    var o = key(heap, out, level, name);
+    o = buffer.append(heap, o, "{\n");
+    o = number(heap, o, level + 1, "line", line);
+    o = buffer.append(heap, o, ",\n");
+    o = number(heap, o, level + 1, "column", col);
+    o = buffer.push(heap, o, byte_of('\n'));
+    o = ind(heap, o, level);
+    return buffer.push(heap, o, byte_of('}'));
+}
+
+// The span that is printed: the stored one when it is fixed or when located
+// spans were asked for and one exists, else the whole-file 1:1.
+pub fn effective(loc: dg.Loc, located: bool) -> [] dg.Loc {
+    if loc.has && (loc.fixed || located) {
+        return loc;
+    }
+    return dg.file_loc();
+}
+
+fn span[&h, &p](heap: &!h Heap, out: buffer.Buffer, d: dg.Dg, level: int, path: &p [byte], located: bool) -> [heap] buffer.Buffer {
+    let loc = effective(d.loc, located);
+    var o = key(heap, out, level, "span");
+    o = buffer.append(heap, o, "{\n");
+    o = pair(heap, o, level + 1, "file", path);
+    o = buffer.append(heap, o, ",\n");
+    o = position(heap, o, level + 1, "start", loc.sl, loc.sc);
+    o = buffer.append(heap, o, ",\n");
+    o = position(heap, o, level + 1, "end", loc.el, loc.ec);
+    o = buffer.push(heap, o, byte_of('\n'));
+    o = ind(heap, o, level);
+    return buffer.push(heap, o, byte_of('}'));
+}
+
+// The object for the record `i`, opened at the cursor and closed at `level`.
+pub fn object[&h, &q, &p](heap: &!h Heap, out: buffer.Buffer, ds: &q dg.Diags, i: int, level: int, path: &p [byte], located: bool) -> [heap] buffer.Buffer {
+    let d = dg.get(ds, i);
+    let k = level + 1;
+    var o = buffer.append(heap, out, "{\n");
+    o = pair(heap, o, k, "code", dg.rule_name(d.rule));
+    o = buffer.append(heap, o, ",\n");
+    o = pair(heap, o, k, "severity", dg.severity_name(dg.rule_severity(d.rule)));
+    o = buffer.append(heap, o, ",\n");
+    o = pair(heap, o, k, "tier", dg.tier_name(dg.rule_tier(d.rule)));
+    o = buffer.append(heap, o, ",\n");
+    o = pair(heap, o, k, "message", dg.text(ds, d.msg));
+    o = buffer.append(heap, o, ",\n");
+    o = key(heap, o, k, "related");
+    if d.kids.rel_n == 0 {
+        o = buffer.append(heap, o, "[]");
+    } else {
+        o = buffer.append(heap, o, "[\n");
+        var r = 0;
+        while r < d.kids.rel_n {
+            o = ind(heap, o, k + 1);
+            o = object(heap, o, ds, d.kids.rel_first + r, k + 1, path, located);
+            r = r + 1;
+            if r < d.kids.rel_n {
+                o = buffer.append(heap, o, ",\n");
+            } else {
+                o = buffer.push(heap, o, byte_of('\n'));
+            }
+        }
+        o = ind(heap, o, k);
+        o = buffer.push(heap, o, byte_of(']'));
+    }
+    o = buffer.append(heap, o, ",\n");
+    o = key(heap, o, k, "notes");
+    if d.kids.note_n == 0 {
+        o = buffer.append(heap, o, "[]");
+    } else {
+        o = buffer.append(heap, o, "[\n");
+        var r = 0;
+        while r < d.kids.note_n {
+            o = ind(heap, o, k + 1);
+            o = str(heap, o, dg.text(ds, dg.get(ds, d.kids.note_first + r).msg));
+            r = r + 1;
+            if r < d.kids.note_n {
+                o = buffer.append(heap, o, ",\n");
+            } else {
+                o = buffer.push(heap, o, byte_of('\n'));
+            }
+        }
+        o = ind(heap, o, k);
+        o = buffer.push(heap, o, byte_of(']'));
+    }
+    o = buffer.append(heap, o, ",\n");
+    o = subject(heap, o, ds, d, k, path, located);
+    o = buffer.append(heap, o, ",\n");
+    o = span(heap, o, d, k, path, located);
+    if dg.present(d.exp) {
+        o = buffer.append(heap, o, ",\n");
+        o = key(heap, o, k, "expected");
+        o = buffer.append(heap, o, dg.text(ds, d.exp));
+    }
+    if dg.present(d.act) {
+        o = buffer.append(heap, o, ",\n");
+        o = key(heap, o, k, "actual");
+        o = buffer.append(heap, o, dg.text(ds, d.act));
+    }
+    if dg.present(d.rem.text) {
+        o = buffer.append(heap, o, ",\n");
+        o = key(heap, o, k, "remediation");
+        o = buffer.append(heap, o, "{\n");
+        o = pair(heap, o, k + 1, "description", dg.text(ds, d.rem.text));
+        o = buffer.append(heap, o, ",\n");
+        o = key(heap, o, k + 1, "suggestion");
+        o = buffer.append(heap, o, "null,\n");
+        o = pair(heap, o, k + 1, "confidence", dg.confidence_name(d.rem.conf));
+        o = buffer.push(heap, o, byte_of('\n'));
+        o = ind(heap, o, k);
+        o = buffer.push(heap, o, byte_of('}'));
+    }
+    o = buffer.push(heap, o, byte_of('\n'));
+    o = ind(heap, o, level);
+    return buffer.push(heap, o, byte_of('}'));
+}
+
+// Every top-level diagnostic, each followed by a newline (Python prints one
+// `to_json()` per diagnostic). Nothing at all for an empty table.
+pub fn render[&h, &q, &p](heap: &!h Heap, out: buffer.Buffer, ds: &q dg.Diags, path: &p [byte], located: bool) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = 0;
+    while i < dg.size(ds) {
+        if dg.get(ds, i).kids.nest == 0 {
+            o = object(heap, o, ds, i, 0, path, located);
+            o = buffer.push(heap, o, byte_of('\n'));
+        }
+        i = i + 1;
+    }
+    return o;
+}

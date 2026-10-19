@@ -1,0 +1,41 @@
+{
+  "file": "tests/stage2/register-name-missing.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "'name' is a required property"
+    },
+    {
+      "code": "register-name-missing",
+      "subject": {
+        "kind": "Register",
+        "block": "Dev",
+        "name": "<missing>"
+      },
+      "message_contains": "register is missing required 'name' (non-empty string)."
+    },
+    {
+      "code": "interrupt-source-unresolved",
+      "subject": {
+        "kind": "InterruptLinkage",
+        "block": "Dev",
+        "interrupt": "rx",
+        "role": "source"
+      },
+      "message_contains": "interrupt rx source references ST.RDY does not exist: register ST is not declared in block Dev."
+    },
+    {
+      "code": "interrupt-status-unresolved",
+      "subject": {
+        "kind": "InterruptLinkage",
+        "block": "Dev",
+        "interrupt": "rx",
+        "role": "status"
+      },
+      "message_contains": "interrupt rx status references ST.RDY does not exist: register ST is not declared in block Dev."
+    }
+  ]
+}

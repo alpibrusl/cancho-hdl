@@ -2,21 +2,22 @@ edition 6;
 
 module chw.conform;
 
-// conform.cho -- the stage-1 conformance runner (docs/cancho-port.md, 9.1).
+// conform.cho -- the conformance runner (docs/cancho-port.md, 9.1 and 13.4).
 //
 // For every valid example and every refusal fixture it runs the product's own
-// loader and validator (`chw.load`) and compares the codes with the sidecar
-// (`*.expect.json`), the check `tools/check/conformance.py` makes for the
-// whole checker, restricted to the codes stage 1 owns (`parse-error`,
-// `schema-invalid`, `internal`). A sidecar entry with any other code is a
-// semantic rule (stage 2): it is counted and printed as DEFERRED, never as
-// passed.
+// loader, validator and checker (`chw.load`) and compares what comes out with
+// the sidecar (`*.expect.json`), the check `tools/check/conformance.py` makes.
+// Every sidecar entry is decided here, whatever its code: stage 1 decided the
+// structural ones (`parse-error`, `schema-invalid`) and left the semantic
+// rules "deferred"; stage 2 owns them all, and the count of deferred entries
+// is gone from the report because it is always 0.
 //
-// A fixture passes when every stage-1 entry is matched by a distinct emitted
-// record (same code, message containing `message_contains`; an optional
-// `keyword`, `line` and `column` in the entry pin the sub-tag and the span too)
-// and no emitted record is left over. A valid example passes when it loads
-// with an empty report.
+// A fixture passes when every entry is matched by a distinct emitted
+// diagnostic (same code, the subject the entry names, and a message containing
+// `message_contains`; an optional `keyword`, `line` and `column` pin the
+// sub-tag and the span too) and no emitted diagnostic is left over, warnings
+// included. A valid example passes when it loads with no Error diagnostic; its
+// warnings are counted and shown.
 //
 // Files are read through a `Dir` handle on the repository root, so the runner
 // cannot read outside it. Exit: 0 all matched, 1 a mismatch, 2 the runner
@@ -27,9 +28,10 @@ import std.bytes;
 import std.dirs;
 import std.io as console;
 import std.json;
+import chw.dg_text;
 import chw.diag;
+import chw.diagnostic as dg;
 import chw.io as chwio;
-import chw.ir as model;
 import chw.load;
 
 // Tally slots.
@@ -49,7 +51,7 @@ fn t_entries_ok() -> [] int {
     return 3;
 }
 
-fn t_deferred() -> [] int {
+fn t_warned() -> [] int {
     return 4;
 }
 
@@ -93,19 +95,57 @@ fn decoded[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], node: int
     return tmp;
 }
 
-fn is_stage_one[&c](code: &c [byte]) -> [] bool {
-    return bytes.equal(code, "parse-error") || bytes.equal(code, "schema-invalid") || bytes.equal(code, "internal");
-}
-
-// Does the record `rec` satisfy the sidecar entry at `entry`?
-fn satisfies[&h, &r, &s, &t, &c](heap: &!h Heap, rec: &r [byte], src: &s [byte], tape: &t [int], entry: int, code: &c [byte]) -> [heap] bool {
-    if !bytes.equal(diag.code(rec), code) {
+// Does the subject the sidecar names (`entry`'s "subject") fit the diagnostic?
+// The kind and every field must be equal, and the entry must name no other;
+// an `Ir` subject is only its kind (the path depends on how the tool was run).
+fn subject_fits[&q, &s, &t](ds: &q dg.Diags, d: dg.Dg, src: &s [byte], tape: &t [int], entry: int) -> [] bool {
+    let subj = json.get(src, tape, entry, "subject");
+    if !json.is_object(tape, subj) {
+        return true;
+    }
+    let kind = dg.rule_kind(d.rule);
+    if !json.string_equals(src, tape, json.get(src, tape, subj, "kind"), dg.kind_name(kind)) {
         return false;
     }
-    var ok = true;
+    var is_ir = false;
+    match kind {
+        dg.Kind::Ir => {
+            is_ir = true;
+        }
+        _ => {
+            is_ir = false;
+        }
+    }
+    if is_ir {
+        return true;
+    }
+    var named = 2;
+    var ok = field_fits(ds, src, tape, subj, dg.key_a(kind), d.subj.a);
+    if len(dg.key_b(kind)) > 0 {
+        named = named + 1;
+        ok = ok && field_fits(ds, src, tape, subj, dg.key_b(kind), d.subj.b);
+    }
+    if len(dg.key_c(kind)) > 0 {
+        named = named + 1;
+        ok = ok && field_fits(ds, src, tape, subj, dg.key_c(kind), d.subj.c);
+    }
+    return ok && json.count(tape, subj) == named;
+}
+
+fn field_fits[&q, &s, &t](ds: &q dg.Diags, src: &s [byte], tape: &t [int], subj: int, key: &static [byte], sp: dg.Sp) -> [] bool {
+    return json.string_equals(src, tape, json.get(src, tape, subj, key), dg.text(ds, sp));
+}
+
+// Does diagnostic `i` satisfy the sidecar entry at `entry`?
+fn satisfies[&h, &q, &s, &t, &c](heap: &!h Heap, ds: &q dg.Diags, i: int, src: &s [byte], tape: &t [int], entry: int, code: &c [byte]) -> [heap] bool {
+    let d = dg.get(ds, i);
+    if !bytes.equal(dg.rule_name(d.rule), code) {
+        return false;
+    }
+    var ok = subject_fits(ds, d, src, tape, entry);
     let want = decoded(heap, src, tape, json.get(src, tape, entry, "message_contains"));
     borrow want as &w in {
-        if bytes.find(diag.message(rec), contents(w)) < 0 {
+        if bytes.find(dg.text(ds, d.msg), contents(w)) < 0 {
             ok = false;
         }
     }
@@ -114,74 +154,70 @@ fn satisfies[&h, &r, &s, &t, &c](heap: &!h Heap, rec: &r [byte], src: &s [byte],
     if json.is_string(tape, kw) {
         let k = decoded(heap, src, tape, kw);
         borrow k as &w in {
-            if !bytes.equal(diag.keyword(rec), contents(w)) {
+            if !bytes.equal(dg.text(ds, d.kw), contents(w)) {
                 ok = false;
             }
         }
         unbox_slice(heap, k);
     }
-    let line = json.get(src, tape, entry, "line");
-    if json.is_number(tape, line) && json.to_int(src, tape, line) != diag.line(rec) {
+    var line = 0;
+    var col = 0;
+    if d.loc.has {
+        line = d.loc.sl;
+        col = d.loc.sc;
+    }
+    let jl = json.get(src, tape, entry, "line");
+    if json.is_number(tape, jl) && json.to_int(src, tape, jl) != line {
         ok = false;
     }
-    let col = json.get(src, tape, entry, "column");
-    if json.is_number(tape, col) && json.to_int(src, tape, col) != diag.column(rec) {
+    let jc = json.get(src, tape, entry, "column");
+    if json.is_number(tape, jc) && json.to_int(src, tape, jc) != col {
         ok = false;
     }
     return ok;
 }
 
-// Compare the emitted `report` with the sidecar. The answer is the detail text
-// for the table (and, on a mismatch, one line per problem) and whether the
-// fixture matched; the tally counts entries.
-fn judge[&h, &r, &s, &t, &w](heap: &!h Heap, report: &r [byte], src: &s [byte], tape: &t [int], tally: &!w [int]) -> [heap] (buffer.Buffer, bool) {
+// Compare the emitted diagnostics `ds` with the sidecar. The answer is the
+// detail text for the table (and, on a mismatch, one line per problem) and
+// whether the fixture matched; the tally counts entries.
+fn judge[&h, &q, &s, &t, &w](heap: &!h Heap, ds: &q dg.Diags, src: &s [byte], tape: &t [int], tally: &!w [int]) -> [heap] (buffer.Buffer, bool) {
     let expect = json.get(src, tape, 0, "expect");
-    let n_rec = diag.count(report);
+    let n_rec = dg.size(ds);
     let used = box_slice(heap, n_rec + 1, 0);
     var hit = 0;
     var total = 0;
-    var deferred = 0;
     var missing = buffer.empty(heap, 64);
-    var deferred_codes = buffer.empty(heap, 64);
     var e = expect + 1;
     var left = json.count(tape, expect);
     while left > 0 {
         let code = decoded(heap, src, tape, json.get(src, tape, e, "code"));
         borrow code as &c in {
-            if is_stage_one(contents(c)) {
-                total = total + 1;
-                var found = 0 - 1;
-                var i = 0;
-                borrow mut used as &!u in {
-                    while i < n_rec && found < 0 {
-                        if contents(u)[i] == 0 && satisfies(heap, diag.record(report, i), src, tape, e, contents(c)) {
-                            found = i;
-                        }
-                        i = i + 1;
+            total = total + 1;
+            var found = 0 - 1;
+            var i = 0;
+            borrow mut used as &!u in {
+                while i < n_rec && found < 0 {
+                    if contents(u)[i] == 0 && dg.get(ds, i).kids.nest == 0 && satisfies(heap, ds, i, src, tape, e, contents(c)) {
+                        found = i;
                     }
-                    if found >= 0 {
-                        contents(u)[found] = 1;
-                    }
+                    i = i + 1;
                 }
                 if found >= 0 {
-                    hit = hit + 1;
-                } else {
-                    missing = buffer.append(heap, missing, "\n      missing: ");
-                    missing = buffer.append(heap, missing, contents(c));
-                    let want = decoded(heap, src, tape, json.get(src, tape, e, "message_contains"));
-                    borrow want as &wv in {
-                        missing = buffer.append(heap, missing, " containing '");
-                        missing = buffer.append(heap, missing, contents(wv));
-                        missing = buffer.push(heap, missing, byte_of('\''));
-                    }
-                    unbox_slice(heap, want);
+                    contents(u)[found] = 1;
                 }
+            }
+            if found >= 0 {
+                hit = hit + 1;
             } else {
-                deferred = deferred + 1;
-                if deferred > 1 {
-                    deferred_codes = buffer.append(heap, deferred_codes, ", ");
+                missing = buffer.append(heap, missing, "\n      missing: ");
+                missing = buffer.append(heap, missing, contents(c));
+                let want = decoded(heap, src, tape, json.get(src, tape, e, "message_contains"));
+                borrow want as &wv in {
+                    missing = buffer.append(heap, missing, " containing '");
+                    missing = buffer.append(heap, missing, contents(wv));
+                    missing = buffer.push(heap, missing, byte_of('\''));
                 }
-                deferred_codes = buffer.append(heap, deferred_codes, contents(c));
+                unbox_slice(heap, want);
             }
         }
         unbox_slice(heap, code);
@@ -192,12 +228,13 @@ fn judge[&h, &r, &s, &t, &w](heap: &!h Heap, report: &r [byte], src: &s [byte], 
     var i = 0;
     borrow used as &u in {
         while i < n_rec {
-            if contents(u)[i] == 0 {
+            let d = dg.get(ds, i);
+            if contents(u)[i] == 0 && d.kids.nest == 0 {
                 extra = extra + 1;
                 missing = buffer.append(heap, missing, "\n      unexpected: ");
-                missing = buffer.append(heap, missing, diag.code(diag.record(report, i)));
+                missing = buffer.append(heap, missing, dg.rule_name(d.rule));
                 missing = buffer.append(heap, missing, " ");
-                missing = buffer.append(heap, missing, diag.message(diag.record(report, i)));
+                missing = buffer.append(heap, missing, dg.text(ds, d.msg));
             }
             i = i + 1;
         }
@@ -205,24 +242,16 @@ fn judge[&h, &r, &s, &t, &w](heap: &!h Heap, report: &r [byte], src: &s [byte], 
     unbox_slice(heap, used);
     tally[t_entries()] = tally[t_entries()] + total;
     tally[t_entries_ok()] = tally[t_entries_ok()] + hit;
-    tally[t_deferred()] = tally[t_deferred()] + deferred;
-    var out = buffer.append(heap, buffer.empty(heap, 96), "stage-1 ");
+    var out = buffer.append(heap, buffer.empty(heap, 96), "entries ");
     out = buffer.push_nat(heap, out, hit);
     out = buffer.push(heap, out, byte_of('/'));
     out = buffer.push_nat(heap, out, total);
     out = buffer.append(heap, out, "  unexpected ");
     out = buffer.push_nat(heap, out, extra);
-    if deferred > 0 {
-        out = buffer.append(heap, out, "  deferred to stage 2: ");
-        borrow deferred_codes as &d in {
-            out = buffer.append(heap, out, buffer.bytes(d));
-        }
-    }
     borrow missing as &m in {
         out = buffer.append(heap, out, buffer.bytes(m));
     }
     buffer.drop(heap, missing);
-    buffer.drop(heap, deferred_codes);
     return (out, hit == total && extra == 0);
 }
 
@@ -241,7 +270,8 @@ fn trim_slash[&a](path: &a [byte]) -> [] &a [byte] {
     return path;
 }
 
-// One valid example: it must load with an empty report.
+// One valid example: it must load with no Error diagnostic (a warning is
+// shown and counted, as `conformance.py` allows it).
 fn run_valid[&h, &i, &d, &s, &p, &w](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s load.Schema, path: &p [byte], tally: &!w [int]) -> [heap, io_write, dir_read, file_read] int {
     let (text, got) = chwio.read_in(heap, root, path, buffer.empty(heap, 4096));
     var line = buffer.empty(heap, 96);
@@ -254,21 +284,34 @@ fn run_valid[&h, &i, &d, &s, &p, &w](heap: &!h Heap, io: &!i Io, root: &d Dir, s
     } else {
         borrow text as &t in {
             let doc = load.load(heap, buffer.bytes(t), sch);
-            var refused = 0;
+            var errors = 0;
+            var warnings = 0;
             borrow doc as &dr in {
-                refused = diag.count(load.report(dr));
+                errors = dg.count_errors(load.diags(dr));
+                warnings = dg.count_top(load.diags(dr)) - errors;
             }
-            if refused == 0 {
+            if errors == 0 {
                 line = buffer.append(heap, line, "  PASS  ");
                 line = buffer.append(heap, line, path);
-                line = buffer.append(heap, line, "  loads and validates clean\n");
+                line = buffer.append(heap, line, "  valid, 0 errors");
+                if warnings > 0 {
+                    line = buffer.append(heap, line, ", ");
+                    line = buffer.push_nat(heap, line, warnings);
+                    line = buffer.append(heap, line, " warning(s)");
+                    tally[t_warned()] = tally[t_warned()] + warnings;
+                }
+                line = buffer.push(heap, line, byte_of('\n'));
                 tally[t_valid_ok()] = tally[t_valid_ok()] + 1;
             } else {
                 line = buffer.append(heap, line, "  FAIL  ");
                 line = buffer.append(heap, line, path);
-                line = buffer.append(heap, line, "  valid example refused:\n");
+                line = buffer.append(heap, line, "  valid example emitted errors:\n");
                 borrow doc as &dr in {
-                    line = diag.render_all(heap, line, load.report(dr), path);
+                    var shown = dg_text.render(heap, buffer.empty(heap, 128), load.diags(dr), path, buffer.bytes(t), false);
+                    borrow shown as &sr in {
+                        line = buffer.append(heap, line, buffer.bytes(sr));
+                    }
+                    buffer.drop(heap, shown);
                 }
             }
             load.drop(heap, doc);
@@ -301,7 +344,7 @@ fn run_fixture[&h, &i, &d, &s, &p, &q, &w](heap: &!h Heap, io: &!i Io, root: &d 
         got_side = n;
     }
     tally[t_fixtures()] = tally[t_fixtures()] + 1;
-    var line = pad(heap, buffer.empty(heap, 128), stem, 26);
+    var line = pad(heap, buffer.empty(heap, 128), stem, 30);
     var ok = false;
     if got_chw < 0 || got_side < 0 {
         line = buffer.append(heap, line, "FAIL  fixture or sidecar could not be read\n");
@@ -321,7 +364,7 @@ fn run_fixture[&h, &i, &d, &s, &p, &q, &w](heap: &!h Heap, io: &!i Io, root: &d 
                     let doc = load.load(heap, buffer.bytes(cb), sch);
                     borrow doc as &dr in {
                         borrow tape as &tr in {
-                            let (detail, matched) = judge(heap, load.report(dr), buffer.bytes(sb), contents(tr), tally);
+                            let (detail, matched) = judge(heap, load.diags(dr), buffer.bytes(sb), contents(tr), tally);
                             ok = matched;
                             if matched {
                                 line = buffer.append(heap, line, "PASS  ");
@@ -385,8 +428,8 @@ fn run_directory[&h, &i, &d, &s, &p, &w](heap: &!h Heap, io: &!i Io, root: &d Di
     return 0;
 }
 
-// Run the whole suite. `fixture_dirs` are the extra directories (besides the
-// manifest's `refusal_dir`) of `.chw` + `.expect.json` pairs.
+// Run the whole suite. `extra` is a comma-separated list of directories
+// (besides the manifest's `refusal_dir`) of `.chw` + `.expect.json` pairs.
 pub fn run[&h, &i, &d, &s, &x](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s load.Schema, extra: &x [byte]) -> [heap, io_write, err_write, dir_read, file_read] int {
     var tally = box_slice(heap, tally_size(), 0);
     let (manifest, got) = chwio.read_in(heap, root, "examples/MANIFEST.json", buffer.empty(heap, 1024));
@@ -406,11 +449,11 @@ pub fn run[&h, &i, &d, &s, &x](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s
                 status = 2;
             } else {
                 borrow mut tally as &!t in {
-                    console.write_all(io, "== stage-1 conformance: loader + structural validator ==\n\n## valid examples (must load and validate clean)\n");
+                    console.write_all(io, "== conformance: loader, structural validator and semantic checker ==\n\n## valid examples (must load with no error)\n");
                     borrow tape as &tr in {
                         run_paths(heap, io, root, sch, buffer.bytes(mb), contents(tr), "valid", contents(t));
                         run_paths(heap, io, root, sch, buffer.bytes(mb), contents(tr), "textual_valid", contents(t));
-                        console.write_all(io, "\n## refusal fixtures (stage-1 codes must match, nothing unexpected)\n");
+                        console.write_all(io, "\n## refusal fixtures (every sidecar entry must match, nothing unexpected)\n");
                         let rd = decoded(heap, buffer.bytes(mb), contents(tr), json.get(buffer.bytes(mb), contents(tr), 0, "refusal_dir"));
                         borrow rd as &rdv in {
                             run_directory(heap, io, root, sch, trim_slash(contents(rdv)), contents(t));
@@ -418,8 +461,19 @@ pub fn run[&h, &i, &d, &s, &x](heap: &!h Heap, io: &!i Io, root: &d Dir, sch: &s
                         unbox_slice(heap, rd);
                     }
                     if len(extra) > 0 {
-                        console.write_all(io, "\n## additional stage-1 fixtures\n");
-                        run_directory(heap, io, root, sch, trim_slash(extra), contents(t));
+                        console.write_all(io, "\n## additional fixtures\n");
+                        // `extra` is a comma-separated list of directories
+                        var from = 0;
+                        var i = 0;
+                        while i <= len(extra) {
+                            if i == len(extra) || int_of(extra[i]) == ',' {
+                                if i > from {
+                                    run_directory(heap, io, root, sch, trim_slash(extra[from..i]), contents(t));
+                                }
+                                from = i + 1;
+                            }
+                            i = i + 1;
+                        }
                     }
                 }
             }
@@ -457,17 +511,17 @@ fn summary[&h, &i, &w](heap: &!h Heap, io: &!i Io, tally: &w [int]) -> [heap, io
     o = buffer.push_nat(heap, o, tally[t_fixtures_ok()]);
     o = buffer.append(heap, o, " of ");
     o = buffer.push_nat(heap, o, tally[t_fixtures()]);
-    o = buffer.append(heap, o, " fixtures matched on the stage-1 rules (");
+    o = buffer.append(heap, o, " fixtures matched (");
     o = buffer.push_nat(heap, o, tally[t_entries_ok()]);
     o = buffer.append(heap, o, " of ");
     o = buffer.push_nat(heap, o, tally[t_entries()]);
-    o = buffer.append(heap, o, " stage-1 sidecar entries); ");
+    o = buffer.append(heap, o, " sidecar entries, all decided by this tool); ");
     o = buffer.push_nat(heap, o, tally[t_valid_ok()]);
     o = buffer.append(heap, o, " of ");
     o = buffer.push_nat(heap, o, tally[t_valid()]);
-    o = buffer.append(heap, o, " valid examples clean; ");
-    o = buffer.push_nat(heap, o, tally[t_deferred()]);
-    o = buffer.append(heap, o, " sidecar entries deferred to stage 2, not counted as passed ==\n");
+    o = buffer.append(heap, o, " valid examples without an error (");
+    o = buffer.push_nat(heap, o, tally[t_warned()]);
+    o = buffer.append(heap, o, " warnings) ==\n");
     borrow o as &r in {
         buffer.write(io, r);
     }

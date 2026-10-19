@@ -1,0 +1,15 @@
+{
+  "file": "tests/stage2/dma-align-illegal.chw",
+  "expect": [
+    {
+      "code": "dma-align-illegal",
+      "subject": {
+        "kind": "DmaField",
+        "block": "Dev",
+        "buffer": "D",
+        "name": "a"
+      },
+      "message_contains": "DMA field 'a' has align=3; must be a power of two in [1, 4096]."
+    }
+  ]
+}
