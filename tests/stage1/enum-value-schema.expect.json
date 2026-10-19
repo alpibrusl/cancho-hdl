@@ -1,0 +1,15 @@
+{
+  "file": "tests/stage1/enum-value-schema.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "-1 is less than the minimum of 0",
+      "keyword": "minimum",
+      "line": 21,
+      "column": 20
+    }
+  ]
+}

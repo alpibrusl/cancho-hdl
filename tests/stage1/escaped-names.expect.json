@@ -1,0 +1,4 @@
+{
+  "file": "tests/stage1/escaped-names.chw",
+  "expect": []
+}

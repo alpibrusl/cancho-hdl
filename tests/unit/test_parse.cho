@@ -1,15 +1,15 @@
-// test_chw.cho -- the port's unit tests, run with `cancho test`:
+// test_parse.cho -- the text parser's unit tests, run with `cancho test`:
 //
-//     cancho test spike/test_chw.cho spike/lex.cho spike/ir.cho spike/parse.cho \
-//         spike/json.cho spike/front.cho --std
+//     cancho test tests/unit/test_parse.cho src/*.cho --std
+//     (all of src/ except main.cho, conform.cho and io.cho)
 //
 // Every expected answer below was taken from the Python parser (the oracle),
 // never from this port.
 //
 // Sources are embedded because a test may borrow only `Heap` and `Io`
 // (docs/testing.md §3): it has no `Fs`, so it cannot open a fixture. The
-// fixture-driven conformance run is a program, `conform.cho` in the design
-// (docs/cancho-port.md, "Conformance").
+// fixture-driven conformance run is a program, `chw conform` (src/conform.cho,
+// docs/cancho-port.md, section 9).
 
 import std.buffer;
 import std.bytes;

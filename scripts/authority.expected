@@ -1,0 +1,13 @@
+performs
+    args
+    dir_read
+    err_write
+    file_read
+    fs_read("")
+    heap
+    io_write
+never touches
+    the network
+    signals
+    other programs
+    foreign code

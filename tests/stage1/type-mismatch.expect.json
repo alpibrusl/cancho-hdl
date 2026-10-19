@@ -1,0 +1,25 @@
+{
+  "file": "tests/stage1/type-mismatch.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "'32' is not of type 'integer'",
+      "keyword": "type",
+      "line": 7,
+      "column": 18
+    },
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "'32' is not one of [8, 16, 32]",
+      "keyword": "enum",
+      "line": 7,
+      "column": 18
+    }
+  ]
+}

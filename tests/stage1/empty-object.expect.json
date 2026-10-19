@@ -1,0 +1,25 @@
+{
+  "file": "tests/stage1/empty-object.chw",
+  "expect": [
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "'version' is a required property",
+      "keyword": "required",
+      "line": 1,
+      "column": 1
+    },
+    {
+      "code": "schema-invalid",
+      "subject": {
+        "kind": "Ir"
+      },
+      "message_contains": "'block' is a required property",
+      "keyword": "required",
+      "line": 1,
+      "column": 1
+    }
+  ]
+}

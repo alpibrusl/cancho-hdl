@@ -1,0 +1,376 @@
+module chw.json_in;
+
+// json_in.cho -- the JSON wire form to the IR, through `std.json`'s tape
+// (docs/cancho-port.md, section 9). The IR is the one the text parser builds:
+// the same records, the same spans.
+//
+// Two conventions:
+//
+//  * The loader is LENIENT and TOTAL. It builds what it can from any tape and
+//    never refuses; refusing is `chw.schema`'s job, and the front end runs the
+//    validator first. A missing or mistyped field becomes the record's zero
+//    value, so a document the validator has refused still yields an IR the
+//    stage-2 checker can read (the Python checker also runs its semantic rules
+//    on an IR that failed the schema).
+//  * Every name and literal is a span into ONE byte buffer, the `text` of the
+//    result: the source bytes, followed by the decoded form of every string
+//    that had an escape (a string with an escape has no contiguous span in the
+//    source). The printer takes that buffer where the text path gives it the
+//    source.
+//
+// Order. A register's `reset`/`volatile`/`polling`, an interrupt's keys after
+// `source`, and a DMA field's keys after `offset` are recorded in the order
+// the document wrote them, as the text parser records them (ir.cho, `order`).
+// `"volatile": false` is not recorded: the printer only ever writes `true`.
+
+import std.buffer;
+import std.json;
+import std.vec;
+import chw.ir as model;
+
+pub res struct Loaded {
+    ir: model.Ir,
+    text: buffer.Buffer,
+}
+
+pub fn drop[&h](heap: &!h Heap, ld: Loaded) -> [heap] int {
+    let Loaded { ir, text } = ld;
+    model.drop(heap, ir);
+    return buffer.drop(heap, text);
+}
+
+// One adder per table, taking the result apart and handing it back.
+fn with_field[&h](heap: &!h Heap, ld: Loaded, f: model.Field) -> [heap] Loaded {
+    let Loaded { ir, text } = ld;
+    return Loaded { ir: model.add_field(heap, ir, f), text: text };
+}
+
+fn with_reg[&h](heap: &!h Heap, ld: Loaded, r: model.Reg) -> [heap] Loaded {
+    let Loaded { ir, text } = ld;
+    return Loaded { ir: model.add_reg(heap, ir, r), text: text };
+}
+
+fn with_buf[&h](heap: &!h Heap, ld: Loaded, b: model.Buf) -> [heap] Loaded {
+    let Loaded { ir, text } = ld;
+    return Loaded { ir: model.add_buf(heap, ir, b), text: text };
+}
+
+fn enums_so_far[&l](ld: &l Loaded) -> [] int {
+    return model.n_enums(ld.ir);
+}
+
+fn fields_so_far[&l](ld: &l Loaded) -> [] int {
+    return model.n_fields(ld.ir);
+}
+
+fn dfields_so_far[&l](ld: &l Loaded) -> [] int {
+    return model.n_dfields(ld.ir);
+}
+
+// The span of the string at `node`, appending its decoded form to `pool`
+// when it has an escape. (-1, 0) when `node` is not a string.
+fn span_of[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], pool: buffer.Buffer, node: int) -> [heap] (buffer.Buffer, int, int) {
+    if !json.is_string(tape, node) {
+        return (pool, 0 - 1, 0);
+    }
+    if json.string_plain(tape, node) {
+        return (pool, tape[3 * node + 1], tape[3 * node + 2]);
+    }
+    let n = json.string_length(src, tape, node);
+    let tmp = box_slice(heap, n, byte_of(0));
+    var wrote = 0;
+    borrow mut tmp as &!w in {
+        wrote = json.string_into(src, tape, node, contents(w));
+    }
+    var out = pool;
+    var start = 0;
+    borrow out as &o in {
+        start = buffer.size(o);
+    }
+    borrow tmp as &r in {
+        out = buffer.append(heap, out, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return (out, start, start + n);
+}
+
+// A required string: absent or mistyped is the empty span, never -1, so a
+// reader may slice it.
+fn name_of[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], pool: buffer.Buffer, node: int) -> [heap] (buffer.Buffer, int, int) {
+    let (p, a, b) = span_of(heap, src, tape, pool, node);
+    if a < 0 {
+        return (p, 0, 0);
+    }
+    return (p, a, b);
+}
+
+fn int_at[&s, &t](src: &s [byte], tape: &t [int], node: int, fallback: int) -> [] int {
+    if json.is_number(tape, node) {
+        return json.to_int(src, tape, node);
+    }
+    return fallback;
+}
+
+// The key of an object pair at tape index `k` is `text`.
+fn is_key[&s, &t](src: &s [byte], tape: &t [int], k: int, text: &static [byte]) -> [] bool {
+    return json.string_equals(src, tape, k, text);
+}
+
+// ---------------------------------------------------------------- tables ---
+
+fn ref_at[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], pool: buffer.Buffer, node: int) -> [heap] (buffer.Buffer, model.Ref) {
+    let (p1, rs, re) = span_of(heap, src, tape, pool, json.get(src, tape, node, "register"));
+    let (p2, fs, fe) = span_of(heap, src, tape, p1, json.get(src, tape, node, "field"));
+    if json.is_object(tape, node) {
+        return (p2, model.Ref { reg_s: rs, reg_e: re, fld_s: fs, fld_e: fe });
+    }
+    return (p2, model.no_ref());
+}
+
+fn load_enum[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], ld: Loaded, obj: int) -> [heap] Loaded {
+    let Loaded { ir, text } = ld;
+    var ir2 = ir;
+    var pool = text;
+    var j = obj + 1;
+    var left = json.count(tape, obj);
+    while left > 0 {
+        let (p, a, b) = name_of(heap, src, tape, pool, j);
+        pool = p;
+        ir2 = model.add_entry(heap, ir2, model.Entry { name_s: a, name_e: b, value: int_at(src, tape, j + 1, 0) });
+        j = json.skip(tape, j + 1);
+        left = left - 1;
+    }
+    return Loaded { ir: ir2, text: pool };
+}
+
+fn load_field[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], ld: Loaded, node: int) -> [heap] Loaded {
+    var first = 0;
+    borrow ld as &l in {
+        first = enums_so_far(l);
+    }
+    let Loaded { ir, text } = ld;
+    let (p1, ns, ne) = name_of(heap, src, tape, text, json.get(src, tape, node, "name"));
+    let (p2, cs, ce) = span_of(heap, src, tape, p1, json.get(src, tape, node, "constraint"));
+    let en = json.get(src, tape, node, "enum");
+    let has_enum = json.is_object(tape, en);
+    var cur = Loaded { ir: ir, text: p2 };
+    var n = 0;
+    if has_enum {
+        n = json.count(tape, en);
+        cur = load_enum(heap, src, tape, cur, en);
+    }
+    let f = model.Field { name_s: ns, name_e: ne, lsb: int_at(src, tape, json.get(src, tape, node, "lsb"), 0), msb: int_at(src, tape, json.get(src, tape, node, "msb"), 0), has_enum: has_enum, enum_first: first, enum_n: n, cons_s: cs, cons_e: ce };
+    return with_field(heap, cur, f);
+}
+
+fn load_reg[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], ld: Loaded, node: int) -> [heap] Loaded {
+    let Loaded { ir, text } = ld;
+    let (p1, ns, ne) = name_of(heap, src, tape, text, json.get(src, tape, node, "name"));
+    let (p2, os, oe) = name_of(heap, src, tape, p1, json.get(src, tape, node, "offset"));
+    let (p3, ks, ke) = name_of(heap, src, tape, p2, json.get(src, tape, node, "kind"));
+    let (p4, rs, re) = span_of(heap, src, tape, p3, json.get(src, tape, node, "reset"));
+    var order = 0;
+    var volatile = false;
+    var polling = false;
+    if json.is_object(tape, node) {
+        var k = node + 1;
+        var left = json.count(tape, node);
+        while left > 0 {
+            if is_key(src, tape, k, "reset") && rs >= 0 {
+                order = model.note(order, 1);
+            } else if is_key(src, tape, k, "volatile") && json.to_bool(tape, k + 1) {
+                order = model.note(order, 2);
+                volatile = true;
+            } else if is_key(src, tape, k, "polling") && json.to_bool(tape, k + 1) {
+                order = model.note(order, 3);
+                polling = true;
+            }
+            k = json.skip(tape, k + 1);
+            left = left - 1;
+        }
+    }
+    var cur = Loaded { ir: ir, text: p4 };
+    var first = 0;
+    var n = 0;
+    let fields = json.get(src, tape, node, "fields");
+    borrow cur as &l in {
+        first = fields_so_far(l);
+    }
+    if json.is_array(tape, fields) {
+        n = json.count(tape, fields);
+        var j = fields + 1;
+        var left = n;
+        while left > 0 {
+            cur = load_field(heap, src, tape, cur, j);
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+    }
+    let r = model.Reg { name_s: ns, name_e: ne, off_s: os, off_e: oe, kind_s: ks, kind_e: ke, reset_s: rs, reset_e: re, volatile: volatile, polling: polling, order: order, first: first, n: n };
+    return with_reg(heap, cur, r);
+}
+
+// In the `clear` object, does `kind` come after `register`?
+fn kind_after_register[&s, &t](src: &s [byte], tape: &t [int], obj: int) -> [] bool {
+    var k = obj + 1;
+    var left = json.count(tape, obj);
+    var seen_register = false;
+    while left > 0 {
+        if is_key(src, tape, k, "register") {
+            seen_register = true;
+        }
+        if is_key(src, tape, k, "kind") {
+            return seen_register;
+        }
+        k = json.skip(tape, k + 1);
+        left = left - 1;
+    }
+    return false;
+}
+
+fn load_intr[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], ld: Loaded, node: int) -> [heap] Loaded {
+    let Loaded { ir, text } = ld;
+    let (p1, ns, ne) = name_of(heap, src, tape, text, json.get(src, tape, node, "name"));
+    let (p2, source) = ref_at(heap, src, tape, p1, json.get(src, tape, node, "source"));
+    let (p3, enable) = ref_at(heap, src, tape, p2, json.get(src, tape, node, "enable"));
+    let (p4, status) = ref_at(heap, src, tape, p3, json.get(src, tape, node, "status"));
+    let clear_node = json.get(src, tape, node, "clear");
+    let (p5, clear) = ref_at(heap, src, tape, p4, clear_node);
+    let (p6, cks, cke) = span_of(heap, src, tape, p5, json.get(src, tape, clear_node, "kind"));
+    var order = 0;
+    if json.is_object(tape, node) {
+        var k = node + 1;
+        var left = json.count(tape, node);
+        while left > 0 {
+            if is_key(src, tape, k, "source") && json.is_object(tape, k + 1) {
+                order = model.note(order, 5);
+            } else if is_key(src, tape, k, "number") && json.is_number(tape, k + 1) {
+                order = model.note(order, 1);
+            } else if is_key(src, tape, k, "enable") && json.is_object(tape, k + 1) {
+                order = model.note(order, 2);
+            } else if is_key(src, tape, k, "status") && json.is_object(tape, k + 1) {
+                order = model.note(order, 3);
+            } else if is_key(src, tape, k, "clear") && json.is_object(tape, k + 1) {
+                order = model.note(order, 4);
+            }
+            k = json.skip(tape, k + 1);
+            left = left - 1;
+        }
+    }
+    if json.is_object(tape, clear_node) && kind_after_register(src, tape, clear_node) {
+        order = model.note(order, 6);
+    }
+    let i = model.Intr { name_s: ns, name_e: ne, number: int_at(src, tape, json.get(src, tape, node, "number"), 0 - 1), source: source, enable: enable, status: status, clear: clear, clear_kind_s: cks, clear_kind_e: cke, order: order };
+    return Loaded { ir: model.add_intr(heap, ir, i), text: p6 };
+}
+
+fn load_dfield[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], ld: Loaded, node: int) -> [heap] Loaded {
+    let Loaded { ir, text } = ld;
+    let (p1, ns, ne) = name_of(heap, src, tape, text, json.get(src, tape, node, "name"));
+    let (p2, os, oe) = name_of(heap, src, tape, p1, json.get(src, tape, node, "offset"));
+    let (p3, ws, we) = span_of(heap, src, tape, p2, json.get(src, tape, node, "owner"));
+    let (p4, cs, ce) = span_of(heap, src, tape, p3, json.get(src, tape, node, "constraint"));
+    var coherent = 0 - 1;
+    var order = 0;
+    if json.is_object(tape, node) {
+        var k = node + 1;
+        var left = json.count(tape, node);
+        while left > 0 {
+            if is_key(src, tape, k, "owner") && ws >= 0 {
+                order = model.note(order, 1);
+            } else if is_key(src, tape, k, "align") && json.is_number(tape, k + 1) {
+                order = model.note(order, 2);
+            } else if is_key(src, tape, k, "coherent") && json.is_bool(tape, k + 1) {
+                order = model.note(order, 3);
+                if json.to_bool(tape, k + 1) {
+                    coherent = 1;
+                } else {
+                    coherent = 0;
+                }
+            } else if is_key(src, tape, k, "written_as") && json.is_number(tape, k + 1) {
+                order = model.note(order, 4);
+            } else if is_key(src, tape, k, "constraint") && cs >= 0 {
+                order = model.note(order, 5);
+            }
+            k = json.skip(tape, k + 1);
+            left = left - 1;
+        }
+    }
+    let d = model.Dmaf { name_s: ns, name_e: ne, off_s: os, off_e: oe, owner_s: ws, owner_e: we, align: int_at(src, tape, json.get(src, tape, node, "align"), 0 - 1), coherent: coherent, written_as: int_at(src, tape, json.get(src, tape, node, "written_as"), 0 - 1), cons_s: cs, cons_e: ce, order: order };
+    return Loaded { ir: model.add_dfield(heap, ir, d), text: p4 };
+}
+
+fn load_buf[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], ld: Loaded, node: int) -> [heap] Loaded {
+    let Loaded { ir, text } = ld;
+    let (p1, ns, ne) = name_of(heap, src, tape, text, json.get(src, tape, node, "name"));
+    var cur = Loaded { ir: ir, text: p1 };
+    var first = 0;
+    var n = 0;
+    let fields = json.get(src, tape, node, "fields");
+    borrow cur as &l in {
+        first = dfields_so_far(l);
+    }
+    if json.is_array(tape, fields) {
+        n = json.count(tape, fields);
+        var j = fields + 1;
+        var left = n;
+        while left > 0 {
+            cur = load_dfield(heap, src, tape, cur, j);
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+    }
+    return with_buf(heap, cur, model.Buf { name_s: ns, name_e: ne, first: first, n: n });
+}
+
+// ------------------------------------------------------------------ load ---
+
+// Build the IR from a parsed document. `tape` is `json.parse`d from `src`
+// and the answer was not an error.
+pub fn load[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int]) -> [heap] Loaded {
+    var pool = buffer.append(heap, buffer.empty(heap, len(src) + 256), src);
+    var ir = model.empty(heap);
+    let root = 0;
+    let (p1, vs, ve) = span_of(heap, src, tape, pool, json.get(src, tape, root, "version"));
+    let schema = json.get(src, tape, root, "$schema");
+    let (p2, ss, se) = span_of(heap, src, tape, p1, schema);
+    let blk = json.get(src, tape, root, "block");
+    let (p3, ns, ne) = name_of(heap, src, tape, p2, json.get(src, tape, blk, "name"));
+    let (p4, bs, be) = name_of(heap, src, tape, p3, json.get(src, tape, blk, "base_address"));
+    let width = int_at(src, tape, json.get(src, tape, blk, "bus_width"), 0);
+    let big = json.string_equals(src, tape, json.get(src, tape, blk, "endianness"), "big");
+    ir = model.set_block(ir, model.Block { name_s: ns, name_e: ne, base_s: bs, base_e: be, width: width, big: big, ver_s: vs, ver_e: ve, sch_s: ss, sch_e: se, has_schema: ss >= 0 });
+    var cur = Loaded { ir: ir, text: p4 };
+
+    let regs = json.get(src, tape, blk, "registers");
+    if json.is_array(tape, regs) {
+        var j = regs + 1;
+        var left = json.count(tape, regs);
+        while left > 0 {
+            cur = load_reg(heap, src, tape, cur, j);
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+    }
+    let intrs = json.get(src, tape, blk, "interrupts");
+    if json.is_array(tape, intrs) {
+        var j = intrs + 1;
+        var left = json.count(tape, intrs);
+        while left > 0 {
+            cur = load_intr(heap, src, tape, cur, j);
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+    }
+    let bufs = json.get(src, tape, root, "dma_buffers");
+    if json.is_array(tape, bufs) {
+        var j = bufs + 1;
+        var left = json.count(tape, bufs);
+        while left > 0 {
+            cur = load_buf(heap, src, tape, cur, j);
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+    }
+    return cur;
+}

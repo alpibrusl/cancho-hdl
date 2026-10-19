@@ -1,0 +1,65 @@
+// test_pattern.cho -- the regex subset (src/pattern.cho). Expected answers are
+// Python's `re.search`, except the one declared difference: `$` is end of text
+// only.
+//
+//     cancho test tests/unit/test_pattern.cho src/pattern.cho --std
+
+import std.test;
+import chw.pattern;
+
+fn test_version_pattern_matches_three_numbers() -> [] int {
+    let p = "^[0-9]+\\.[0-9]+\\.[0-9]+$";
+    test.assert_eq(pattern.search(p, "0.1.0"), 1);
+    test.assert_eq(pattern.search(p, "12.345.6"), 1);
+    test.assert_eq(pattern.search(p, "1.0"), 0);
+    test.assert_eq(pattern.search(p, "0.1.0.0"), 0);
+    test.assert_eq(pattern.search(p, "a.b.c"), 0);
+    test.assert_eq(pattern.search(p, ""), 0);
+    return test.assert_eq(pattern.search(p, "1.2.3x"), 0);
+}
+
+fn test_hex_pattern() -> [] int {
+    let p = "^0x[0-9a-fA-F]+$";
+    test.assert_eq(pattern.search(p, "0x1F"), 1);
+    test.assert_eq(pattern.search(p, "0xdeadBEEF"), 1);
+    test.assert_eq(pattern.search(p, "0xZZ"), 0);
+    test.assert_eq(pattern.search(p, "0x"), 0);
+    test.assert_eq(pattern.search(p, "1F"), 0);
+    return test.assert_eq(pattern.search(p, "0X10"), 0);
+}
+
+fn test_dollar_is_the_end_of_the_text_not_before_a_newline() -> [] int {
+    // Python's `$` would accept "0x10\n"; this does not (docs/cancho-port.md, 9.5).
+    return test.assert_eq(pattern.search("^0x[0-9a-f]+$", "0x10\n"), 0);
+}
+
+fn test_unanchored_search_scans() -> [] int {
+    test.assert_eq(pattern.search("b", "abc"), 1);
+    test.assert_eq(pattern.search("^b", "abc"), 0);
+    test.assert_eq(pattern.search("c$", "abc"), 1);
+    return test.assert_eq(pattern.search("abd", "abc"), 0);
+}
+
+fn test_quantifiers_backtrack() -> [] int {
+    test.assert_eq(pattern.search("^[a-c]+c$", "abc"), 1);
+    test.assert_eq(pattern.search("^a*ab$", "aaab"), 1);
+    test.assert_eq(pattern.search("^ab?c$", "ac"), 1);
+    test.assert_eq(pattern.search("^ab?c$", "abc"), 1);
+    test.assert_eq(pattern.search("^ab?c$", "abbc"), 0);
+    return test.assert_eq(pattern.search("^a+$", ""), 0);
+}
+
+fn test_escapes_and_dot() -> [] int {
+    test.assert_eq(pattern.search("^\\d+$", "123"), 1);
+    test.assert_eq(pattern.search("^a.c$", "abc"), 1);
+    test.assert_eq(pattern.search("^a\\.c$", "abc"), 0);
+    return test.assert_eq(pattern.search("^a\\.c$", "a.c"), 1);
+}
+
+fn test_what_is_not_in_the_subset_is_refused_not_guessed() -> [] int {
+    test.assert_eq(pattern.search("(a)", "a"), 0 - 1);
+    test.assert_eq(pattern.search("a|b", "a"), 0 - 1);
+    test.assert_eq(pattern.search("[^a]", "b"), 0 - 1);
+    test.assert_eq(pattern.search("a{2}", "aa"), 0 - 1);
+    return test.assert_eq(pattern.search("[abc", "a"), 0 - 1);
+}

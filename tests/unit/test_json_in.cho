@@ -1,0 +1,78 @@
+// test_json_in.cho -- the JSON wire form loaded into the IR and printed back
+// (src/json_in.cho, src/json_out.cho). Each expected line is the canonical
+// printing the IR defines (docs/cancho-port.md, 9.5, item 3); the expectations
+// were written from that definition and from the Python documents, and
+// tests/differential/json_validate.py checks them against `json.loads` at scale.
+//
+//     cancho test tests/unit/test_json_in.cho tests/unit/support.cho src/*.cho --std
+//     (all of src/ except main.cho and conform.cho)
+
+import std.buffer;
+import std.bytes;
+import std.test;
+import chw.load;
+import tsup;
+
+fn test_a_document_prints_back_with_its_own_version_and_schema[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"$schema\":\"S\",\"version\":\"1.2.3\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0C\",\"kind\":\"RW\"}]}}", "{\"$schema\": \"S\", \"version\": \"1.2.3\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0c\", \"kind\": \"RW\"}]}, \"dma_buffers\": []}");
+}
+
+fn test_a_document_without_a_schema_key_prints_without_one[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\"}]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\"}]}, \"dma_buffers\": []}");
+}
+
+fn test_optional_register_attributes_keep_the_documents_order_and_false_is_dropped[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"polling\":true,\"volatile\":false,\"reset\":\"0x1F\",\"fields\":[{\"name\":\"F\",\"lsb\":1,\"msb\":2,\"enum\":{\"A\":0,\"B\":1},\"constraint\":\"x\"}]}]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\", \"polling\": true, \"reset\": \"0x1f\", \"fields\": [{\"name\": \"F\", \"lsb\": 1, \"msb\": 2, \"enum\": {\"A\": 0, \"B\": 1}, \"constraint\": \"x\"}]}]}, \"dma_buffers\": []}");
+}
+
+fn test_an_empty_enum_and_empty_arrays[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":0,\"enum\":{}}]},{\"name\":\"S\",\"offset\":\"0x4\",\"kind\":\"RO\",\"fields\":[]}],\"interrupts\":[]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\", \"fields\": [{\"name\": \"F\", \"lsb\": 0, \"msb\": 0, \"enum\": {}}]}, {\"name\": \"S\", \"offset\": \"0x4\", \"kind\": \"RO\"}]}, \"dma_buffers\": []}");
+}
+
+fn test_escaped_strings_are_decoded_then_written_as_json_dumps_writes_them[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"A\\u0042\\u00e9\\\"\\ud83d\\ude00\\n\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\"}]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"AB\\u00e9\\\"\\ud83d\\ude00\\n\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\"}]}, \"dma_buffers\": []}");
+}
+
+fn test_interrupt_keys_keep_the_documents_order_and_clear_kind_goes_last[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\"}],\"interrupts\":[{\"name\":\"i\",\"number\":3,\"source\":{\"register\":\"S\",\"field\":\"F\"},\"clear\":{\"register\":\"C\",\"field\":\"G\",\"kind\":\"W1C\"},\"enable\":{\"register\":\"E\",\"field\":\"H\"}}]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\"}], \"interrupts\": [{\"name\": \"i\", \"number\": 3, \"source\": {\"register\": \"S\", \"field\": \"F\"}, \"clear\": {\"register\": \"C\", \"field\": \"G\", \"kind\": \"W1C\"}, \"enable\": {\"register\": \"E\", \"field\": \"H\"}}]}, \"dma_buffers\": []}");
+}
+
+fn test_an_interrupt_with_no_source_prints_without_one[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\"}],\"interrupts\":[{\"name\":\"i\"}]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\"}], \"interrupts\": [{\"name\": \"i\"}]}, \"dma_buffers\": []}");
+}
+
+fn test_dma_fields_keep_the_documents_order_and_false_is_kept[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\"}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"a\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"align\":4,\"coherent\":false,\"written_as\":2,\"constraint\":\"c\"},{\"name\":\"b\",\"offset\":\"0x8\",\"align\":8,\"owner\":\"DEVICE\"}]}]}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\"}]}, \"dma_buffers\": [{\"name\": \"D\", \"fields\": [{\"name\": \"a\", \"offset\": \"0x0\", \"owner\": \"CPU\", \"align\": 4, \"coherent\": false, \"written_as\": 2, \"constraint\": \"c\"}, {\"name\": \"b\", \"offset\": \"0x8\", \"align\": 8, \"owner\": \"DEVICE\"}]}]}");
+}
+
+fn test_an_integral_float_prints_as_an_integer[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":3.2e1,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":1.0,\"msb\":2e0}]}]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\", \"fields\": [{\"name\": \"F\", \"lsb\": 1, \"msb\": 2}]}]}, \"dma_buffers\": []}");
+}
+
+fn test_a_document_that_is_all_the_wrong_shape_still_loads_without_a_trap[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"block\":{\"registers\":{\"a\":1},\"name\":5,\"bus_width\":\"x\"},\"version\":[],\"dma_buffers\":{}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"\", \"base_address\": \"0x\", \"bus_width\": 0, \"endianness\": \"little\", \"registers\": []}, \"dma_buffers\": []}");
+}
+
+fn test_an_empty_object_loads_as_an_empty_block[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"\", \"base_address\": \"0x\", \"bus_width\": 0, \"endianness\": \"little\", \"registers\": []}, \"dma_buffers\": []}");
+}
+
+fn test_registers_whose_fields_are_not_objects[&h](heap: &!h Heap) -> [heap] int {
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x0\",\"bus_width\":8,\"endianness\":\"big\",\"registers\":[3,\"x\",{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[null,[]]}]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x0\", \"bus_width\": 8, \"endianness\": \"big\", \"registers\": [{\"name\": \"\", \"offset\": \"0x\", \"kind\": \"\"}, {\"name\": \"\", \"offset\": \"0x\", \"kind\": \"\"}, {\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\", \"fields\": [{\"name\": \"\", \"lsb\": 0, \"msb\": 0}, {\"name\": \"\", \"lsb\": 0, \"msb\": 0}]}]}, \"dma_buffers\": []}");
+}
+
+fn test_the_text_form_and_its_json_twin_print_the_same_ir[&h](heap: &!h Heap) -> [heap] int {
+    test.assert(tsup.prints_as(heap, "{\"$schema\": \"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\", \"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0c\", \"kind\": \"RO\", \"volatile\": true, \"fields\": [{\"name\": \"F\", \"lsb\": 1, \"msb\": 2, \"enum\": {\"A\": 0, \"B\": 1}}]}]}, \"dma_buffers\": []}", "{\"$schema\": \"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\", \"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0c\", \"kind\": \"RO\", \"volatile\": true, \"fields\": [{\"name\": \"F\", \"lsb\": 1, \"msb\": 2, \"enum\": {\"A\": 0, \"B\": 1}}]}]}, \"dma_buffers\": []}") == 0);
+    return tsup.prints_as(heap, "register-block B @ 0x40, width 32, big-endian { register R @ 0x0c : RO, volatile { field F : bits [1..2] enum { A=0, B=1 } } }", "{\"$schema\": \"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\", \"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x40\", \"bus_width\": 32, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0c\", \"kind\": \"RO\", \"volatile\": true, \"fields\": [{\"name\": \"F\", \"lsb\": 1, \"msb\": 2, \"enum\": {\"A\": 0, \"B\": 1}}]}]}, \"dma_buffers\": []}");
+}
+
+fn test_a_negative_number_from_a_refused_document_still_prints_as_json_dumps_does[&h](heap: &!h Heap) -> [heap] int {
+    // `chw parse` prints the IR it could read; digits of a negative come out of
+    // the negative number itself, so the most negative `int` does not trap.
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x0\",\"bus_width\":-9223372036854775807,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":-5,\"msb\":-12}]}]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x0\", \"bus_width\": -9223372036854775807, \"endianness\": \"big\", \"registers\": [{\"name\": \"R\", \"offset\": \"0x0\", \"kind\": \"RW\", \"fields\": [{\"name\": \"F\", \"lsb\": -5, \"msb\": -12}]}]}, \"dma_buffers\": []}");
+}
+
+fn test_the_most_negative_integer_saturates_instead_of_trapping[&h](heap: &!h Heap) -> [heap] int {
+    // -9223372036854775808 is `std.json`'s saturation edge; the printer must not negate it.
+    return tsup.prints_as(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x0\",\"bus_width\":-9223372036854775808,\"endianness\":\"big\",\"registers\":[]}}", "{\"version\": \"0.1.0\", \"block\": {\"name\": \"B\", \"base_address\": \"0x0\", \"bus_width\": -9223372036854775808, \"endianness\": \"big\", \"registers\": []}, \"dma_buffers\": []}");
+}

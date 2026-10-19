@@ -1,0 +1,24 @@
+{
+  "$schema": "https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json",
+  "version": "0.1.0",
+  "block": {
+    "name": "T",
+    "base_address": "0x40000000",
+    "bus_width": 64,
+    "endianness": "middle",
+    "registers": [
+      {
+        "name": "CTRL",
+        "offset": "12",
+        "kind": "WTF",
+        "fields": [
+          {
+            "name": "EN",
+            "lsb": 0,
+            "msb": 0
+          }
+        ]
+      }
+    ]
+  }
+}

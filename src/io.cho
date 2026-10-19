@@ -1,22 +1,29 @@
+edition 6;
+
 module chw.io;
 
-// io.cho -- read a whole file. The one place the port touches the file
-// system; every other module is a pure function of bytes.
+// io.cho -- read a whole file. The only place the port touches the file
+// system; every other module is a pure function of bytes. A file is reached
+// either by a path under an `Fs` (the CLI's one file argument) or by a relative
+// path beneath a `Dir` handle (the conformance runner, which is confined to the
+// repository root it was given).
 
 import std.buffer;
+import std.dirs;
 
-// Append the file at `path` to `text`. Answers the buffer (always, so an error
-// is not a leak) and -1 if the file could not be read, else the byte count.
-pub fn read_file[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], text: buffer.Buffer) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
+// Append the contents of an opened file to `text` and close it. Answers the
+// buffer (always, so an error is not a leak) and -1 if the file could not be
+// read, else the byte count.
+fn read_opened[&h](heap: &!h Heap, opened: Opened, text: buffer.Buffer) -> [heap, file_read] (buffer.Buffer, int) {
     var out = text;
     var total = 0;
     var trouble = 0;
-    match open_read(fs, path) {
+    match opened {
         Opened::Failed(reason) => {
             trouble = 1;
         }
-        Opened::Ok(opened) => {
-            var file = opened;
+        Opened::Ok(handle_) => {
+            var file = handle_;
             var chunk = buffer.empty(heap, 65536);
             borrow mut file as &!handle in {
                 var going = true;
@@ -56,4 +63,14 @@ pub fn read_file[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], tex
         return (out, 0 - 1);
     }
     return (out, total);
+}
+
+// Append the file at `path` to `text`.
+pub fn read_file[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], text: buffer.Buffer) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
+    return read_opened(heap, open_read(fs, path), text);
+}
+
+// Append the file at the relative `path` beneath `dir` to `text`.
+pub fn read_in[&h, &d, &p](heap: &!h Heap, dir: &d Dir, path: &p [byte], text: buffer.Buffer) -> [heap, dir_read, file_read] (buffer.Buffer, int) {
+    return read_opened(heap, dirs.open_file(dir, path), text);
 }

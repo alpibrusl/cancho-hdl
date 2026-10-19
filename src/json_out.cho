@@ -1,8 +1,9 @@
-module chw.json;
+module chw.json_out;
 
-// json.cho -- print the IR as the JSON wire form, byte-identical to
+// json_out.cho -- print the IR as the JSON wire form, byte-identical to
 // `json.dumps(ir)` of the Python parser: `", "` and `": "` separators, keys in
-// insertion order, `ensure_ascii` escaping (docs/cancho-port.md, "Spike").
+// insertion order (the IR keeps the order the optional attributes were written
+// in, for text and JSON alike), `ensure_ascii` escaping (docs/cancho-port.md, section 7).
 //
 // The writer threads a `Buffer` and the heap through every call
 // (`out = buffer.append(heap, out, ...)`), which is the single largest source
@@ -16,8 +17,23 @@ fn lit[&h](heap: &!h Heap, out: buffer.Buffer, text: &static [byte]) -> [heap] b
     return buffer.append(heap, out, text);
 }
 
+// An integer as `json.dumps` writes it. A negative one only reaches here from
+// a document the validator refused (`chw parse` prints the IR it could read);
+// its digits come out of the negative number directly, because negating the
+// most negative `int` would trap.
 fn num[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
-    return buffer.push_nat(heap, out, n);
+    if n >= 0 {
+        return buffer.push_nat(heap, out, n);
+    }
+    return neg_digits(heap, buffer.push(heap, out, byte_of('-')), n);
+}
+
+fn neg_digits[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    var o = out;
+    if n <= 0 - 10 {
+        o = neg_digits(heap, o, n / 10);
+    }
+    return buffer.push(heap, o, byte_of('0' + (0 - n % 10)));
 }
 
 fn hex_digit(n: int) -> [] int {
@@ -96,15 +112,21 @@ fn quoted[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], a: int, b:
     return buffer.push(heap, o, byte_of('"'));
 }
 
-// A name: an identifier, so no escaping can be needed.
+// A name. Identifiers from the text form need no escaping, but a name loaded
+// from JSON is any string, so it is written as `json.dumps` writes one. An
+// absent span (start -1) prints as the empty string, never a slice.
 fn name[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], a: int, b: int) -> [heap] buffer.Buffer {
-    var o = buffer.push(heap, out, byte_of('"'));
-    o = buffer.append(heap, o, src[a..b]);
-    return buffer.push(heap, o, byte_of('"'));
+    if a < 0 {
+        return lit(heap, out, "\"\"");
+    }
+    return quoted(heap, out, src, a, b);
 }
 
 // `0x4000_0000` -> `"0x40000000"`: underscores dropped, digits lowercased.
 fn hex[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], a: int, b: int) -> [heap] buffer.Buffer {
+    if a < 0 || b - a < 2 {
+        return lit(heap, out, "\"0x\"");
+    }
     var o = buffer.append(heap, out, "\"0x");
     var i = a + 2;
     while i < b {
@@ -196,12 +218,17 @@ fn reg[&h, &r, &q](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], ir: &q mo
 fn intr[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], x: model.Intr) -> [heap] buffer.Buffer {
     var o = lit(heap, out, "{\"name\": ");
     o = name(heap, o, src, x.name_s, x.name_e);
-    o = lit(heap, o, ", \"source\": ");
-    o = ref_(heap, o, src, x.source);
+    if x.source.reg_s >= 0 && !model.has_key(x.order, 5) {
+        o = lit(heap, o, ", \"source\": ");
+        o = ref_(heap, o, src, x.source);
+    }
     var i = 0;
     while i < model.order_len(x.order) {
         let key = model.order_at(x.order, i);
-        if key == 1 {
+        if key == 5 {
+            o = lit(heap, o, ", \"source\": ");
+            o = ref_(heap, o, src, x.source);
+        } else if key == 1 {
             o = lit(heap, o, ", \"number\": ");
             o = num(heap, o, x.number);
         } else if key == 2 {
@@ -210,9 +237,10 @@ fn intr[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], x: model.Int
         } else if key == 3 {
             o = lit(heap, o, ", \"status\": ");
             o = ref_(heap, o, src, x.status);
-        } else {
+        } else if key == 4 {
             o = lit(heap, o, ", \"clear\": {");
-            if x.clear_kind_s >= 0 {
+            let kind_last = model.has_key(x.order, 6);
+            if x.clear_kind_s >= 0 && !kind_last {
                 o = lit(heap, o, "\"kind\": ");
                 o = name(heap, o, src, x.clear_kind_s, x.clear_kind_e);
                 o = lit(heap, o, ", ");
@@ -221,6 +249,10 @@ fn intr[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], x: model.Int
             o = name(heap, o, src, x.clear.reg_s, x.clear.reg_e);
             o = lit(heap, o, ", \"field\": ");
             o = name(heap, o, src, x.clear.fld_s, x.clear.fld_e);
+            if x.clear_kind_s >= 0 && kind_last {
+                o = lit(heap, o, ", \"kind\": ");
+                o = name(heap, o, src, x.clear_kind_s, x.clear_kind_e);
+            }
             o = lit(heap, o, "}");
         }
         i = i + 1;
@@ -263,7 +295,23 @@ fn dma_field[&h, &r](heap: &!h Heap, out: buffer.Buffer, src: &r [byte], d: mode
 pub fn render[&h, &r, &q](heap: &!h Heap, src: &r [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
     let b = ir.block;
     var o = buffer.empty(heap, 1024);
-    o = lit(heap, o, "{\"$schema\": \"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\", \"version\": \"0.1.0\", \"block\": {\"name\": ");
+    o = lit(heap, o, "{");
+    if b.has_schema {
+        o = lit(heap, o, "\"$schema\": ");
+        if b.sch_s < 0 {
+            o = lit(heap, o, "\"https://alpibrusl/cancho-hdl/spec/contract-schema/cancho-hdl-contract.schema.json\"");
+        } else {
+            o = name(heap, o, src, b.sch_s, b.sch_e);
+        }
+        o = lit(heap, o, ", ");
+    }
+    o = lit(heap, o, "\"version\": ");
+    if b.ver_s < 0 {
+        o = lit(heap, o, "\"0.1.0\"");
+    } else {
+        o = name(heap, o, src, b.ver_s, b.ver_e);
+    }
+    o = lit(heap, o, ", \"block\": {\"name\": ");
     o = name(heap, o, src, b.name_s, b.name_e);
     o = lit(heap, o, ", \"base_address\": ");
     o = hex(heap, o, src, b.base_s, b.base_e);

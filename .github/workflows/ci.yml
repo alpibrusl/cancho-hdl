@@ -44,8 +44,10 @@ jobs:
       - name: Install the oracle's dependencies (lxml gives the SVD roundtrip its XSD validation)
         run: pip install jsonschema lxml
 
-      - name: The cancho parser (tests, byte-identical JSON, differential run against the Python parser)
-        run: CANCHO=$HOME/cancho-bin/cancho sh spike/run.sh
+      # fmt, check, cancho test, file lengths, build; the text parser against the Python parser; the stage-1
+      # conformance runner over every fixture; the JSON loader and validator against json + jsonschema.
+      - name: The cancho side (format, check, tests, conformance runner, differentials)
+        run: CANCHO=$HOME/cancho-bin/cancho sh scripts/gate_cancho.sh
 
       - name: The reference gate (schema, checker, simulator, generators, roundtrips)
         run: python3 scripts/run_gate.py

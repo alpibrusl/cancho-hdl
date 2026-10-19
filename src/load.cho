@@ -1,0 +1,196 @@
+module chw.load;
+
+// load.cho -- a contract file's bytes in; the IR, the byte buffer its spans
+// index, and the report of everything refused, out. The one entry point the
+// CLI, the conformance runner and the tests share, as
+// `parser.load_contract` + `checker._validate_schema` are for the Python tools
+// (docs/cancho-port.md, 9.2).
+//
+// The form is sniffed as Python does: a first non-blank byte `{` is the JSON
+// wire form, anything else is the text form. (Python's `lstrip` skips Unicode
+// whitespace, this skips the four ASCII blanks: known difference 4.)
+//
+// Text form:  parse (stage 0), render the IR as JSON, validate THAT, because the
+//             parser accepts what the schema refuses (`width 64`). A schema
+//             diagnostic there has no span: an offset in generated JSON means
+//             nothing to the author.
+// JSON form:  `std.json` parse, validate, then load. The loader runs even when
+//             the validator refused, as the Python checker runs its semantic
+//             rules on an IR that failed the schema.
+
+import std.buffer;
+import std.json;
+import chw.diag;
+import chw.front;
+import chw.ir as model;
+import chw.json_in;
+import chw.json_out;
+import chw.schema;
+
+// The schema file, parsed once.
+pub res struct Schema {
+    text: buffer.Buffer,
+    tape: Box[[int]],
+    nodes: int,
+}
+
+// Parse the schema text (which the Schema takes over). `schema_ok` says
+// whether it was JSON.
+pub fn open_schema[&h](heap: &!h Heap, text: buffer.Buffer) -> [heap] Schema {
+    var size = 0;
+    borrow text as &r in {
+        size = json.tape_len(buffer.bytes(r));
+    }
+    let tape = box_slice(heap, size, 0);
+    var nodes = 0;
+    borrow text as &r in {
+        borrow mut tape as &!w in {
+            nodes = json.parse(buffer.bytes(r), contents(w));
+        }
+    }
+    return Schema { text: text, tape: tape, nodes: nodes };
+}
+
+pub fn schema_ok[&s](sch: &s Schema) -> [] bool {
+    return sch.nodes > 0;
+}
+
+pub fn drop_schema[&h](heap: &!h Heap, sch: Schema) -> [heap] int {
+    let Schema { text, tape, nodes } = sch;
+    unbox_slice(heap, tape);
+    return buffer.drop(heap, text);
+}
+
+pub res struct Doc {
+    ir: model.Ir,
+    // The bytes every span of `ir` indexes.
+    text: buffer.Buffer,
+    // Empty when the file is clean.
+    report: buffer.Buffer,
+}
+
+pub fn drop[&h](heap: &!h Heap, doc: Doc) -> [heap] int {
+    let Doc { ir, text, report } = doc;
+    model.drop(heap, ir);
+    buffer.drop(heap, text);
+    return buffer.drop(heap, report);
+}
+
+// The report of a loaded document: empty when it is clean.
+pub fn report[&d](doc: &d Doc) -> [] &d [byte] {
+    return buffer.bytes(doc.report);
+}
+
+// The IR of a loaded document as one line of JSON.
+pub fn render_ir[&h, &d](heap: &!h Heap, doc: &d Doc) -> [heap] buffer.Buffer {
+    let out = json_out.render(heap, buffer.bytes(doc.text), doc.ir);
+    return buffer.push(heap, out, byte_of('\n'));
+}
+
+fn is_json_form[&t](bytes: &t [byte]) -> [] bool {
+    var i = 0;
+    while i < len(bytes) && (int_of(bytes[i]) == ' ' || int_of(bytes[i]) == '\t' || int_of(bytes[i]) == '\n' || int_of(bytes[i]) == '\r') {
+        i = i + 1;
+    }
+    return i < len(bytes) && int_of(bytes[i]) == '{';
+}
+
+fn syntax_report[&h, &t](heap: &!h Heap, bytes: &t [byte], code: int) -> [heap] buffer.Buffer {
+    let (line, col) = diag.line_col(bytes, json.error_position(code));
+    var m = buffer.append(heap, buffer.empty(heap, 64), "file is not valid JSON: ");
+    m = buffer.append(heap, m, json.error_message(json.error_code(code)));
+    var out = buffer.empty(heap, 128);
+    borrow m as &r in {
+        out = diag.add(heap, out, "schema-invalid", line, col, "json-syntax", "", buffer.bytes(r));
+    }
+    buffer.drop(heap, m);
+    return out;
+}
+
+fn blank_doc[&h](heap: &!h Heap) -> [heap] Doc {
+    return Doc { ir: model.empty(heap), text: buffer.empty(heap, 1), report: buffer.empty(heap, 1) };
+}
+
+// Validate, then load, a document `std.json` accepted.
+fn check_and_load[&h, &t, &r, &s](heap: &!h Heap, bytes: &t [byte], tape: &r [int], sch: &s Schema) -> [heap] Doc {
+    var report = buffer.empty(heap, 16);
+    if sch.nodes > 0 {
+        buffer.drop(heap, report);
+        report = schema.validate(heap, bytes, tape, buffer.bytes(sch.text), contents(sch.tape), true);
+    }
+    let json_in.Loaded { ir, text } = json_in.load(heap, bytes, tape);
+    return Doc { ir: ir, text: text, report: report };
+}
+
+fn load_json[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [heap] Doc {
+    let tape = box_slice(heap, json.tape_len(bytes), 0);
+    var nodes = 0;
+    borrow mut tape as &!w in {
+        nodes = json.parse(bytes, contents(w));
+    }
+    var doc = blank_doc(heap);
+    if nodes < 0 {
+        drop(heap, doc);
+        doc = Doc { ir: model.empty(heap), text: buffer.append(heap, buffer.empty(heap, len(bytes)), bytes), report: syntax_report(heap, bytes, nodes) };
+    } else {
+        borrow tape as &r in {
+            drop(heap, doc);
+            doc = check_and_load(heap, bytes, contents(r), sch);
+        }
+    }
+    unbox_slice(heap, tape);
+    return doc;
+}
+
+// The report of validating `rendered`, the JSON the text parser's IR prints
+// as. No spans: the offsets mean nothing in generated JSON.
+fn validate_rendered[&h, &t, &s](heap: &!h Heap, rendered: &t [byte], sch: &s Schema) -> [heap] buffer.Buffer {
+    let tape = box_slice(heap, json.tape_len(rendered), 0);
+    var nodes = 0;
+    borrow mut tape as &!w in {
+        nodes = json.parse(rendered, contents(w));
+    }
+    var report = buffer.empty(heap, 16);
+    if nodes < 0 {
+        report = diag.add(heap, report, "internal", 0, 0, "-", "", "the text parser's IR printed as invalid JSON");
+    } else {
+        borrow tape as &r in {
+            buffer.drop(heap, report);
+            report = schema.validate(heap, rendered, contents(r), buffer.bytes(sch.text), contents(sch.tape), false);
+        }
+    }
+    unbox_slice(heap, tape);
+    return report;
+}
+
+fn load_text[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [heap] Doc {
+    let (ir, parsed) = front.parse_text(heap, bytes);
+    var report = parsed;
+    var refused = 0;
+    borrow report as &r in {
+        refused = diag.count(buffer.bytes(r));
+    }
+    if refused == 0 && sch.nodes > 0 {
+        var rendered = buffer.empty(heap, 16);
+        borrow ir as &q in {
+            buffer.drop(heap, rendered);
+            rendered = json_out.render(heap, bytes, q);
+        }
+        borrow rendered as &r in {
+            buffer.drop(heap, report);
+            report = validate_rendered(heap, buffer.bytes(r), sch);
+        }
+        buffer.drop(heap, rendered);
+    }
+    return Doc { ir: ir, text: buffer.append(heap, buffer.empty(heap, len(bytes)), bytes), report: report };
+}
+
+// Load `bytes` in whichever form they are in. With a schema that is not
+// `schema_ok` (the empty one `chw parse` passes) nothing is validated: the
+// answer is the parse, as `parser.load_contract` gives it.
+pub fn load[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [heap] Doc {
+    if is_json_form(bytes) {
+        return load_json(heap, bytes, sch);
+    }
+    return load_text(heap, bytes, sch);
+}

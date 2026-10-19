@@ -1,6 +1,7 @@
 # Porting cancho-hdl to cancho
 
-> **Status: design plus a measured spike.** Decision (taken before this
+> **Status: design, a measured spike (§7), and a built and measured stage 1
+> (design §9, measurements §10).** Decision (taken before this
 > document): the product is rewritten from scratch as **pure cancho**. The
 > Python under `tools/`, `gen/` and `scripts/` is the *legacy reference
 > implementation*, kept until each part is replaced and then deleted. The
@@ -8,9 +9,10 @@
 > and `tests/behavioral/scenarios.json` are language-neutral specifications
 > and do not move. Python may remain **only** as test-only oracle code (§5).
 >
-> What is measured here is one slice: the textual parser, over the two
-> textual examples (§7). Everything else in this document is a plan, and
-> every number in it that is not from the spike is marked *estimate*.
+> What is measured here is two slices: the textual parser over the two textual
+> examples (§7), and the JSON wire loader, the structural validator and the
+> conformance runner (§10). Everything else in this document is a plan, and
+> every number in it that is not from those is marked *estimate*.
 
 Written against the cancho compiler in `../cancho` (`target/release/cancho`,
 `--std`), `CONTRIBUTING.md` (the gate, no source file over 2,000 lines, every
@@ -47,7 +49,7 @@ removed.
 | # | Stage | Python it replaces (lines) | Needs | Exit criterion |
 |---|---|---|---|---|
 | 0 | **IR + JSON out, textual parser** | `tools/parse/parser.py` (634) | nothing | **Spike, §7: done for the textual examples.** Byte-identical JSON on both examples; identical refusal text/position on 2,739 mutants |
-| 1 | **JSON wire loader** (`std.json` tape to IR) and the **structural validator** that replaces `jsonschema` | `parser.load_contract` JSON branch, `checker._validate_schema`, `scripts/verify_examples.py` (78) | 0 | 11 of the 12 refusal fixtures are in JSON form (§6), so this gates the conformance suite. Validator verdict equals `jsonschema`'s on every example and every fixture mutant (oracle) |
+| 1 | **JSON wire loader** (`std.json` tape to IR) and the **structural validator** that replaces `jsonschema` | `parser.load_contract` JSON branch, `checker._validate_schema`, `scripts/verify_examples.py` (78) | 0 | 11 of the 12 refusal fixtures are in JSON form (§6), so this gates the conformance suite. Validator verdict equals `jsonschema`'s on every example and every fixture mutant (oracle). **Built and measured: §9 and §10. The criterion holds except where the port is stricter on purpose (duplicate keys, integers over 18 digits, a newline after `$`), each counted and explained in §10.** |
 | 2 | **Diagnostics + checker** | `tools/check/` (838 + 170 + 114 + 136) | 1 | `conform` passes: every sidecar matched, zero errors on the valid examples; `--output json` identical to Python's, key order included (`spec/diagnostics/README.md` §4.1) |
 | 3 | **c-header generator** | `gen/c-header/c_header.py` (340) | 2 | Output byte-identical to Python's for both examples; gcc and clang roundtrip (oracle lane) still green; behavioral roundtrip still green against `scenarios.json` |
 | 4 | **Remaining generators**: devicetree, cancho-binding, svd, systemverilog | `gen/*` (138 + 211 + 254 + 330) | 3, and the shared emit helpers | Same, per target. SVD additionally validates against `spec/generators/CMSIS-SVD.xsd` (oracle lane) |
@@ -85,14 +87,15 @@ src/
   main.cho                CLI dispatcher: subcommands, exit codes 0/1/2/3
   chw/
     lex.cho               tokens                                   spike: 225
-    ir.cho                IR records, adders, attribute order      spike: 243
+    ir.cho                IR records, adders, attribute order      spike: 243, stage 1: 268
     parse.cho             recursive descent over the token tape    spike: 640
-    json_out.cho          IR to the JSON wire form                 spike: 320
-    json_in.cho           wire form to IR (std.json tape)          estimate 300
-    diag.cho              Diagnostic, tiers, subjects, spans       estimate 250
+    json_out.cho          IR to the JSON wire form                 spike: 320, stage 1: 353
+    json_in.cho           wire form to IR (std.json tape)          estimate 300; measured 376
+    diag.cho              Diagnostic, tiers, subjects, spans       estimate 250; stage 1 slice: 140 (records, no tiers yet)
     diag_text.cho         human renderer (golden-pinned)           estimate 250
     check/
-      schema.cho          structural validity (replaces jsonschema) est. 400
+      schema.cho          structural validity (replaces jsonschema) est. 400; measured
+                          schema 884 + pyrepr 204 + pattern 150 = 1,238 (§10, §11)
       block.cho           bus width, base, endianness              est. 200
       registers.cho       offsets, overlap, kinds, resets          est. 450
       fields.cho          bounds, overlap, enums, constraints      est. 600
@@ -145,7 +148,9 @@ So there are two kinds of check, and the split is by what they need:
   (11 tests, §7). Expected values are taken **from the oracle, never from the
   port**: the three tests whose columns the author guessed failed against the
   port, and the right numbers came from the Python parser.
-* **Conformance programs** (`cancho run tests/conform.cho ... -- <dir>`): a
+* **Conformance programs** (*as built: the `chw conform` subcommand, §9.2, not a
+  separate `tests/conform.cho`*; it reads through a `Dir` handle on the root it is
+  given, not an `Fs`): a
   program with `Fs` (narrowed to the examples directory; `std.dirs` can list
   it) and `Args`, that walks fixtures, runs the product's own functions, and
   exits non-zero on the first mismatch. This is where the refusal fixtures
@@ -197,14 +202,18 @@ differential oracle fail 12 of 2,767. The gate gets such a check per stage.
 | `tests/roundtrip/*` gcc / clang / iverilog / slang / yosys / dtc lanes | they run third-party tools on product output |
 | XSD validation of SVD (`lxml`) and `jsonschema` | independent validators of product output and of the structural validator |
 | `legacy` parser, checker and generators, **until each stage lands** | the differential oracle for that stage; deleted when the stage's exit criterion is met |
-| `spike/diff_oracle.py` | the spike's differential driver |
+| `tests/differential/text_parse.py`, `json_validate.py` | the differential drivers: the cancho text parser against the Python parser; the cancho JSON loader and validator against `json` + `jsonschema` |
 
 **Rules that prevent creep.** They are mechanical, because "Python is only an
 oracle" is the kind of sentence that survives until the first deadline.
 
 1. **Location.** A `*.py` file may exist only under `oracle/` (and, while a
    stage is unported, `tools/` `gen/` `scripts/`, which are the legacy
-   reference). The gate fails on any other `.py` file.
+   reference). The gate fails on any other `.py` file. *(As built in stage 1 the
+   differential drivers live in `tests/differential/`, not `oracle/`: they are
+   tests, and `tests/` already holds the other Python test code. The lint that
+   enforces this rule is not written; the gate only enforces the 2,000-line cap
+   on `.py` files.)*
 2. **A ceiling that only comes down.** The legacy directories carry a
    committed line-count ceiling (the compiler repository's own device for
    over-budget files, `CONTRIBUTING.md` "Files"). When a stage lands, its
@@ -276,14 +285,19 @@ structural validator, which is where the schema-level refusals
 (`schema-invalid`, e.g. `bus-width-invalid`, `dma-owner-unknown`,
 `field-out-of-bounds`, `kind-unknown`) live. Until stage 1 lands the
 conformance suite cannot claim to have been ported; the spike does not claim
-it.
+it. *(Stage 1 has landed, §10: the fixtures run, but only the stage-1 half of
+each sidecar is decided. The conformance suite is not ported until stage 2.)*
 
 ---
 
 ## 7. Spike: lex and parse `examples/textual/uart.chw`, print the IR as JSON
 
-**What was built** (`spike/`, all `.cho` passes `cancho fmt --check` and
-`cancho check`; reproduce with `sh spike/run.sh`):
+**What was built** (`spike/` at the time; stage 1 moved the files to `src/`
+and `tests/unit/`, renamed `json.cho` to `json_out.cho`, and replaced
+`spike/run.sh` with `scripts/gate_cancho.sh`, whose steps 1 to 6 are the
+spike's. The line counts below are the spike's; the files have grown since,
+§10 has the current ones. All `.cho` passes `cancho fmt --check` and
+`cancho check`):
 
 | File | Code lines | Total lines | Role |
 |---|---|---|---|
@@ -472,17 +486,395 @@ IRs. `std.map` exists (a hash map keyed by bytes, `V: val`), `std.vec` takes
 
 ---
 
-## 9. Corrections
+## 9. Stage 1 design: the JSON wire loader, the structural validator, the conformance runner
 
-None yet. A claim in this document that a later slice shows to be false is
-corrected here, in place, with the PR that corrected it
-(`CONTRIBUTING.md`, "How a slice is done").
+> **Status: design, written before the code.** Section 10 records what was
+> measured; where it showed this section wrong, the claim is corrected in place
+> below and listed in section 11.
 
-## 10. Next slice
+Scope is stage 1 of section 2 and nothing else. It replaces three things the
+Python tools did with `json` and `jsonschema`: reading the JSON wire form
+(`parser.load_contract`'s JSON branch), validating it against
+`spec/contract-schema/cancho-hdl-contract.schema.json`
+(`checker._validate_schema`), and running the refusal fixtures
+(`tools/check/conformance.py`, for the part of it that stage 1 can decide).
 
-Stage 1: `json_in.cho` (wire form to IR through `std.json`'s tape) and
-`check/schema.cho`, with `conform.cho` reading the eleven JSON-form fixtures and
-the oracle lane comparing the validator's verdict to `jsonschema` over the
-fixtures and their mutants. Its first question is whether the validator can be
-written without per-rule special cases the JSON Schema expresses declaratively;
-`docs/contract-design.md` §5's stop/rethink signal applies to the rule count.
+### 9.1 What stage 1 decides, and what it cannot
+
+The sidecars in `examples/refusal/` mix two kinds of expectation. Of the 12
+fixtures, 5 expect a code that only the **schema level** can produce
+(`parse-error` for the one text fixture; `schema-invalid` for `bus-width-invalid`,
+`dma-owner-unknown`, `field-out-of-bounds`, `kind-unknown`), and every other
+entry expects a **semantic** code (`block-bus-width-invalid`, `field-overlap`,
+`dma-overlap`, ...) that is stage 2's. The runner therefore does not pretend to
+the Python conformance verdict. For each fixture it requires:
+
+1. every sidecar entry whose `code` is one of stage 1's (`parse-error`,
+   `schema-invalid`) is matched by an emitted diagnostic with that code, the
+   `Ir` subject kind, and a message containing `message_contains`;
+2. no emitted diagnostic is left unaccounted for (a validator that flags a
+   schema-valid fixture is a failure, which is what makes the 7 purely
+   semantic fixtures a real stage-1 test: they must load and validate clean);
+3. the entries it cannot decide are **counted and listed as deferred to stage 2**,
+   never as passed. The summary says "N of M fixtures matched on the stage-1
+   rules; K sidecar entries deferred", and the exit status is non-zero on any
+   FAIL, not on a deferral.
+
+Valid examples (`MANIFEST.json`, `valid` and `textual_valid`) must load and
+validate with zero diagnostics.
+
+### 9.2 Modules (all under `src/`, flat, dotted module names)
+
+| File | Module | Role |
+|---|---|---|
+| `lex`, `ir`, `parse`, `json_out`, `front`, `io` | `chw.*` | the spike, moved unchanged except as listed below |
+| `json_in.cho` | `chw.json_in` | JSON wire form (`std.json` tape) to the **same `Ir`** the text parser builds |
+| `diag.cho` | `chw.diag` | a diagnostic as one tab-separated record line; line/column from a byte offset |
+| `pyrepr.cho` | `chw.pyrepr` | a JSON value in Python's `repr`, because the sidecars quote `jsonschema` messages (`'GPU' is not one of ['CPU', 'DEVICE']`) |
+| `pattern.cho` | `chw.pattern` | the regex subset the schema uses (`^`, `$`, literals, escapes, classes, `+`), no more |
+| `schema.cho` | `chw.schema` | the validator: an interpreter for the JSON Schema subset, driven by the schema **file** |
+| `load.cho` | `chw.load` | sniff the form, load, validate: bytes in, `Ir` + diagnostics out |
+| `conform.cho` | `chw.conform` | the sidecar reader and the per-fixture verdict |
+| `main.cho` | | `chw parse FILE`, `chw validate FILE`, `chw conform ROOT`, exit 0/1/2 |
+
+The IR does not change shape. Names and literals stay spans into one byte
+buffer; the **loader's buffer is the source followed by decoded strings** (a JSON
+string with an escape has no contiguous span in the source, so its decoded form
+is appended and the span points there). The printer takes that buffer as it took
+the source before. Two IR facts the text parser never needed are added:
+`version` and `$schema` (a JSON document carries both; the text form implies the
+constants), so a loaded document prints back with the version it declared.
+
+### 9.3 The validator is the schema, interpreted
+
+The question section 10 left open, "can it be written without per-rule special
+cases the JSON Schema expresses declaratively", is answered by not writing the
+rules: `schema.cho` reads the schema file with `std.json` and interprets the
+keywords the file uses.
+
+* Keywords: `type`, `enum`, `pattern`, `minLength`, `minItems`, `minimum`,
+  `maximum`, `required`, `properties`, `additionalProperties` (`false` or a
+  schema), `items`, `$ref` (`#/$defs/...` only). Annotations
+  (`$id`, `$schema`, `$defs`, `title`, `description`) are ignored.
+* **A keyword outside that list is a refusal, not a skip**: `jsonschema`
+  ignores an unknown keyword, which would make a future `maxLength` silently
+  unenforced. It is reported as code `internal` (a toolchain fault, not the
+  user's input), and the run exits 2.
+* Messages follow `jsonschema` 4.26 word for word, with the instance quoted in
+  Python's `repr` (`pyrepr.cho`): one message per keyword, two for `minLength`
+  and `minItems` (`should be non-empty` when the minimum is 1, `is too short`
+  otherwise) and two for `additionalProperties` (`was` / `were unexpected`, the
+  extras sorted, as `jsonschema` sorts them).
+* **Located spans where one exists.** A JSON-form diagnostic carries
+  `line:column` of the offending node (1-based, columns in bytes, as the spike's
+  lexer counts), which `jsonschema` never had (the Python diagnostic is a
+  whole-file span, `1:1`). A text-form file is validated through its rendered
+  JSON, where an offset means nothing to the author, so those diagnostics carry
+  no span.
+* The validator reports **every** violation (as `iter_errors`). *(Corrected:
+  this said "in document order". The order is the schema file's keyword order at
+  each node, as `jsonschema`'s is, preceded by the instance-only refusals of
+  9.4, which run first. The differential compares the multisets.)*
+
+### 9.4 Rule tags for stage 1
+
+No new catalog code is introduced. A diagnostic is `code` plus a **keyword**, the
+sub-tag a test can pin:
+
+| `code` | `keyword` | When |
+|---|---|---|
+| `parse-error` | `-` | text form refused (stage 0, unchanged) |
+| `schema-invalid` | `type` `enum` `pattern` `minimum` `maximum` `minLength` `minItems` `required` `additionalProperties` | the `jsonschema` violations, same words |
+| `schema-invalid` | `json-syntax` | the file begins with `{` and is not RFC 8259 JSON (Python: `file is not valid JSON`, same code) |
+| `schema-invalid` | `duplicate-key` | an object repeats a key. `json.loads` keeps the last, `std.json` the first; the port refuses rather than choose |
+| `schema-invalid` | `integer-range` | an integer of more than 18 digits (cancho `int` traps on overflow, so it is refused; `jsonschema` accepts it) |
+| `internal` | `unsupported-keyword` | the schema file uses a keyword the interpreter does not implement |
+
+### 9.5 Known differences from `jsonschema` / `json`, predicted
+
+Listed before measuring so the differential cannot quietly redefine them:
+
+1. *Stricter*: duplicate keys; integers over 18 digits; a trailing newline after
+   a `pattern` that ends in `$` (Python's `$` accepts `"0x10\n"`; the schema's
+   intent does not); lone surrogates and invalid UTF-8 (`std.json` is strict,
+   `json.loads` is not); `NaN`/`Infinity` tokens.
+2. *Wording*: JSON syntax messages come from `std.json`, not `json.JSONDecodeError`;
+   a float in a message is its source text, not `repr(float)` (`1E2` against
+   `100.0`); a non-ASCII non-printable character outside `pyrepr`'s small table
+   is not escaped as Python's `repr` would. *(Corrected: "printed by `std.fmt`"
+   was the first intention; the source text is what was built, because the
+   shortest-round-trip form is not worth a dependency for a message.)*
+3. *Canonical IR printing* (the IR is a record, not a dict): required keys print in
+   a fixed order, not the document's; optional register and DMA attributes keep
+   the document's order; `"volatile": false` and `"polling": false` are not kept;
+   an absent or empty `interrupts` / `fields` array is not printed and an absent
+   `dma_buffers` prints `[]`; hex digits print lowercase (the text twin does too);
+   an integral float (`8.0`) prints as an integer.
+4. *Sniffing*: Python's `lstrip()` strips Unicode whitespace; the port skips ASCII
+   whitespace.
+
+### 9.6 The differential (test-only Python, `tests/differential/`)
+
+`json_validate.py` runs, over the valid JSON examples, the 11 refusal fixtures,
+the `tests/stage1` fixtures and their mutants (truncation at every byte offset, deletion of every token-sized
+run, single-value substitutions that cross each schema keyword), the Python
+oracle (`json.loads` + `jsonschema.Draft202012Validator.iter_errors`) and the
+cancho `chw validate --machine` / `chw parse`, and compares:
+
+* the verdict (valid or not) on every input;
+* the set of `(pointer, keyword, message)` for every input the Python side reads;
+* for inputs both sides accept, the IR JSON, after the normalisations of 9.5 (3)
+  **and also raw**, so the report says how many were byte-identical before any
+  normalisation.
+
+Every disagreement must fall in a class of 9.5, named in the output; anything
+else fails the run. `text_parse.py` (the spike's differential) is kept as the
+oracle for the text parser.
+
+### 9.7 Gate
+
+`scripts/gate_cancho.sh` (called from CI where `spike/run.sh` was), in order:
+`cancho fmt --check src tests/unit`; `cancho check` of the program; `cancho test` of
+every `tests/unit/test_*.cho`; the file-length lint (no `.cho`, `.py` or `.sh` over
+2,000 lines); `cancho build`; the text parser (byte-identical JSON on the textual
+examples, then its differential); `chw conform . --fixtures tests/stage1`; a
+conformance run against a copy of the tree with one sidecar altered, which must
+exit 1 (the runner can fail); the JSON differential and `stress.py`; and
+`cancho authority` diffed against `scripts/authority.expected`.
+`python3 scripts/run_gate.py` is untouched and still run by CI.
+
+---
+
+## 10. Stage 1 measured
+
+Reproduce everything below with `sh scripts/gate_cancho.sh` (needs the pinned
+compiler and `pip install jsonschema lxml`). Every number is from
+that run, on one 4-core Linux machine, unless a row says otherwise. The gate takes
+about five minutes.
+
+### 10.1 The conformance runner
+
+`chw conform . --fixtures tests/stage1`:
+
+| Measurement | Value |
+|---|---|
+| `examples/refusal` fixtures matched on the stage-1 rules | **12 of 12** |
+| their stage-1 sidecar entries (`parse-error`, `schema-invalid`) matched | 5 of 5 |
+| their sidecar entries deferred to stage 2 (semantic codes), **not counted as passed** | 14 of 19 (the Python conformance decides all 19) |
+| valid examples (`valid` + `textual_valid`) that load and validate clean | 4 of 4 |
+| `tests/stage1` fixtures (14 refusals and 2 files that must be clean) | 16 of 16; 19 of 19 entries |
+| all of the above | 28 of 28 fixtures, 24 of 24 stage-1 entries |
+
+The 7 fixtures whose only sidecar entries are semantic (`field-overlap`,
+`register-overlap`, `dma-overlap`, ...) pass by loading and validating with zero
+diagnostics, which is the check that the validator does not over-refuse. The
+runner can fail: the gate (step 8) copies the tree, changes one sidecar's code,
+and requires exit 1.
+
+A located span where one exists, for the four `schema-invalid` fixtures:
+`bus-width-invalid.chw:7:18`, `dma-owner-unknown.chw:17:58`,
+`field-out-of-bounds.chw:15:45`, `kind-unknown.chw:10:51`
+(line:column of the offending value; the Python diagnostic is `1:1`).
+
+### 10.2 Tests and mutation checks
+
+`cancho test`: **94 tests in 7 suites**, all passing (`diag` 6, `json_in` 15,
+`load` 8, `parse` 11, `pattern` 7, `schema` 30, `validator_spans` 17). The
+`jsonschema` messages in `test_schema.cho` were produced by running
+`jsonschema` 4.26 on the same schema and document, not by running this port.
+
+Mutation checks (a copy of `src/` with one change; "differential" is
+`json_validate.py --no-textual`, 34,886 to 36,284 inputs depending on when its pool
+of values last grew; a cell is how many things failed):
+
+| Mutation | unit tests | `chw conform` on the repo | differential (unexplained) |
+|---|---|---|---|
+| `minimum` off by one (`order > 0`) | 1 failed (after `test_the_bounds_are_inclusive` was added; **0 before**) | exit 1 (10 of 28) | 25,350 |
+| `enum` skips its last member | 2 failed | exit 1 (6 of 28) | 29,612 |
+| loader swaps `lsb` and `msb` | 3 failed | exit 0 (it does not read the IR) | 2,327 |
+| `repr` ignores the double-quote rule | 1 failed | exit 0 | **0 on the first run**; 522 after `"it's"` entered the value pool |
+| extra properties not sorted | 1 failed | exit 0 | **0 on the first run**; 135 after the non-ASCII tolerance was tightened |
+| runner ignores the code of a record | 0 failed | exit 0 on the repo | 0; **gate step 8 exit 0 instead of 1** |
+
+Three of those rows are the point of the exercise. Two mutants survived the
+differential on their first run (the pool of substituted values had no string
+with an apostrophe, and the tolerance for non-ASCII messages was loose enough to
+excuse an unsorted list), so the differential was changed (§11). One survived
+every test except the gate's can-fail step, so the step exists.
+
+### 10.3 The differential against `json` + `jsonschema`
+
+`python3 tests/differential/json_validate.py chw`: **55,093 inputs**, 0
+unexplained differences. The inputs are the 2 valid JSON examples, the 11 JSON
+refusal fixtures and the 16 `tests/stage1` fixtures; for each, truncation at every
+byte, deletion of every whitespace-delimited run, 50 substituted values at every
+node of the parsed document (including 99999999999999999999, `1e30`, `8.0`,
+`"0x10\n"`, strings with quotes and non-ASCII), deletion of every key, an extra
+key, four extra keys in an unsorted order, every object's keys reversed and
+rotated; plus 14 hand-made documents and 6 form-sniff cases.
+
+| | Count |
+|---|---|
+| inputs both sides refuse as JSON text | 18,792 |
+| inputs where the verdict (valid or not) agrees | 36,084 |
+| inputs where it differs, each one explained below | 212 |
+| `jsonschema` error records reproduced word for word (pointer, keyword, message) | 47,240 |
+| inputs both accept, whose IR was compared | 3,736 |
+| of those, IR byte-identical to `json.dumps(json.loads(...))` | 287 |
+| of those, identical after the canonical-printing normalisations | 3,449 |
+
+The 212 verdict differences and the 3,449 normalised IRs, by class (an input can
+be in more than one class):
+
+| Class | Inputs | Why |
+|---|---|---|
+| `integer-range` | 2,693 | an integer past 18 digits; `jsonschema` accepts or quotes it, this refuses (rule of 9.4) |
+| `pattern-trailing-newline` | 107 | Python's `$` matches before a final `\n`, this does not |
+| `duplicate-key` | 3 | refused; `json.loads` keeps the last value |
+| `sniff-unicode-whitespace` | 6 | Python's `lstrip()` skips U+00A0 and five other characters, then `json.loads` refuses; this reads the text form. Both refuse the file, with `schema-invalid` and `parse-error` |
+| `nan-infinity`, `lone-surrogate` | 1 each | `json.loads` accepts them, `std.json` does not |
+| `float-repr`, `non-ascii-repr` | 1 each | the same message with a float or a non-printable written differently |
+| IR `hex-case` | 2,201 | the printer writes hex digits lowercase |
+| IR `dma-buffers-defaulted` | 1,356 | an absent `dma_buffers` prints `[]` |
+| IR `integral-float` | 246 | `8.0` prints as `8` |
+| IR `key-order` | 184 | required keys print in a fixed order; the mutants reverse and rotate each object's keys |
+| IR `empty-array-dropped`, `false-attribute-dropped` | 26, 5 | an empty `fields` / `interrupts` is not kept; `"volatile": false` is not kept |
+
+Predicted in 9.5 and not exercised by this corpus: the nesting limit (the 200-deep
+hand-made case is a syntax error to both sides, so the difference between
+`std.json`'s 128 and Python's recursion limit is not reached), invalid UTF-8 as a
+*file* (Python's `read_text` raises; `chw` reports `json-syntax`; `stress.py` runs
+it but does not compare), and columns on non-ASCII lines.
+
+The text parser's differential is unchanged by the move: 2,765 of 2,767 inputs
+identical, the same two known differences, 28 parse and 2,739 refused.
+
+### 10.4 Large and hostile inputs, and three quadratic loops
+
+`tests/differential/stress.py` runs 11 inputs through `chw validate` and requires
+exit 0 or 1 within 20 seconds: no trap, no hang. It exists because the first
+version of the port failed it:
+
+| Input | First version | Now |
+|---|---|---|
+| one object of 5,000 keys | **48.3 s** | 0.01 s |
+| 16,000 refusals in a 1.7 MB indented file | **29.5 s** | 0.11 s |
+| 16,000 refusals on one line (0.8 MB) | **21.9 s** | 0.19 s |
+| 8,000 valid registers (1 MB) | 0.12 s | 0.14 s |
+| 5,000 unknown keys (one message, sorted) | not measured | 0.02 s |
+
+The causes were all quadratic and none was a language problem: comparing every
+pair of keys for duplicates (now `std.map`); reading record `i` of the report by
+scanning from the start (`diag.record(report, i)` inside a loop; now a cursor);
+working out each line and column from byte 0 (now one forward pass,
+`schema.locate`; deferring the position alone did not help, measured at 41 s
+under load, which is how the cursor was found); and an insertion sort of the
+extra keys (now a merge sort). No input in the 55,093 or the 11 reached a trap.
+
+### 10.5 Size, speed, authority
+
+| | Value |
+|---|---|
+| new or rewritten modules, lines | `json_in` 376, `diag` 168, `pyrepr` 204, `pattern` 150, `schema` 984, `load` 196, `conform` 482, `main` 214: **2,774** (`io` and `front` also changed) |
+| the Python they replace, lines | `load_contract`'s JSON branch 26, `_validate_schema` 39, `verify_examples.py` 78, `conformance.py` 170: **313**, plus the `jsonschema` package they call (4,580 lines, of which `_keywords.py` + `_types.py` + `_utils.py` are 1,008) |
+| ratio | 8.9x against the 313 lines; 2.1x if the 1,008 lines of `jsonschema` that implement the keywords used are counted. Neither is like for like: the port also does `repr`, regex, sorting, located spans, duplicate keys and the 18-digit rule, none of which the Python side does |
+| largest file | `schema.cho`, 984 lines: **over the 800-line design budget** (3), under the 2,000 ceiling |
+| `cancho build`, 14 files, 4,422 lines | 5.8 s (the spike: 1.9 s for 1,550 lines) |
+| binary | 374,912 bytes |
+| `chw validate uart.chw` | 4.2 ms (20-run mean) against 154 ms for `json.loads` + `jsonschema` in a fresh interpreter, most of which is start-up and import |
+| `chw conform . --fixtures tests/stage1` | 9.9 ms for 28 fixtures and 4 valid examples; `tools/check/conformance.py` is 174 ms for 12 and 4, and does the whole checker |
+| `cancho authority` | `args`, `dir_read`, `err_write`, `file_read`, `fs_read("")`, `heap`, `io_write`; never the network, signals, other programs or foreign code. Pinned in `scripts/authority.expected`; the new label over the spike's is `dir_read` |
+
+### 10.6 What was easy, and what was not (cancho)
+
+Easy: the loader. The tape made a 376-line total function over any JSON easy to
+write, and `std.json`'s strictness (UTF-8, surrogates, depth, leading zeros) is
+the validator's syntax layer for nothing. `std.map` made duplicate-key detection
+linear in one 25-line function. The whole of stage 1 drew about a dozen compiler
+refusals in 4,400 lines, each fixed by a local edit, of a few kinds (below).
+
+Not easy, measured where it can be:
+
+* **A container node has no source offset.** `std.json`'s tape records where a
+  scalar or string is, not where an object or array starts, so a span for
+  `required` or `minItems` needed a 40-line scanner (`value_end`) that re-reads
+  the document. A `json.offset(tape, node)` would delete it. One asker so far.
+* **Four slices in every signature.** The validator reads two documents (an
+  instance and a schema), each a source and a tape, and a reference cannot be
+  stored in a struct (a field cannot be `[T]`), so 149 of `schema.cho`'s 984
+  lines (15%) mention `isrc`, `itape`, `ssrc` or `stape`, and 12 functions carry
+  a header of five or six region parameters. Same plumbing as 7.
+* **A `res` struct cannot be updated or renamed.** `let Loaded { ir: ir3, ... }`
+  is a parse error, so every table of the IR is added through a helper that takes
+  the struct apart and puts it back (`with_reg`, `with_field`, `with_buf`, and
+  the `add_*` of `ir.cho`); `borrow doc.report` is refused, so `Doc` needs
+  accessors.
+* **A test row is exact.** A test that takes `heap` and never allocates is refused
+  (`declares heap but never performs it`), so pure tests take no parameters; a
+  test cannot read a file, so every fixture-driven check is `chw conform`.
+* **Library gaps met once each.** No sort in `std` (a 45-line merge sort);
+  `index_of_byte` needs an edition the file did not have, so `diag.end_of` is a
+  loop; `join` is a builtin name; naming `Dir` needs `edition 6;` in each file
+  that does (an `edition 6` `main` importing editionless modules worked).
+* **No Python-compatible float `repr`.** Messages quote a float as written.
+* **Traps are near.** Every integer from input is a place to argue: `to_int`
+  saturates, the 18-digit rule refuses before anything is added, a negative
+  number is printed without negating it (`neg_digits`), and the stress file keeps
+  watching.
+
+### 10.7 What stage 1 does not show
+
+Any semantic rule (the 14 deferred sidecar entries); the `Diagnostic` record and
+tiers (a diagnostic here is a line of text, not yet the object of
+`spec/diagnostics/README.md` §2); `--output json` of diagnostics; endianness and
+other invalid enums survive in the IR only as `big: false` (a schema-invalid
+`"endianness": "middle"` loads as little-endian, so stage 2 reads the validator's
+report for that, not the IR); non-ASCII columns; a hostile key set against
+`std.map`'s fixed seed; the memory of a very large file (the tape is 24 bytes per
+input byte).
+
+---
+
+## 11. Corrections
+
+A claim in this document that a later slice shows to be false is corrected here,
+in place, with the change that corrected it (`CONTRIBUTING.md`, "How a slice is
+done").
+
+Stage 1 (this change):
+
+1. §9.3 said the validator reports violations "in document order". It reports them
+   in the schema file's keyword order at each node, preceded by the instance-only
+   refusals. Corrected in 9.3.
+2. §9.5 (2) said a float in a message is printed by `std.fmt`. It is the source
+   text. Corrected in 9.5.
+3. §3's estimate for the structural validator was 400 lines. Measured:
+   `schema` + `pyrepr` + `pattern` = 1,238, three times the estimate, because the
+   validator turned out to be a schema interpreter with `repr`, a regex subset and
+   located spans, not a set of rules. The estimates for `check/` that follow it
+   (the semantic rules) were made with the same 1.75 ratio and should be read with
+   that in mind. `json_in` was estimated at 300 and is 376.
+4. §5 rule 1 named `oracle/` for the Python test code; as built it is
+   `tests/differential/`. Corrected in 5.
+5. §2 said the validator's verdict "equals `jsonschema`'s on every example and
+   every fixture mutant". It does except where the port is deliberately stricter
+   (duplicate keys, integers past 18 digits, a newline before `$`): 212 of 55,093
+   inputs, each classified. Corrected in 2.
+6. The differential itself was corrected twice by mutation checks (10.2): its pool
+   of values gained strings with apostrophes, and its tolerance for messages that
+   differ only in escaping was narrowed from "any non-ASCII" to "equal after
+   decoding the escapes" (and likewise for floats).
+7. The first version of the port had three quadratic loops (10.4). They were
+   fixed before this change landed; the stress test keeps them fixed.
+
+## 12. Next slice
+
+Stage 2: `Diagnostic` and the checker. The IR is now loaded from both forms and the
+structural half of every sidecar is decided, so the 14 deferred entries are the
+exit criterion: `chw conform` should report 12 of 12 with none deferred, and
+`--output json` identical to the Python checker's. Its first questions are the
+ones stage 1 raised: whether the `Diagnostic` record can stay a line of text
+(9.4) or becomes a typed value; whether the semantic rules (overlap, reset fit,
+DMA alignment) are compact enough to fit the 800-line budget per file that
+`schema.cho` has already passed; and whether `schema.cho` should be split into a
+base, a lint and a check before more is added to it.
