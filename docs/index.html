@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cancho-hdl: one contract for the software/hardware boundary</title>
+<meta name="description" content="cancho-hdl declares registers, fields, interrupts and DMA layouts once, refuses contradictions with structured diagnostics, and generates the C header, device tree, SystemVerilog, bindings and CMSIS-SVD.">
+<meta property="og:title" content="cancho-hdl: one contract for the software/hardware boundary">
+<meta property="og:description" content="Declare the boundary once. Check it. Generate every copy.">
+<meta name="color-scheme" content="light dark">
+<style>
+:root {
+  --bg: #fbfcfd; --fg: #14181a; --muted: #55606a; --line: #dfe5e7; --surface: #ffffff; --soft: #eff4f4;
+  --accent: #1f5fa6; --accent-fg: #ffffff; --good: #0f7b5f; --bad: #b42d27; --warn: #92400e;
+  --term-bg: #0f1519; --term-fg: #d6e2e6; --term-dim: #7d8f96; --term-good: #5fd3a6; --term-bad: #ff8a80; --term-acc: #8ec0ff;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0b0f14; --fg: #e7ebec; --muted: #9aa8ae; --line: #212a2d; --surface: #131a1c; --soft: #172022;
+    --accent: #7fb2ff; --accent-fg: #07162c; --good: #4fd1a5; --bad: #ff7b73; --warn: #f3c77a; --term-bg: #0a1013; }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; scroll-padding-top: 4rem; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 1rem/1.6 var(--font); }
+a { color: var(--accent); text-underline-offset: .15em; }
+.wrap { width: 100%; max-width: 64rem; margin: 0 auto; padding: 0 16px; }
+header.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+header.top .wrap { display: flex; align-items: center; gap: 1.5rem; height: 3.4rem; }
+.brand { font: 700 1rem var(--mono); color: var(--fg); text-decoration: none; }
+nav { display: flex; gap: 1.2rem; margin-left: auto; }
+nav a { color: var(--muted); text-decoration: none; font-size: .93rem; }
+nav a:hover { color: var(--fg); }
+@media (max-width: 40rem) { nav a.opt { display: none; } }
+.hero { padding: 3.5rem 0 2rem; text-align: center; }
+.hero h1 { font-size: clamp(2rem, 6vw, 3.4rem); line-height: 1.1; margin: 0 auto 1rem; letter-spacing: -.03em; max-width: 18ch; }
+.hero .sub { font-size: 1.2rem; color: var(--muted); max-width: 36rem; margin: 0 auto 1.6rem; }
+.cta { display: flex; gap: .8rem; justify-content: center; flex-wrap: wrap; }
+.btn { display: inline-block; padding: .65rem 1.2rem; border-radius: 8px; font-weight: 600; text-decoration: none; border: 1px solid var(--line); color: var(--fg); background: var(--surface); }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+section { margin: 0; padding: 3rem 0; }
+section.alt { background: var(--soft); }
+h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin: 0 0 .6rem; letter-spacing: -.02em; text-align: center; }
+.lead { text-align: center; color: var(--muted); max-width: 38rem; margin: 0 auto 2rem; }
+.term { background: var(--term-bg); color: var(--term-fg); border-radius: 12px; border: 1px solid var(--line); max-width: 46rem; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,.18); overflow: hidden; }
+.term .bar { display: flex; align-items: center; gap: .4rem; padding: .55rem .8rem; border-bottom: 1px solid #1f2a30; font: .78rem var(--mono); color: var(--term-dim); }
+.term .bar i { width: .7rem; height: .7rem; border-radius: 50%; background: #2c3a41; display: inline-block; }
+.term pre { margin: 0; padding: 1rem 1.1rem; min-height: 17.5rem; overflow-x: auto; font: .85rem/1.55 var(--mono); white-space: pre; }
+.term .g { color: var(--term-good); } .term .b { color: var(--term-bad); } .term .d { color: var(--term-dim); } .term .a { color: var(--term-acc); }
+.caption { text-align: center; color: var(--muted); font-size: .88rem; max-width: 46rem; margin: .8rem auto 0; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 1rem; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1.2rem; }
+.card h3 { margin: 0 0 .4rem; font-size: 1.05rem; }
+.card p { margin: 0; color: var(--muted); font-size: .95rem; }
+.card .ic { font-size: 1.5rem; margin-bottom: .4rem; }
+.nums { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; text-align: center; }
+.num b { display: block; font-size: 2.3rem; letter-spacing: -.03em; color: var(--accent); }
+.num span { color: var(--muted); font-size: .92rem; }
+.fine { max-width: 46rem; margin: 1.5rem auto 0; color: var(--muted); font-size: .88rem; text-align: center; }
+pre.code { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; overflow-x: auto; font: .85rem/1.5 var(--mono); max-width: 46rem; margin: 0 auto 1rem; }
+code { font: .9em var(--mono); }
+.steps { max-width: 46rem; margin: 0 auto; padding-left: 1.2rem; }
+.steps li { margin: .4rem 0; }
+@media (max-width: 40rem) { .kbcols { grid-template-columns: repeat(2, 1fr); min-height: 0; } }
+footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(--muted); font-size: .9rem; text-align: center; }
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href=".">cancho-hdl</a>
+  <nav>
+    <a href="#why">Why</a><a class="opt" href="#how">How it works</a><a class="opt" href="#measured">Measured</a><a href="#try">Try it</a>
+    <a href="https://github.com/alpibrusl/cancho-hdl">GitHub</a>
+  </nav>
+</div></header>
+
+<div class="wrap hero">
+  <h1>Declare the hardware boundary once.</h1>
+  <p class="sub">A <code>.chw</code> contract is checked for contradictions and generates the C header, the device tree, the SystemVerilog registers and the rest, so they cannot drift apart.</p>
+  <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn" href="#how">How it works</a><a class="btn" href="#honest">What is not claimed</a></div>
+</div>
+
+<div class="wrap" style="padding-bottom:2.5rem">
+  <div class="term" role="img" aria-label="Two refusals: a parse error from the cancho parser and a field overlap from the reference checker">
+    <div class="bar"><i></i><i></i><i></i> the terminal</div>
+<pre>
+<span class="d">$ chwparse examples/refusal/parse-error.chw          # the cancho parser</span>
+<span class="b">error[parse-error]</span>: expected ':' after the register offset
+  (before the access kind), found 'RW'.  parse-error.chw:2:26
+
+<span class="d">$ checker.py examples/refusal/field-overlap.chw      # the reference checker</span>
+<span class="b">error[field-overlap]</span>: field 'PARITY' bits [2..4] overlap with
+  ENABLE bits [0..3] in register 'CTRL'.
+<span class="a">help</span>: start PARITY at bits [4..6], or shrink / move either field
+<span class="d">exit 1</span>
+</pre>
+  </div>
+  <p class="caption">Real output. Every refusal has a stable code, a tier, a span and a remediation, and every rule has a fixture that must reach it.</p>
+</div>
+
+<section class="alt" id="why"><div class="wrap">
+  <h2>Stop maintaining five copies</h2>
+  <p class="lead">When a field widens, the driver is wrong silently. When an interrupt link breaks, the device tree is wrong silently. Here the failure is loud and structured.</p>
+  <div class="cards">
+    <div class="card"><div class="ic">📄</div><h3>One source</h3><p>Registers, fields, interrupts and DMA layouts in one contract. Generators are deterministic, so a diff of a generated file is meaningful.</p></div>
+    <div class="card"><div class="ic">🚫</div><h3>Refusals are data</h3><p>Overlaps, bad alignment, unresolved interrupts and ownership errors come back as codes an agent can match on.</p></div>
+    <div class="card"><div class="ic">🎯</div><h3>Impact analysis</h3><p><code>diff</code> and <code>impact</code> list which generated artifacts a change invalidates, decided by byte-comparing generator output.</p></div>
+    <div class="card"><div class="ic">🧾</div><h3>No over-claiming</h3><p>A report counts only what ran. A skipped roundtrip is never a pass, and vendor tools stay trust boundaries.</p></div>
+  </div>
+</div></section>
+
+<section id="how"><div class="wrap">
+  <h2>Five targets from one contract</h2>
+  <p class="lead">Consumers never need to know cancho-hdl exists.</p>
+  <div class="cards">
+    <div class="card"><h3>C header</h3><p>Structs and volatile accessors. Compiles clean under gcc and clang.</p></div>
+    <div class="card"><h3>Cancho binding</h3><p>Typed driver-side declarations.</p></div>
+    <div class="card"><h3>Device tree</h3><p>A <code>reg</code> and <code>interrupts</code> fragment.</p></div>
+    <div class="card"><h3>SystemVerilog</h3><p>The register file, structurally checked.</p></div>
+    <div class="card"><h3>CMSIS-SVD</h3><p>XML validated against the SVD schema.</p></div>
+  </div>
+</div></section>
+
+<section class="alt" id="measured"><div class="wrap">
+  <h2>Measured, not promised</h2>
+  <p class="lead">Two reference peripherals, a UART and a DMA descriptor ring.</p>
+  <div class="nums">
+    <div class="num"><b>22 / 22</b><span>simulator scenarios pass against the reference model</span></div>
+    <div class="num"><b>12</b><span>refusal fixtures, each matched to its expected code</span></div>
+    <div class="num"><b>2,765 / 2,767</b><span>mutated inputs: the cancho parser matches the Python one exactly; 2 known differences</span></div>
+    <div class="num"><b>1.75×</b><span>lines: lexer, IR and parser in cancho against the Python parser</span></div>
+  </div>
+  <p class="fine">The generated C header executes the scenario corpus op-for-op against the reference model under gcc and clang. Seeded drift makes the comparison fail, which shows it can.</p>
+</div></section>
+
+<section id="honest"><div class="wrap">
+  <h2>What is not claimed</h2>
+  <p class="lead">Written down so a report cannot imply it.</p>
+  <div class="cards">
+    <div class="card"><h3>Not working hardware</h3><p>Timing, area and vendor IP are trust boundaries, never labelled verified.</p></div>
+    <div class="card"><h3>No SystemVerilog behaviour check yet</h3><p>That needs Verilator or cocotb. Only structure is checked today.</p></div>
+    <div class="card"><h3>Mostly still Python</h3><p>Only the textual parser is ported. The checker, generators, diff and report remain the Python reference, being replaced.</p></div>
+  </div>
+</div></section>
+
+<section class="alt" id="try"><div class="wrap">
+  <h2>Try it</h2>
+  <p class="lead">The cancho parser needs the <a href="https://github.com/alpibrusl/cancho">cancho</a> compiler. The reference tools need Python 3.</p>
+<pre class="code"><code>git clone https://github.com/alpibrusl/cancho-hdl.git
+cd cancho-hdl
+export CANCHO=&lt;path-to-the-cancho-binary&gt;
+sh spike/run.sh                       # cancho parser vs the Python parser
+python3 scripts/run_gate.py           # the reference gate</code></pre>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Go deeper</h2>
+  <div class="cards">
+    <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/cancho-port.md">Port to cancho</a></h3><p>The plan, the spike and its measurements.</p></div>
+    <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/guarantees.md">Guarantees</a></h3><p>What each tier does and does not claim.</p></div>
+    <div class="card"><h3><a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/contract-design.md">Contract design</a></h3><p>The schema and the textual syntax.</p></div>
+  </div>
+</div></section>
+<footer><div class="wrap">cancho-hdl · EUPL-1.2 · part of the <a href="https://github.com/alpibrusl/cancho">cancho</a> ecosystem</div></footer>
+</body>
+</html>
