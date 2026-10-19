@@ -63,13 +63,41 @@ code { font: .9em var(--mono); }
 .steps li { margin: .4rem 0; }
 @media (max-width: 40rem) { .kbcols { grid-template-columns: repeat(2, 1fr); min-height: 0; } }
 footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(--muted); font-size: .9rem; text-align: center; }
+.term .bar button { margin-left: auto; font: .78rem var(--mono); color: var(--term-fg); background: #1b262c; border: 1px solid #2c3a41; border-radius: 6px; padding: .2rem .6rem; cursor: pointer; }
+.demo { display: grid; grid-template-columns: 1fr; gap: 1rem; max-width: 64rem; margin: 0 auto; align-items: start; }
+@media (min-width: 60rem) { .demo { grid-template-columns: 1fr 1fr; } }
+.demo .term { margin: 0; max-width: none; }
+.demo .term pre { min-height: 20rem; font-size: .8rem; }
+.side { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.12); overflow: hidden; }
+.sidehead { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .55rem .8rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
+.sidehead span { font: .78rem var(--mono); color: var(--muted); }
+.sidebody { padding: .8rem; min-height: 20rem; }
+.side iframe { display: block; width: 100%; height: 20rem; border: 0; background: var(--bg); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: .5rem; }
+.tile { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: .5rem .6rem; font-size: .8rem; transition: background .3s, border-color .3s; }
+.tile b { display: block; font: 600 .82rem var(--mono); }
+.tile .m { color: var(--muted); display: block; overflow-wrap: anywhere; }
+.tile b { overflow-wrap: anywhere; }
+.tile.hot { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, var(--surface)); }
+.tile.hot .m { color: var(--bad); font-weight: 600; }
+.tile.ok { border-color: var(--good); }
+.tile.ok .m { color: var(--good); font-weight: 600; }
+.bar2 { height: .9rem; border-radius: 6px; background: var(--soft); border: 1px solid var(--line); overflow: hidden; margin: .4rem 0 .8rem; position: relative; }
+.bar2 i { display: block; height: 100%; background: var(--accent); transition: width .5s; }
+.bar2 i.torn { background: var(--bad); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: .2rem .8rem; font: .82rem var(--mono); }
+.kv span:nth-child(odd) { color: var(--muted); }
+.promptbox { max-width: 52rem; margin: 0 auto; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.pbar { display: flex; justify-content: space-between; align-items: center; padding: .45rem .8rem; border-bottom: 1px solid var(--line); background: var(--soft); font: .8rem var(--mono); color: var(--muted); }
+.pbar button { font: 600 .8rem var(--font); padding: .25rem .7rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-fg); cursor: pointer; margin-right: .6rem; }
+.promptbox pre { margin: 0; padding: 1rem; max-height: 26rem; overflow: auto; font: .8rem/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <header class="top"><div class="wrap">
   <a class="brand" href=".">cancho-hdl</a>
   <nav>
-    <a href="#why">Why</a><a class="opt" href="#how">How it works</a><a class="opt" href="#measured">Measured</a><a href="#try">Try it</a>
+    <a href="#why">Why</a><a class="opt" href="#how">How it works</a><a class="opt" href="#measured">Measured</a><a class="opt" href="#agent">Ask your agent</a><a href="#try">Try it</a>
     <a href="https://github.com/alpibrusl/cancho-hdl">GitHub</a>
   </nav>
 </div></header>
@@ -77,29 +105,24 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 <div class="wrap hero">
   <h1>Declare the hardware boundary once.</h1>
   <p class="sub">A <code>.chw</code> contract is checked for contradictions and generates the C header, the device tree, the SystemVerilog registers and the rest, so they cannot drift apart.</p>
-  <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn" href="#how">How it works</a><a class="btn" href="#honest">What is not claimed</a></div>
+  <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn" href="#how">How it works</a><a class="btn" href="#agent">Ask your agent to try it</a></div>
 </div>
 
 <div class="wrap" style="padding-bottom:2.5rem">
-  <div class="term" role="img" aria-label="Three refusals: a parse error from the cancho parser, a schema error from the cancho validator and a field overlap from the reference checker">
-    <div class="bar"><i></i><i></i><i></i> the terminal</div>
-<pre>
-<span class="d">$ chw parse examples/refusal/parse-error.chw         # the cancho parser</span>
-<span class="b">error[parse-error]</span>: parse error: expected ':' after the register
-  offset (before the access kind), found 'RW'.  parse-error.chw:2:26
-
-<span class="d">$ chw validate examples/refusal/bus-width-invalid.chw  # the cancho validator</span>
-<span class="b">error[schema-invalid]</span>: 64 is not one of [8, 16, 32]
-  bus-width-invalid.chw:7:18  (enum /block/bus_width)
-
-<span class="d">$ checker.py examples/refusal/field-overlap.chw      # the reference checker</span>
-<span class="b">error[field-overlap]</span>: field 'PARITY' bits [2..4] overlap with
-  ENABLE bits [0..3] in register 'CTRL'.
-<span class="a">help</span>: start PARITY at bits [4..6], or shrink / move either field
-<span class="d">exit 1</span>
-</pre>
+  <div class="demo">
+    <div class="term" role="img" aria-label="Replay of real output: two structural refusals with line and column, a clean contract, the conformance table, and an impact report for a register-map change">
+      <div class="bar"><i></i><i></i><i></i> the terminal <button id="replay" type="button">↻ replay</button></div>
+      <pre id="screen"></pre>
+    </div>
+    <div class="side" aria-label="The same change: which generated artifacts it makes stale">
+      <div class="sidehead"><b>One change, five artifacts</b><span>uart.chw → uart_rebase.chw</span></div>
+      <div class="sidebody">
+        <p class="m" style="margin:0 0 .8rem;color:var(--muted);font-size:.85rem">Five registers moved and one field widened. <code>impact</code> compares the generators' output byte for byte.</p>
+        <div class="tiles" id="atiles"></div>
+      </div>
+    </div>
   </div>
-  <p class="caption">Real output. Every refusal has a stable code, a tier, a span and a remediation, and every rule has a fixture that must reach it.</p>
+  <p class="caption">Real output. The first four commands are the cancho tool <code>chw</code> (the loader, structural validator and conformance runner); the last is the Python reference implementation of <code>impact</code>, still being replaced. The right side lists the targets from the same output. Not a live session.</p>
 </div>
 
 <section class="alt" id="why"><div class="wrap">
@@ -149,7 +172,48 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
   </div>
 </div></section>
 
-<section class="alt" id="try"><div class="wrap">
+<section class="alt" id="agent"><div class="wrap">
+  <h2>Ask your coding agent to try it</h2>
+  <p class="lead">Paste this into Claude Code, Codex or any coding agent that can run commands. It installs the pinned compiler, proves the install with both gates (no network, no key, no model), and runs the tool on the examples.</p>
+  <div class="promptbox">
+    <div class="pbar"><span>prompt</span><span><button type="button" id="copyprompt">Copy</button> <a href="https://raw.githubusercontent.com/alpibrusl/cancho-hdl/main/docs/agent-prompt.md">raw</a></span></div>
+    <pre id="agentprompt">Install cancho-hdl and check it on this machine. Work in a new empty directory, keep every path free of spaces, and never use sudo. Run steps 2 to 5 in one shell session. Report honestly; do not retry a failing command in a loop and do not edit the repository to make a command pass.
+
+1. Check that `git`, `cargo` (Rust, via rustup), a C compiler (`cc`), `clang`, `gcc`, `python3` with `pip`, and `sh` exist. If one is missing, stop and tell me which; do not install system packages on your own.
+
+2. Get the two repositories side by side, both cloned into the new empty directory (call it the parent):
+   git clone https://github.com/alpibrusl/cancho-hdl.git
+   git clone https://github.com/alpibrusl/cancho.git
+   git -C cancho checkout "$(cat cancho-hdl/.cancho-rev)"
+
+3. Build the compiler (a few minutes) and point at it. Install the Python oracle's two packages at the pinned version (Python is only the test oracle, not part of the product):
+   (cd cancho &amp;&amp; cargo build --release -p cancho)
+   export CANCHO="$PWD/cancho/target/release/cancho"
+   pip install jsonschema==4.26.0 lxml
+
+4. Prove the install works. This needs no network, no key and no model. It takes about five minutes:
+   cd cancho-hdl
+   sh scripts/gate_cancho.sh ; echo "exit $?"     # must print exit 0 (the script prints no final PASS line)
+   python3 scripts/run_gate.py                     # must end with: GATE PASSED
+
+5. Use the cancho tool `chw` on the examples (the gate built it at /tmp/chw):
+   /tmp/chw validate examples/uart-contract/uart.chw ; echo "exit $?"            # expect exit 0
+   /tmp/chw validate examples/refusal/bus-width-invalid.chw ; echo "exit $?"     # expect schema-invalid at a line:column, exit 1
+   /tmp/chw parse examples/refusal/parse-error.chw ; echo "exit $?"              # expect parse-error at 2:26, exit 1
+   /tmp/chw conform .                                                            # the refusal fixtures, a table
+   python3 tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
+   The last command is the Python reference implementation (being replaced). It lists which generated artifacts a register-map change makes stale.
+
+6. Tell me, briefly:
+   - whether the gate exited 0 and whether `run_gate.py` ended with GATE PASSED;
+   - the first line each command printed in step 5, with its exit code, and the last line of `chw conform`;
+   - which targets `impact` marked stale;
+   - anything that failed, with the exact error.
+Not claimed: that generated hardware works, timing, or a SystemVerilog behavioural check. Docs: README.md, docs/cancho-port.md (what is ported and what is still Python), docs/guarantees.md.</pre>
+  </div>
+  <p class="fine">It needs no key and no model, and takes about five minutes (mostly the compiler build and the gate). The same text is in <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/agent-prompt.md">docs/agent-prompt.md</a>, and a Claude Code skill for checking contracts and reading impact reports is in <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/skills/cancho-hdl/SKILL.md">skills/cancho-hdl</a>.</p>
+</div></section>
+<section id="try"><div class="wrap">
   <h2>Try it</h2>
   <p class="lead">The cancho parser needs the <a href="https://github.com/alpibrusl/cancho">cancho</a> compiler. The reference tools need Python 3.</p>
 <pre class="code"><code>git clone https://github.com/alpibrusl/cancho-hdl.git
@@ -168,5 +232,73 @@ python3 scripts/run_gate.py           # the reference gate</code></pre>
   </div>
 </div></section>
 <footer><div class="wrap">cancho-hdl · EUPL-1.2 · part of the <a href="https://github.com/alpibrusl/cancho">cancho</a> ecosystem</div></footer>
+<script>
+(function () {
+  var screen = document.getElementById("screen");
+  var lines = [
+    ["d", "$ chw validate examples/refusal/bus-width-invalid.chw"],
+    ["b", "error[schema-invalid]: 64 is not one of [8, 16, 32]"],
+    ["b", "  bus-width-invalid.chw:7:18  (enum /block/bus_width)"],
+    ["d", "exit 1"],
+    ["d", "$ chw validate examples/refusal/field-out-of-bounds.chw"],
+    ["b", "error[schema-invalid]: 63 is greater than the maximum of 31"],
+    ["b", "  field-out-of-bounds.chw:15:45  (maximum .../msb)"],
+    ["d", "exit 1"],
+    ["d", "$ chw validate examples/uart-contract/uart.chw"],
+    ["g", "exit 0"],
+    ["d", "$ chw conform ."],
+    ["g", "== 12 of 12 fixtures matched on the stage-1 rules"],
+    ["g", "   4 of 4 valid examples clean"],
+    ["d", "$ python3 tools/diff/diff.py impact uart.chw uart_rebase.chw"],
+    ["b", "c-header        stale  moved_registers=5; widened_fields=1", {t: 0, c: "hot"}],
+    ["g", "cancho-binding  no change (byte-identical output)", {t: 1, c: "ok"}],
+    ["b", "devicetree      stale  moved_registers=5; widened_fields=1", {t: 2, c: "hot"}],
+    ["b", "systemverilog   stale  moved_registers=5; widened_fields=1", {t: 3, c: "hot"}],
+    ["b", "svd             stale  moved_registers=5; widened_fields=1", {t: 4, c: "hot"}]
+  ];
+  var T = [["c-header", "moved_registers=5; widened_fields=1"], ["cancho-binding", "no change (byte-identical output)"], ["devicetree", "moved_registers=5; widened_fields=1"], ["systemverilog", "moved_registers=5; widened_fields=1"], ["svd", "moved_registers=5; widened_fields=1"]];
+  var D;
+  function draw() {
+    document.getElementById("atiles").innerHTML = T.map(function (t, i) {
+      var c = D[i] || "", label = c === "hot" ? "stale" : (c === "ok" ? "unchanged" : "not compared yet");
+      return '<div class="tile ' + c + '"><b>' + t[0] + '</b><span class="m">' + label + (c ? "<br>" + t[1] : "") + "</span></div>";
+    }).join("");
+  }
+  function onReset() { D = {}; draw(); }
+  function onAct(a) { if (a && a.t !== undefined) { D[a.t] = a.c; draw(); } }
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function span(l, text) { return '<span class="' + l[0] + '">' + esc(text) + "</span>"; }
+  var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var timer = null;
+  function full() {
+    clearTimeout(timer); onReset();
+    for (var i = 0; i < lines.length; i++) { if (lines[i][2]) { onAct(lines[i][2]); } }
+    screen.innerHTML = lines.map(function (l) { return span(l, l[1]); }).join("\n");
+  }
+  function play() {
+    clearTimeout(timer); screen.innerHTML = ""; onReset();
+    var i = 0, j = 0, html = "";
+    (function tick() {
+      if (i >= lines.length) { return; }
+      var l = lines[i];
+      j += 3;
+      screen.innerHTML = html + span(l, l[1].slice(0, j));
+      if (j >= l[1].length) {
+        html += span(l, l[1]) + "\n"; onAct(l[2]); i++; j = 0;
+        timer = setTimeout(tick, l[0] === "b" ? 1100 : 550);
+      } else { timer = setTimeout(tick, 14); }
+    })();
+  }
+  document.getElementById("replay").addEventListener("click", function () { if (reduce) { full(); } else { play(); } });
+  var copyBtn = document.getElementById("copyprompt");
+  copyBtn.addEventListener("click", function () {
+    var text = document.getElementById("agentprompt").textContent, done = function (ok) { copyBtn.textContent = ok ? "Copied" : "Select and copy"; setTimeout(function () { copyBtn.textContent = "Copy"; }, 2000); };
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); }); }
+    else { var r = document.createRange(); r.selectNodeContents(document.getElementById("agentprompt")); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); done(false); }
+  });
+  full();
+  if (!reduce) { play(); }
+})();
+</script>
 </body>
 </html>
