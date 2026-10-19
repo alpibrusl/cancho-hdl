@@ -91,6 +91,8 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 .pbar { display: flex; justify-content: space-between; align-items: center; padding: .45rem .8rem; border-bottom: 1px solid var(--line); background: var(--soft); font: .8rem var(--mono); color: var(--muted); }
 .pbar button { font: 600 .8rem var(--font); padding: .25rem .7rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-fg); cursor: pointer; margin-right: .6rem; }
 .promptbox pre { margin: 0; padding: 1rem; max-height: 26rem; overflow: auto; font: .8rem/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.vid { max-width: 46rem; margin: 1.2rem auto 0; }
+.vid video { width: 100%; height: auto; display: block; border-radius: 12px; border: 1px solid var(--line); background: var(--term-bg); }
 </style>
 </head>
 <body>
@@ -110,7 +112,7 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 
 <div class="wrap" style="padding-bottom:2.5rem">
   <div class="demo">
-    <div class="term" role="img" aria-label="Replay of real output: two structural refusals with line and column, a clean contract, the conformance table, and an impact report for a register-map change">
+    <div class="term" role="img" aria-label="Replay of real output: a structural refusal with line and column, a semantic refusal with a remediation, a clean contract, the conformance table, and an impact report for a register-map change">
       <div class="bar"><i></i><i></i><i></i> the terminal <button id="replay" type="button">↻ replay</button></div>
       <pre id="screen"></pre>
     </div>
@@ -122,7 +124,17 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
       </div>
     </div>
   </div>
-  <p class="caption">Real output. The first four commands are the cancho tool <code>chw</code> (the loader, structural validator and conformance runner); the last is the Python reference implementation of <code>impact</code>, still being replaced. The right side lists the targets from the same output. Not a live session.</p>
+  <p class="caption">Real output (a few long lines are shortened with …). The first four commands are the cancho tool <code>chw</code> (the structural validator, the semantic checker and the conformance runner); the last is the Python reference implementation of <code>impact</code>, still being replaced. The right side lists the targets from the same output. Not a live session.</p>
+
+  <div class="vid">
+    <video controls preload="none" playsinline poster="demo/hdl-demo.poster.jpg" aria-label="A 24-second recording of the replay above">
+      <source src="demo/hdl-demo.mp4" type="video/mp4">
+      <source src="demo/hdl-demo.webm" type="video/webm">
+      Your browser cannot play this video: <a href="demo/hdl-demo.mp4">download the recording</a>.
+    </video>
+    <p class="caption">The same replay as a 24-second video you can share. It is a recording of this page, not a live session. <a href="demo/hdl-demo.mp4">Download</a>.</p>
+  </div>
+
 </div>
 
 <section class="alt" id="why"><div class="wrap">
@@ -242,14 +254,14 @@ python3 scripts/run_gate.py           # the reference gate</code></pre>
     ["b", "error[schema-invalid]: 64 is not one of [8, 16, 32]"],
     ["b", "  bus-width-invalid.chw:7:18  (enum /block/bus_width)"],
     ["d", "exit 1"],
-    ["d", "$ chw validate examples/refusal/field-out-of-bounds.chw"],
-    ["b", "error[schema-invalid]: 63 is greater than the maximum of 31"],
-    ["b", "  field-out-of-bounds.chw:15:45  (maximum .../msb)"],
+    ["d", "$ chw check examples/refusal/field-overlap.chw"],
+    ["b", "error[field-overlap]: field 'PARITY' bits [2..4] overlap …"],
+    ["b", "help: start PARITY at bits [4..6] …"],
     ["d", "exit 1"],
     ["d", "$ chw validate examples/uart-contract/uart.chw"],
     ["g", "exit 0"],
     ["d", "$ chw conform ."],
-    ["g", "== 12 of 12 fixtures matched (19 of 19 sidecar entries, all decided by this tool)"],
+    ["g", "== 12 of 12 fixtures matched (19 of 19 sidecar entries …"],
     ["g", "   4 of 4 valid examples without an error (2 warnings)"],
     ["d", "$ python3 tools/diff/diff.py impact uart.chw uart_rebase.chw"],
     ["b", "c-header        stale  moved_registers=5; widened_fields=1", {t: 0, c: "hot"}],

@@ -24,6 +24,10 @@ help: start PARITY at bits [4..6] (just after ENABLE, bits [0..3]), or shrink / 
 exit 1
 ```
 
+[![A 24-second recording of the demo](docs/demo/hdl-demo.poster.jpg)](docs/demo/hdl-demo.mp4)
+*A 24-second recording of the project page's replay of real `chw` output, not a live session. Re-record it with `node scripts/record-demo.js` (needs `playwright` and `ffmpeg`).*
+
+
 - **One source of truth.** Registers, fields, interrupts and DMA layouts are
   declared once. The generators are deterministic: same IR in, byte-identical
   artifacts out, so `git diff` on a generated file means something.
