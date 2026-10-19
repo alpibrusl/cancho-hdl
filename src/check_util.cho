@@ -219,7 +219,7 @@ pub fn put_int[&h](heap: &!h Heap, ds: dg.Diags, n: int) -> [heap] dg.Diags {
     return dg.Diags { pool: json_out.num(heap, pool, n), items: items };
 }
 
-fn hex_digits[&h](heap: &!h Heap, out: buffer.Buffer, n: int, min: int) -> [heap] buffer.Buffer {
+pub fn hex_digits[&h](heap: &!h Heap, out: buffer.Buffer, n: int, min: int) -> [heap] buffer.Buffer {
     var o = out;
     if n >= 16 || min > 1 {
         o = hex_digits(heap, o, n / 16, min - 1);

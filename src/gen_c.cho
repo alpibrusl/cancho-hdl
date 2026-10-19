@@ -1,0 +1,590 @@
+module chw.gen_c;
+
+// gen_c.cho -- `gen/c-header/c_header.py`: the C header of a checked contract
+// (docs/cancho-port.md, 17). A pure function of the IR and the bytes its spans index;
+// it prints nothing and opens nothing. The order of every line, the spaces and the
+// comments are the Python generator's, because the oracle is its bytes.
+//
+// Answers the text and a status: 0 the header, 1 a refusal (`generator-unimplemented`:
+// a name the header cannot spell, text is the message), 3 `internal` (an IR the checker
+// would have refused; text is the message). Never a partial header, never a trap.
+
+import std.buffer;
+import std.bytes;
+import std.vec;
+import chw.check_util as cu;
+import chw.hexval;
+import chw.ir as model;
+import chw.json_out;
+import chw.pyrepr;
+
+pub fn status_ok() -> [] int {
+    return 0;
+}
+
+pub fn status_refused() -> [] int {
+    return 1;
+}
+
+pub fn status_internal() -> [] int {
+    return 3;
+}
+
+// ---- text ---------------------------------------------------------------
+
+fn put[&h, &t](heap: &!h Heap, out: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    return buffer.append(heap, out, text);
+}
+
+fn put_span[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    return buffer.append(heap, out, src[a..e]);
+}
+
+fn put_lower[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = a;
+    while i < e {
+        o = buffer.push(heap, o, byte_of(bytes.to_lower(int_of(src[i]))));
+        i = i + 1;
+    }
+    return o;
+}
+
+// `_to_lower_snake`, or `_to_c_name` (the same, upper-cased) when `upper`: a run of
+// capitals is an abbreviation and is not split.
+fn put_snake[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int, upper: bool) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = a;
+    while i < e {
+        let c = int_of(src[i]);
+        if bytes.is_upper(c) && i > a {
+            let prev_lower = bytes.is_lower(int_of(src[i - 1]));
+            let end_of_abbrev = i + 1 < e && bytes.is_upper(int_of(src[i - 1])) && bytes.is_lower(int_of(src[i + 1]));
+            if prev_lower || end_of_abbrev {
+                o = buffer.push(heap, o, byte_of('_'));
+            }
+        }
+        var ch = bytes.to_lower(c);
+        if upper {
+            ch = bytes.to_upper(ch);
+        }
+        o = buffer.push(heap, o, byte_of(ch));
+        i = i + 1;
+    }
+    return o;
+}
+
+fn put_int[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    return json_out.num(heap, out, n);
+}
+
+// `0x{value:0{min}x}u` of the literal at `a..e`: exact past 2^60 as well.
+fn put_hex_literal[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int, min: int) -> [heap] buffer.Buffer {
+    let hv = hexval.parse(src[a..e]);
+    var o = buffer.append(heap, out, "0x");
+    if hv.big {
+        o = hexval.canon_into(heap, o, src[a..e]);
+    } else {
+        o = cu.hex_digits(heap, o, hv.v, min);
+    }
+    return buffer.push(heap, o, byte_of('u'));
+}
+
+// `/* chw:Block` and what follows, up to but not including the closing ` */`.
+fn put_id[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], b: model.Block) -> [heap] buffer.Buffer {
+    return put_span(heap, put(heap, out, "/* chw:"), src, b.name_s, b.name_e);
+}
+
+// ---- what the header can spell ------------------------------------------
+
+fn is_keyword[&t](text: &t [byte]) -> [] bool {
+    return bytes.equal(text, "auto") || bytes.equal(text, "break") || bytes.equal(text, "case") || bytes.equal(text, "char") || bytes.equal(text, "const") || bytes.equal(text, "continue") || bytes.equal(text, "default") || bytes.equal(text, "do") || bytes.equal(text, "double") || bytes.equal(text, "else") || bytes.equal(text, "enum") || bytes.equal(text, "extern") || bytes.equal(text, "float") || bytes.equal(text, "for") || bytes.equal(text, "goto") || bytes.equal(text, "if") || bytes.equal(text, "inline") || bytes.equal(text, "int") || bytes.equal(text, "long") || bytes.equal(text, "register") || bytes.equal(text, "restrict") || bytes.equal(text, "return") || bytes.equal(text, "short") || bytes.equal(text, "signed") || bytes.equal(text, "sizeof") || bytes.equal(text, "static") || bytes.equal(text, "struct") || bytes.equal(text, "switch") || bytes.equal(text, "typedef") || bytes.equal(text, "union") || bytes.equal(text, "unsigned") || bytes.equal(text, "void") || bytes.equal(text, "volatile") || bytes.equal(text, "while");
+}
+
+// `[A-Za-z_][A-Za-z0-9_]*`. A name that is anything else cannot be a member, a type or a
+// macro, and one with `*/` in it would end the comment that carries its stable ID.
+fn is_identifier[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    if e <= a {
+        return false;
+    }
+    var i = a;
+    while i < e {
+        let c = int_of(src[i]);
+        let letter = bytes.is_alpha(c) || c == '_';
+        if !(letter || i > a && bytes.is_digit(c)) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A member name is lower-cased, so it must not be a keyword once it is.
+fn is_member_name[&h, &s](heap: &!h Heap, src: &s [byte], a: int, e: int) -> [heap] bool {
+    if !is_identifier(src, a, e) {
+        return false;
+    }
+    let low = put_lower(heap, buffer.empty(heap, 16), src, a, e);
+    var keyword = false;
+    borrow low as &lr in {
+        keyword = is_keyword(buffer.bytes(lr));
+    }
+    buffer.drop(heap, low);
+    return !keyword;
+}
+
+// An enum label, an owner or the source path goes into a comment as it is: the one thing a comment cannot
+// carry is its own delimiter, `/*` (a warning under -Wall -Werror) or `*/` (code after it). The Python tool
+// writes the bytes unchecked; so does this, except for those two.
+fn is_comment_text[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    var i = a;
+    while i + 1 < e {
+        let c = int_of(src[i]);
+        let d = int_of(src[i + 1]);
+        if c == '/' && d == '*' || c == '*' && d == '/' {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn is_empty[&x](b: &x buffer.Buffer) -> [] bool {
+    return buffer.size(b) == 0;
+}
+
+// The refusal text: `{what} {repr} {why}`.
+fn refusal[&h, &s, &w](heap: &!h Heap, src: &s [byte], a: int, e: int, what: &w [byte], why: &static [byte]) -> [heap] buffer.Buffer {
+    var m = put(heap, buffer.empty(heap, 96), what);
+    m = put(heap, m, " ");
+    m = pyrepr.str_repr(heap, m, src[a..e]);
+    m = put(heap, m, " ");
+    return put(heap, m, why);
+}
+
+fn internal_text[&h, &w](heap: &!h Heap, what: &w [byte]) -> [heap] buffer.Buffer {
+    return put(heap, buffer.empty(heap, 64), what);
+}
+
+// ---- order --------------------------------------------------------------
+
+// The indices 0..n ordered by `keys[i]`, equal keys in index order: Python's stable
+// sort, as a bottom-up merge sort so a hostile contract costs n log n.
+fn order_by[&h](heap: &!h Heap, keys: Box[[int]], n: int) -> [heap] Box[[int]] {
+    var a = box_slice(heap, n + 1, 0);
+    borrow mut a as &!aw in {
+        var i = 0;
+        while i < n {
+            contents(aw)[i] = i;
+            i = i + 1;
+        }
+    }
+    var b = box_slice(heap, n + 1, 0);
+    var width = 1;
+    while width < n {
+        var lo = 0;
+        while lo < n {
+            var mid = lo + width;
+            if mid > n {
+                mid = n;
+            }
+            var hi = lo + 2 * width;
+            if hi > n {
+                hi = n;
+            }
+            var i = lo;
+            var j = mid;
+            var k = lo;
+            borrow keys as &kr in {
+                borrow a as &ar in {
+                    borrow mut b as &!bw in {
+                        while k < hi {
+                            var left = false;
+                            if i < mid {
+                                if j >= hi {
+                                    left = true;
+                                } else if contents(kr)[contents(ar)[i]] <= contents(kr)[contents(ar)[j]] {
+                                    left = true;
+                                }
+                            }
+                            if left {
+                                contents(bw)[k] = contents(ar)[i];
+                                i = i + 1;
+                            } else {
+                                contents(bw)[k] = contents(ar)[j];
+                                j = j + 1;
+                            }
+                            k = k + 1;
+                        }
+                    }
+                }
+            }
+            lo = lo + 2 * width;
+        }
+        let spare = a;
+        a = b;
+        b = spare;
+        width = width * 2;
+    }
+    unbox_slice(heap, b);
+    unbox_slice(heap, keys);
+    return a;
+}
+
+// ---- checks -------------------------------------------------------------
+
+fn offset_value[&s](src: &s [byte], a: int, e: int) -> [] int {
+    let hv = hexval.parse(src[a..e]);
+    if !hv.ok || hv.big {
+        return 0 - 1;
+    }
+    return hv.v;
+}
+
+// What the generator needs of the IR, which a checked contract has: tables in range,
+// offsets that are numbers, bounds a bit position can hold. Empty when it holds, else the
+// first thing that does not.
+fn unusable[&h, &s, &q](heap: &!h Heap, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let nregs = vec.size(ir.regs);
+    let nfields = vec.size(ir.fields);
+    let nenums = vec.size(ir.enums);
+    let nbufs = vec.size(ir.bufs);
+    let ndf = vec.size(ir.dfields);
+    var i = 0;
+    while i < nregs {
+        let r = vec.get(ir.regs, i);
+        if offset_value(src, r.off_s, r.off_e) < 0 {
+            return internal_text(heap, "a register offset is not a number below 2^60");
+        }
+        if r.reset_s >= 0 && !hexval.parse(src[r.reset_s..r.reset_e]).ok {
+            return internal_text(heap, "a reset value is not a number");
+        }
+        if r.first < 0 || r.n < 0 || r.first + r.n > nfields {
+            return internal_text(heap, "a register names fields that are not there");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < nfields {
+        let f = vec.get(ir.fields, i);
+        if f.lsb < 0 || f.msb < 0 || f.lsb > 1023 || f.msb > 1023 {
+            return internal_text(heap, "a field has bounds outside 0..1023");
+        }
+        let w = ir.block.width;
+        if (w == 8 || w == 16 || w == 32) && f.msb >= w {
+            return internal_text(heap, "a field lies outside the bus width");
+        }
+        if f.has_enum && (f.enum_first < 0 || f.enum_n < 0 || f.enum_first + f.enum_n > nenums) {
+            return internal_text(heap, "a field names enum entries that are not there");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < nbufs {
+        let b = vec.get(ir.bufs, i);
+        if b.first < 0 || b.n < 0 || b.first + b.n > ndf {
+            return internal_text(heap, "a DMA buffer names fields that are not there");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < ndf {
+        let d = vec.get(ir.dfields, i);
+        if !hexval.parse(src[d.off_s..d.off_e]).ok {
+            return internal_text(heap, "a DMA offset is not a number");
+        }
+        i = i + 1;
+    }
+    if !hexval.parse(src[ir.block.base_s..ir.block.base_e]).ok {
+        return internal_text(heap, "the base address is not a number");
+    }
+    return buffer.empty(heap, 1);
+}
+
+// The first name the header cannot spell, as the refusal text; empty when there is none.
+fn unspellable[&h, &s, &q](heap: &!h Heap, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    if !is_identifier(src, b.name_s, b.name_e) {
+        return refusal(heap, src, b.name_s, b.name_e, "the block name", "is not a C identifier, and the generator does not mangle names");
+    }
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        if !is_member_name(heap, src, r.name_s, r.name_e) {
+            return refusal(heap, src, r.name_s, r.name_e, "the register name", "is not usable as a C member (not an identifier, or a keyword once lower-cased), and the generator does not mangle names");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.fields) {
+        let f = vec.get(ir.fields, i);
+        if !is_member_name(heap, src, f.name_s, f.name_e) {
+            return refusal(heap, src, f.name_s, f.name_e, "the field name", "is not usable as a C member (not an identifier, or a keyword once lower-cased), and the generator does not mangle names");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.enums) {
+        let e = vec.get(ir.enums, i);
+        if !is_comment_text(src, e.name_s, e.name_e) {
+            return refusal(heap, src, e.name_s, e.name_e, "the enum label", "cannot be written inside a C comment as it stands");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.bufs) {
+        let d = vec.get(ir.bufs, i);
+        if !is_identifier(src, d.name_s, d.name_e) {
+            return refusal(heap, src, d.name_s, d.name_e, "the DMA buffer name", "is not a C identifier, and the generator does not mangle names");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.dfields) {
+        let d = vec.get(ir.dfields, i);
+        if !is_member_name(heap, src, d.name_s, d.name_e) {
+            return refusal(heap, src, d.name_s, d.name_e, "the DMA field name", "is not usable as a C member (not an identifier, or a keyword once lower-cased), and the generator does not mangle names");
+        }
+        if hexval.parse(src[d.off_s..d.off_e]).big {
+            return refusal(heap, src, d.off_s, d.off_e, "the DMA offset", "is past 2^60, and the generator cannot size the gap before the field");
+        }
+        if d.owner_s >= 0 && !is_comment_text(src, d.owner_s, d.owner_e) {
+            return refusal(heap, src, d.owner_s, d.owner_e, "the DMA owner", "cannot be written inside a C comment as it stands");
+        }
+        i = i + 1;
+    }
+    return buffer.empty(heap, 1);
+}
+
+// ---- the header ---------------------------------------------------------
+
+fn c_type(width: int) -> [] &static [byte] {
+    if width == 8 {
+        return "uint8_t";
+    }
+    if width == 16 {
+        return "uint16_t";
+    }
+    return "uint32_t";
+}
+
+fn put_register[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    let ct = c_type(b.width);
+    var o = put_id(heap, out, src, b);
+    o = put_span(heap, put(heap, o, ".register."), src, r.name_s, r.name_e);
+    o = put(heap, o, " */\n/* kind: ");
+    o = put_span(heap, o, src, r.kind_s, r.kind_e);
+    o = put(heap, o, " */\n");
+    if r.n == 0 {
+        return put(heap, o, "/* no fields declared */\n\n");
+    }
+    o = put(heap, o, "typedef struct {\n");
+    let keys = box_slice(heap, r.n + 1, 0);
+    borrow mut keys as &!kw in {
+        var k = 0;
+        while k < r.n {
+            let f = vec.get(ir.fields, r.first + k);
+            contents(kw)[k] = f.lsb * 1024 + f.msb;
+            k = k + 1;
+        }
+    }
+    let perm = order_by(heap, keys, r.n);
+    var pos = 0;
+    borrow perm as &pr in {
+        var k = 0;
+        while k < r.n {
+            let f = vec.get(ir.fields, r.first + contents(pr)[k]);
+            if f.lsb > pos {
+                o = put_int(heap, put(heap, put(heap, put(heap, o, "    "), ct), " _rsvd"), pos);
+                o = put_int(heap, put(heap, o, " : "), f.lsb - pos);
+                o = put(heap, o, ";\n");
+            }
+            let width = f.msb - f.lsb + 1;
+            o = put_lower(heap, put(heap, put(heap, put(heap, o, "    "), ct), " "), src, f.name_s, f.name_e);
+            o = put_int(heap, put(heap, o, " : "), width);
+            o = put(heap, o, "; ");
+            o = put_span(heap, put(heap, put_id(heap, o, src, b), ".register."), src, r.name_s, r.name_e);
+            o = put_span(heap, put(heap, o, ".field."), src, f.name_s, f.name_e);
+            o = put(heap, o, " */\n");
+            if f.has_enum {
+                var e = 0;
+                while e < f.enum_n {
+                    let en = vec.get(ir.enums, f.enum_first + e);
+                    o = put_span(heap, put(heap, o, "        /* enum: "), src, en.name_s, en.name_e);
+                    o = put_int(heap, put(heap, o, " = "), en.value);
+                    o = put(heap, o, " */\n");
+                    e = e + 1;
+                }
+            }
+            pos = f.msb + 1;
+            k = k + 1;
+        }
+    }
+    unbox_slice(heap, perm);
+    if pos < b.width {
+        o = put_int(heap, put(heap, put(heap, put(heap, o, "    "), ct), " _rsvd"), pos);
+        o = put_int(heap, put(heap, o, " : "), b.width - pos);
+        o = put(heap, o, ";\n");
+    }
+    o = put_snake(heap, put(heap, o, "} "), src, r.name_s, r.name_e, false);
+    return put(heap, o, "_t;\n\n");
+}
+
+fn put_block_struct[&h, &s, &q, &p](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, perm: &p [int]) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    let ct = c_type(b.width);
+    let size = b.width / 8;
+    var o = put(heap, put_id(heap, out, src, b), ".block */\ntypedef struct {\n");
+    var pos = 0;
+    var k = 0;
+    while k < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, perm[k]);
+        let rel = offset_value(src, r.off_s, r.off_e) / size;
+        if rel > pos {
+            o = put_int(heap, put(heap, o, "    uint8_t _gap"), pos);
+            o = put_int(heap, put(heap, o, "["), (rel - pos) * size);
+            o = put(heap, o, "];\n");
+        }
+        o = put_lower(heap, put(heap, put(heap, put(heap, o, "    volatile "), ct), " "), src, r.name_s, r.name_e);
+        o = put_span(heap, put(heap, put_id(heap, put(heap, o, "; "), src, b), ".register."), src, r.name_s, r.name_e);
+        o = put(heap, o, " */");
+        if !bytes.equal(src[r.kind_s..r.kind_e], "RW") {
+            o = put_span(heap, put(heap, o, " /* "), src, r.kind_s, r.kind_e);
+            o = put(heap, o, " */");
+        }
+        o = put(heap, o, "\n");
+        pos = rel + 1;
+        k = k + 1;
+    }
+    o = put_snake(heap, put(heap, o, "} "), src, b.name_s, b.name_e, false);
+    return put(heap, o, "_t;\n\n");
+}
+
+fn put_dma[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, buf: model.Buf) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    var o = put_span(heap, put(heap, put_id(heap, out, src, b), ".dma."), src, buf.name_s, buf.name_e);
+    o = put(heap, o, " */\n/* DMA buffers are tightly packed; offsets are explicit. DEVICE-owned fields must be written only by the device. */\n");
+    o = put(heap, o, "typedef struct __attribute__((packed)) {\n");
+    let keys = box_slice(heap, buf.n + 1, 0);
+    borrow mut keys as &!kw in {
+        var k = 0;
+        while k < buf.n {
+            let d = vec.get(ir.dfields, buf.first + k);
+            contents(kw)[k] = offset_value(src, d.off_s, d.off_e);
+            k = k + 1;
+        }
+    }
+    let perm = order_by(heap, keys, buf.n);
+    var pos = 0;
+    borrow perm as &pr in {
+        var k = 0;
+        while k < buf.n {
+            let d = vec.get(ir.dfields, buf.first + contents(pr)[k]);
+            let offset = offset_value(src, d.off_s, d.off_e);
+            if offset > pos {
+                o = put_int(heap, put(heap, o, "    uint8_t _gap"), pos);
+                o = put_int(heap, put(heap, o, "["), offset - pos);
+                o = put(heap, o, "];\n");
+            }
+            o = put_lower(heap, put(heap, o, "    volatile uint32_t "), src, d.name_s, d.name_e);
+            o = put(heap, o, "; /* owner: ");
+            if d.owner_s >= 0 {
+                o = put_span(heap, o, src, d.owner_s, d.owner_e);
+            } else {
+                o = put(heap, o, "CPU");
+            }
+            o = put_span(heap, put(heap, put_id(heap, put(heap, o, " */ "), src, b), ".dma."), src, buf.name_s, buf.name_e);
+            o = put_span(heap, put(heap, o, ".field."), src, d.name_s, d.name_e);
+            o = put(heap, o, " */\n");
+            pos = offset + 4;
+            k = k + 1;
+        }
+    }
+    unbox_slice(heap, perm);
+    o = put_snake(heap, put(heap, o, "} "), src, buf.name_s, buf.name_e, false);
+    return put(heap, o, "_t;\n\n");
+}
+
+// The header of `ir` (whose spans index `src`), named `path` in the banner.
+pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] (buffer.Buffer, int) {
+    let bad = unusable(heap, src, ir);
+    var fine = false;
+    borrow bad as &br in {
+        fine = is_empty(br);
+    }
+    if !fine {
+        return (bad, status_internal());
+    }
+    buffer.drop(heap, bad);
+    let refused = unspellable(heap, src, ir);
+    borrow refused as &rr in {
+        fine = is_empty(rr);
+    }
+    if !fine {
+        return (refused, status_refused());
+    }
+    buffer.drop(heap, refused);
+    if !is_comment_text(path, 0, len(path)) {
+        return (refusal(heap, path, 0, len(path), "the source path", "cannot be written inside a C comment as it stands"), status_refused());
+    }
+    let b = ir.block;
+    var o = put(heap, buffer.empty(heap, 1024), "/* Generated by cancho-hdl from ");
+    o = put(heap, put(heap, o, path), ". Do not edit. */\n#ifndef CANCHO_HDL_");
+    o = put_snake(heap, o, src, b.name_s, b.name_e, true);
+    o = put(heap, o, "_H\n#define CANCHO_HDL_");
+    o = put_snake(heap, o, src, b.name_s, b.name_e, true);
+    o = put(heap, o, "_H\n\n#include <stdint.h>\n#include <stddef.h>\n\n");
+    if b.width != 8 && b.width != 16 && b.width != 32 {
+        o = put_int(heap, put(heap, o, "/* ERROR: invalid bus_width "), b.width);
+        o = put(heap, o, "; cannot generate. */\n#endif /* CANCHO_HDL_");
+        o = put_snake(heap, o, src, b.name_s, b.name_e, true);
+        return (put(heap, o, "_H */\n"), status_ok());
+    }
+    let nregs = vec.size(ir.regs);
+    let keys = box_slice(heap, nregs + 1, 0);
+    borrow mut keys as &!kw in {
+        var i = 0;
+        while i < nregs {
+            let r = vec.get(ir.regs, i);
+            contents(kw)[i] = offset_value(src, r.off_s, r.off_e);
+            i = i + 1;
+        }
+    }
+    let perm = order_by(heap, keys, nregs);
+    borrow perm as &pr in {
+        var i = 0;
+        while i < nregs {
+            o = put_register(heap, o, src, ir, vec.get(ir.regs, contents(pr)[i]));
+            i = i + 1;
+        }
+        o = put_block_struct(heap, o, src, ir, contents(pr));
+        var d = 0;
+        while d < vec.size(ir.bufs) {
+            o = put_dma(heap, o, src, ir, vec.get(ir.bufs, d));
+            d = d + 1;
+        }
+        o = put(heap, put_id(heap, o, src, b), " */\n#define ");
+        o = put_snake(heap, o, src, b.name_s, b.name_e, true);
+        o = put_hex_literal(heap, put(heap, o, "_BASE "), src, b.base_s, b.base_e, 8);
+        o = put(heap, o, "\n#define ");
+        o = put_snake(heap, o, src, b.name_s, b.name_e, true);
+        o = put_int(heap, put(heap, o, "_BUS_WIDTH "), b.width);
+        o = put(heap, o, "\n\n");
+        var j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            if r.reset_s >= 0 {
+                o = put_snake(heap, put(heap, o, "#define "), src, b.name_s, b.name_e, true);
+                o = put_snake(heap, put(heap, o, "_"), src, r.name_s, r.name_e, true);
+                o = put_hex_literal(heap, put(heap, o, "_RESET "), src, r.reset_s, r.reset_e, b.width / 4);
+                o = put(heap, o, "\n");
+            }
+            j = j + 1;
+        }
+    }
+    unbox_slice(heap, perm);
+    o = put(heap, o, "\n#endif /* CANCHO_HDL_");
+    o = put_snake(heap, o, src, b.name_s, b.name_e, true);
+    return (put(heap, o, "_H */\n"), status_ok());
+}

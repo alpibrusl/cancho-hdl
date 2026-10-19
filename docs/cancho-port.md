@@ -1,9 +1,10 @@
 # Porting cancho-hdl to cancho
 
 > **Status: design, a measured spike (§7), a built and measured stage 1
-> (design §9, measurements §10), and a built and measured first slice of stage 2:
+> (design §9, measurements §10), a built and measured first slice of stage 2:
 > `Diagnostic` and the semantic checker (design §13, measurements §14,
-> corrections §15).** Decision (taken before this
+> corrections §15), and a built and measured stage 3, the C header generator
+> (design §17, measurements §18, corrections §19).** Decision (taken before this
 > document): the product is rewritten from scratch as **pure cancho**. The
 > Python under `tools/`, `gen/` and `scripts/` is the *legacy reference
 > implementation*, kept until each part is replaced and then deleted. The
@@ -11,7 +12,7 @@
 > and `tests/behavioral/scenarios.json` are language-neutral specifications
 > and do not move. Python may remain **only** as test-only oracle code (§5).
 >
-> What is measured here is three slices: the textual parser over the two textual
+> What is measured here is four slices (the fourth, stage 3, is §18): the textual parser over the two textual
 > examples (§7), the JSON wire loader, the structural validator and the
 > conformance runner (§10), and the semantic checker with the `Diagnostic`
 > record, its JSON and text forms, and a conformance runner that decides every
@@ -1435,3 +1436,268 @@ leaves it:
   (8.1) is as costly as the 14 appends of one message suggests. The C header is
   about 340 lines of Python; the budget to beat is 14.7's, that a message built from
   pieces costs about three lines a piece.
+
+---
+
+## 17. Stage 3 design: the C header generator
+
+> **Status: design, now built; measured in §18.** Written before the code, from reading `gen/c-header/c_header.py`
+> (340 lines), `tools/generate/generate.py` (the dispatcher) and `spec/generators/README.md`
+> §1 and §2. Nothing below is measured until §18 exists; a number marked *estimate* is a guess.
+> A claim that turns out false is corrected here, in place (§19).
+
+### 17.1 What this slice decides
+
+1. **Whether a generator in cancho reads the typed IR comfortably.** Stage 2 read the JSON
+   tape; the generators are the first consumers of `chw.ir` (§16). The IR holds spans into the
+   source, not strings, and every number the generator prints comes from one of them.
+2. **What text assembly costs** (§8.1, §14.7): the budget to beat is "about three lines a
+   piece". A C header is mostly fixed text with names spliced in, so the measure is lines of
+   cancho per line of Python, per emitted line.
+3. **The command line**: `chw generate FILE --target c-header`, and what it says for the four
+   other targets.
+
+It does **not** decide the other four generators (SystemVerilog, devicetree, cancho-binding,
+SVD), which stay Python until their own slice, and it does not change what any generator emits:
+the oracle is the Python generator's bytes.
+
+### 17.2 The command
+
+```
+chw generate FILE --target T [--schema S]
+```
+
+Exactly the dispatcher of `tools/generate/generate.py`, in its order and with its exit codes,
+because the differential compares both:
+
+| step | refusal | exit |
+|---|---|---|
+| FILE missing | `error: file not found: FILE` | 2 |
+| FILE does not load (text or JSON form) | `error[CODE]: MESSAGE`, one per diagnostic, stderr | 1 |
+| the checker reports an Error | `error[CODE]: MESSAGE` for each, then `error: not generating from a refused contract.` | 1 |
+| `--target` not one of the five | `error[generator-target-unknown]: target 'T' is not supported. Known: c-header, cancho-binding, devicetree, svd, systemverilog` | 1 |
+| a known target not yet ported | `error[generator-unimplemented]: target T: not ported to cancho yet` | 1 |
+| the generator refuses a feature (DMA field of a size with no C type) | `error[generator-unimplemented]: target c-header: DMA field 'X' has size N, ...` | 1 |
+
+The two `generator-*` tags are the spec's (`spec/diagnostics` §3.5), and they are **not** in
+`chw catalog`: the gate's catalog check lists them among "6 rules in the spec that no cancho tool
+emits". The Python dispatcher does not build `Diagnostic` records for them either; it prints one
+`error[tag]: message` line, and the oracle is that line's bytes. So this slice prints the line,
+keeps the two tags as named constants in `main.cho`, and does not add them to the `Rule` enum (36
+arms, four matches of 36 each, §14.7) until `report` (stage 6) needs them as records. *(An earlier
+draft of this section said the tags were already in `chw catalog` and that the `Diagnostic` record
+would carry them; both were wrong, found by reading the gate's own output before writing code.)*
+Each is reached by a test (§17.5, items 2 and 3).
+One deviation from the Python tool is deliberate and stated: the Python dispatcher reports a
+registered-but-unported target as `generator-unimplemented` only when the module is *missing
+on disk*, which cannot occur here, so the cancho command uses the tag for what is true, that
+the target exists in the tool and not yet in this binary. The differential covers `c-header`
+only; the other four are tested as refusals with their tag.
+
+### 17.3 Shape
+
+* **One new module, `src/gen_c.cho`** (estimate 350 lines), a pure function
+  `chw.gen_c.generate(heap, ir, source, path) -> Result`, where the result is the header text
+  or a refusal (the DMA size, with the field name and the size). It prints nothing and touches
+  no file: `main.cho` owns the I/O (`[heap]` only).
+* **`load.cho` gains two accessors**, `ir_of(doc)` and `source_of(doc)`; the `Doc` already holds
+  both (`ir`, `text`), which is the reason the generator can run on either form.
+* **Naming helpers** (`UartRegs` → `UART_REGS` / `uart_regs`, and the Python docstring's own
+  "wrong but discouraged" case `UartCTRLx` → `uart_c_t_r_lx`) are ported rule for rule from
+  `_to_lower_snake`, not "improved": the oracle is the bytes.
+* **Hex**: the IR keeps offsets, resets and the base address as spans of the hex text. They are
+  read with `chw.hexval` (the checker's reading, §13.5), and printed with a `put_hex` of a given
+  minimum width (the 12-line helper §14.7 asked `std` for).
+
+### 17.4 What the generator assumes, and what it does when that is false
+
+The generators assume a checked IR (`spec/generators` §1 rule 5). The command guarantees it by
+running the checker first. Inside the function, though, no input may reach a trap, and the
+Python version would raise on an unchecked one, so:
+
+* a value past `hexval`'s 2^60 (`big`), a width not in {8, 16, 32}, or a field outside its
+  register can only occur after a checker miss; the function answers a refusal with the tag
+  **`internal`** (exit 3, the Python `error[internal]`), never a partial header and never a
+  trap. A unit test hands it each of these directly.
+* the DMA size rule (1, 2, 4, 8) is *not* a checker rule; it is the generator's refusal
+  (`generator-unimplemented`, exit 1) and is the one refusal path in normal use.
+
+### 17.5 The oracle, and what would make this slice fail
+
+All test-only Python, `tests/differential/generate_c.py` (the same discipline as §13.6):
+
+1. **Bytes.** For every file that loads and checks clean (the 2 valid examples, the 2 textual
+   examples, the clean `tests/stage1` and `tests/stage2` files), `chw generate` and
+   `generate.py --target c-header` give the same stdout, stderr and exit code.
+2. **Refusals.** For every other fixture the two give the same stderr and exit code (the
+   dispatcher's refusal text is the checker's, already identical byte for byte, §14.2).
+3. **Mutants** (the key-aware pool of §13.6, restricted to the mutants that still check clean):
+   same comparison. The DMA `size` mutants are what reach `generator-unimplemented`.
+4. **The header compiles.** The cancho header is compiled with `cc -std=c11 -Wall -Wextra
+   -Werror -fsyntax-only` (a test oracle, as `tests/behavioral/c_behavior.py` is) for every clean
+   file; the contract of `spec/generators` §2.1 says it must.
+5. **No trap.** A hostile-input pass as stage 1/2: 0 traps required.
+6. **The checks can fail.** Deliberate breaks of the generator (a field order, a mask, a
+   dropped `_rsvd`, a dropped stable ID, the guard) must each fail the differential, run and
+   reported as stage 2's mutation checks were (§14.4).
+
+### 17.6 Gate and size
+
+`scripts/gate_cancho.sh` gains the unit suite for `gen_c`, the differential (step 8c), and the
+`cc -fsyntax-only` check when a C compiler is present (reported as skipped otherwise, never as
+passed). The authority report (`scripts/authority.expected`) must be unchanged except for what
+`generate` adds, which is nothing new: `heap`, `io_write`, `err_write`, `fs_read("")`,
+`file_read`, `args`, as `check` already has. Files stay under 2,000 lines (`main.cho` is 324).
+
+### 17.7 Risks, in order
+
+1. **Text assembly volume.** ~150 `write` calls in Python; if the cancho cost is far above three
+   lines a piece, the result is a finding to report (§8.1), and the likely remedy is a small
+   `emit` table (a template with holes), not a change to `std`.
+2. **Python quirks the oracle will expose** (`str.lower()` on a non-ASCII letter; the two
+   `vol` branches that are identical; the sort on `(lsb, msb, dict)` that would raise on a tie).
+   The checker excludes the last two; the first is excluded by the schema's name pattern. Each
+   is written down in §18 if the differential disagrees.
+3. **Integers past 2^60** in an enum value or a base address: handled as §17.4.
+
+
+---
+
+## 18. Stage 3 measured
+
+Compiler cancho `7e4088b`, Linux x86-64; gcc 13.3 as the compile oracle. Everything below is the output of
+`tests/differential/generate_c.py` (the gate's step 8c), `tests/mutation/run_gen_c.py` and `cancho test`.
+
+### 18.1 What was built
+
+| file | lines | what |
+|---|---:|---|
+| `src/gen_c.cho` | 590 | the generator: 230 lines of emission, the rest naming helpers, the stable sort, the checks of 17.4 |
+| `src/main.cho` | 475 (+151) | `chw generate FILE --target T [--schema S]`, the dispatcher of `generate.py` in its order |
+| `src/load.cho` | +31 | `ir_of`, `source_of`, `loaded` |
+| `tests/unit/test_gen_c.cho` | 240 | 12 tests |
+| `tests/differential/generate_c.py` | 315 | the oracle driver |
+| `tests/mutation/run_gen_c.py` | 99 | 19 deliberate breaks |
+
+`cancho check` of the program is unchanged in kind; `cancho build` of `chw` takes about 15 s. The authority
+report of `chw` is unchanged (gate step 10): `generate` adds `heap`, `io_write`, `err_write`, `fs_read("")`,
+`file_read`, `args`, which `check` already has.
+
+### 18.2 Against `generate.py`, byte for byte
+
+Fixtures (50 files: valid examples, refusals, `tests/stage1`, `tests/stage2`): stdout, stderr and exit status
+identical on **45**, and 5 known differences (3 are the checker's, already explained in 14.2; the other two are
+in 18.3). Seven of them generate a header, and **all seven compile** with `cc -std=c11 -Wall -Wextra -Werror`.
+
+Mutants (the 55,182 distinct inputs of `check_json.py`, plus 23 hand-made ones, **55,205**): 
+
+| | inputs |
+|---|---:|
+| identical (stdout, stderr, exit status) | 47,785 (a header on 3,948, a refusal on 43,837) |
+| the two checkers differ in a class 14.2 explains | 1,192 |
+| cancho refuses a name the header cannot spell; Python's header does not compile | 338 |
+| cancho refuses a non-ASCII name (18.3, item 2) | 47 |
+| `"bus_width": 8.0` and `32.0` (18.3, item 3) | 2 written, 8 where Python raises |
+| both tools answer `internal` | 2 |
+| a DMA offset of 2^60 or more (18.3, item 4) | 17 |
+| `generate.py` raised (checker.py assumes a schema-valid shape); cancho answered with exit 0 or 1 | 5,814 |
+| **unexplained** | **0** |
+
+No input reached a trap: the largest hostile ones (20,000 registers in descending offset order, 20,000 DMA
+fields in descending order, a 100,000-byte name) are in the hand-made set, compared with Python's bytes, and
+take 0.3 s each.
+
+### 18.3 What the oracle found, and what was decided
+
+1. **The Python generator writes C that does not compile for names a contract may have.** The schema requires
+   a name to be a non-empty string; no rule requires an identifier. Of the 23 hand-made inputs, nine produced a
+   header with `generate.py` that gcc rejects: a register called `INT` (the member `int`), a field called
+   `Register`, a DMA field called `while`, `A-B`, `x y`, a block called `9Blk` or `int`, a register called
+   `A*/B` (the `*/` ends the comment that carries its stable ID, so what follows is code), and enum labels containing `*/` or `/*` (the second is a `-Wcomment` error). A block called `int` or a buffer called `for` compile (the suffix `_t` and the upper case save them), so they are not refused. An empty name is the checker's refusal, not the generator's.
+   Across the mutants 338 more. **The port refuses these** with `generator-unimplemented` and a message that
+   names the name (a keyword once lower-cased, not an identifier, or a comment delimiter); it does not mangle,
+   because a mangled name is a different name in the stable ID. This is a **deliberate difference** from the
+   Python tool, admitted by the oracle only when Python's header really does not compile. A contract whose
+   names are all identifiers is unaffected.
+2. **Non-ASCII names are refused although gcc and clang accept them.** Python lower-cases and snake-cases by
+   Unicode rules; the port has no Unicode tables (the JSON loader decodes escapes, so a name arrives as UTF-8
+   bytes, not as a code point list). `tests/stage1/escaped-names.chw` (a block called `Té😀`) is the fixture. A
+   narrowing, stated here and not hidden: the port writes ASCII names only.
+3. **Python writes `32.0` into C for a bus width written `3.2e1`.** The schema accepts it as an integer;
+   `generate.py` formats `31.0` into a bit-field width (`uint32_t _rsvd1 : 31.0;`), which does not compile,
+   in the valid fixture `tests/stage1/valid-float-integer.chw`; for `8.0` and `32.0` set on a mutant it
+   raises (`Precision not allowed in integer format specifier`). The port reads the integer and writes the
+   header the schema describes. Admitted only when the cancho header compiles and equals Python's once `N.0`
+   is read as `N`.
+4. **A DMA offset of 2^60 or more is refused.** `hexval` is exact below 2^60 (a cancho `int` traps on
+   overflow), so the port cannot size the gap; Python writes an array that many bytes long, which a 64-bit
+   compiler accepts. A limit of the port.
+5. **The checker reads a float bus width as 32; the generator reads it as the integer.** A contract with
+   `"bus_width": 8.0` and a field at bit 31 passes `chw check` (the stage-2 quirk, 13.5) and would have been
+   written as a field outside an 8-bit register. The generator now checks every field against the width and
+   answers `internal`. The quirk belongs to the checker; this slice does not change it.
+6. **The Python docstring is wrong about its own rule.** `_to_lower_snake` says `UartCTRLx` becomes
+   `uart_c_t_r_lx`; the code gives `uart_ctr_lx` (the `L` before a lower-case letter ends the abbreviation).
+   The port follows the code; a unit test pins it.
+
+### 18.4 The checks can fail
+
+`tests/mutation/run_gen_c.py` changes one expression of `gen_c.cho` at a time, builds `chw`, and runs the
+fixtures, the hand-made inputs and the unit suite. **19 of 19 breaks are killed**: register order, field
+order, the two reserved-gap tests, a field one bit narrow, the include guard, a stable ID, the kind note, the
+reset and base digit counts, a gap counted in registers, a DMA field of eight bytes, the end of an
+abbreviation, a keyword allowed, any byte an identifier byte, a comment delimiter allowed, 32 not a bus width,
+a base past 2^60, an unreadable register offset. Three are killed **only by the unit tests**: the keyword, the
+comment delimiter and the unreadable offset. That is the shape of the oracle, not a gap in it: where the
+Python tool writes the same wrong bytes, a differential cannot tell, so those rules are pinned by a test that
+says what the right answer is. Two earlier breaks did not count and were replaced: one changed the order of
+fields by the wrong key, which no valid contract can tell (fields do not overlap), and one changed the owner
+default, which the schema makes unreachable.
+
+### 18.5 What was easy, and what was not
+
+Easy: the translation. Each Python `out.write(f"...")` becomes a chain of `put` calls: 72 `o = put...`
+statements in `gen_c.cho` for the 34 Python writes, about two statements a write, inside the budget of three
+that 14.7 set (counted by `grep`, not by tracing each write). The stable sort is a copy of stage 1's merge sort with an index
+array; the generator is linear on every hostile input.
+
+Not easy:
+
+* **The oracle is a bug-compatible target.** The first full run left 83 unexplained differences; every one
+  was the port being right, or at a stated limit, and Python's bytes wrong or astronomical (18.3, 3, 4 and
+  5). Each needed a class with a stated reason and a condition that
+  the compiler confirms, rather than a tolerance.
+* **A test harness that shares a directory between threads gives wrong compile verdicts.** The compile oracle
+  first said the header with `A*/B` compiled, because two pool threads wrote the same `x.h`. Fixed by one
+  directory per call, and noted because a wrong "compiles" would have hidden finding 1.
+* **`front.parse_text` and `json_in.load` give spans into different buffers** (the text itself, or a decoded
+  copy of it). The generator takes the buffer the IR indexes (`load.source_of`) and never the file's bytes.
+* **No Unicode in `std`** (item 2 above).
+* **A test cannot take the `Fs`**, so the command-line paths (file missing, unknown target, unported target)
+  are covered by the gate's differential and by `generate.py`'s own text, not by a unit test.
+
+### 18.6 What stage 3 does not show
+
+* The four other generators (SystemVerilog, devicetree, cancho-binding, SVD) are not ported. `chw generate`
+  answers `generator-unimplemented` for them and `generator-target-unknown` for anything else; the Python tool
+  has all five.
+* Only Linux x86-64 and gcc. clang was not run as the compile oracle, MSVC cannot be.
+* Name collisions are not checked: two registers whose lower-cased names are equal, or a register called
+  `uint32` (whose type `uint32_t` is the standard one). The Python tool does not check them either.
+* The behavioural test that compiles a header against a device model (`tests/behavioral/`) is still Python
+  and was not run against the cancho headers; the compile oracle here is syntax only (`-fsyntax-only`).
+
+---
+
+## 19. Corrections (stage 3)
+
+* 17.2 said the two `generator-*` tags were in `chw catalog` and that the stage-2 `Diagnostic` record
+  would carry them. Neither is true (the gate lists them among "6 rules in the spec that no cancho tool
+  emits"); the section was corrected before any code was written, and the command prints the dispatcher's
+  `error[tag]: message` line, as `generate.py` does.
+* 17.1 and 17.4 spoke of a DMA field size with no C type as "the one refusal path in normal use". The schema
+  has no `size` key for a DMA field (it is `additionalProperties: false`), so the size is always 4 and the
+  refusal cannot be reached from a contract that passes the schema. The generator keeps no size logic.
+* 17.4 predicted that names would be taken from the contract as they are. They are not: 18.3 (1) and (2).
+* 17.5 predicted the oracle's classes as `checker-known`, `python-crash` and `unspellable`. Six were needed
+  (adding non-ASCII names, `32.0` widths, both-internal and offsets past 2^60), each in 18.3.
