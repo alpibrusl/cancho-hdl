@@ -2174,3 +2174,156 @@ does); the seven `plain-*` breaks and `plain-path` are killed by unit tests that
 
 * 26.4 estimated about 450 lines; it is 483 (27.1), the first estimate of the four that came close.
 * §23.6 and §24.6 said SystemVerilog and cancho-binding were not ported; cancho-binding is (SystemVerilog is not).
+
+---
+
+## 29. Stage 7 design: the SystemVerilog generator
+
+> **Status: design, now built; measured in §30.** Written from reading `gen/systemverilog/systemverilog.py` (330 lines) and
+> `spec/generators/README.md` §5, with the four earlier generators (§17 to §28) as the pattern. What it measures is
+> §30, and a claim found false is corrected in §31.
+
+### 29.1 What this slice decides
+
+1. **Whether the shape carries the largest generator**, the one the spec names as the proposal's point (the AXI4-Lite
+   register block), and that is mostly fixed text rather than decisions about names.
+2. **What the oracle is when the output is real RTL and no RTL tool is on the machine.** `iverilog`, `verilator`,
+   `yosys` and `slang` are not installed here (the Python roundtrip `systemverilog_parses` runs a real parse only
+   "if one is on `$PATH`"). So, as for cancho-binding (§26.1), the oracle is the Python tool's bytes, and that has a
+   consequence this document states instead of hiding: **where both tools write invalid SystemVerilog, nothing
+   here will say so.** The CI image could install `iverilog` and run a parse as a second oracle; it is listed in 31 as
+   work, not claimed.
+
+It does **not** change what the generator emits.
+
+### 29.2 What the module is
+
+One module `<snake block>_axi` with an AXI4-Lite slave port set, a behaviour output port per register (in offset
+order), `localparam`s for the base, each register's address and each enum label, a `reg` per register, a reset block
+with the contract's reset values (`0` and a comment when there is none), a write block with one line per register
+whose form depends on the access kind, a read mux, and the simplified one-cycle handshake. The Python tool **has no
+refusal of its own**: whatever the checker passed is written.
+
+### 29.3 Where the port must be careful
+
+* **This generator's snake case is a third rule.** One pass: an underscore before a capital that follows a lower-case
+  letter, or that ends a capital run before a lower-case letter. No digit rule (`Server2Name` is `server2name`), unlike
+  the device tree's two passes (§20.3) and the C header's.
+* **Lower-case hex, zero-padded to 8 digits** for the base and each offset (`{x:08x}`), padded to `bus_width / 4` for a
+  reset; exact past 2^60 for a base. A register offset past 2^60 is refused (it cannot be ordered), as in SVD.
+* **Enum localparams are upper-cased labels** appended to `<register>_<field>_`, with `'d<value>` in the bus width, a
+  negative value written with its sign.
+* **`W0S` is written as `r & ~wdata`**, the same expression as `W1C`, and `W0C` as `r & wdata`: the Python tool's
+  choice, not the access-kind table of the spec. The port reproduces it and a correction note says so; it is not the
+  port's to change.
+* **An unknown kind writes a comment** quoting the kind with Python's `repr`; the checker refuses unknown kinds first.
+* **Names go into identifiers verbatim** (`ADDR_<Name>`, `<Reg>_<Field>_<LABEL>`). The Python tool writes anything; this
+  port refuses a name with a JSON escape or a non-ASCII byte (spans index undecoded text) and nothing else.
+
+### 29.4 Gate and size
+
+Step 8g of `scripts/gate_cancho.sh`. Budget, written before counting: about 550 lines against 330 of Python (the text
+is constant and a call per fragment costs about as much as the fragment, §14.7).
+
+### 29.5 The oracle, and what would make this slice fail
+
+The six tiers of §20.5: bytes on the 50 fixtures and the `check_json.py` mutants, hand-made inputs (every access
+kind, every width, resets, enums with negative values and mixed case, names that snake differently from the other
+generators, a big base, registers out of order), known classes admitted only for a stated structural reason, unit
+tests, and one deliberate break per decision. It fails if any difference is unexplained or a break survives without a
+stated reason.
+
+---
+
+## 30. Stage 7 measured
+
+Compiler cancho `7e4088b`, Linux x86-64. No RTL tool is installed (29.1), so everything below is bytes against
+`tools/generate/generate.py`: `tests/differential/generate_sv.py` (gate step 8g), `tests/mutation/run_gen_sv.py` and
+`cancho test`.
+
+### 30.1 What was built
+
+| file | lines | what |
+|---|---:|---|
+| `src/gen_sv.cho` | 480 | the generator |
+| `src/main.cho` | 512 (+7) | the dispatcher answers `systemverilog`; every target the Python tool has is now ported |
+| `tests/unit/test_gen_sv.cho` | 465 | 23 tests |
+| `tests/differential/generate_sv.py` | 325 | the oracle driver |
+| `tests/mutation/run_gen_sv.py` | 140 | 60 deliberate breaks |
+
+The estimate of 29.4 (about 550 lines) was too high: **480 lines against 330 of Python, 1.45 times**, the lowest ratio of
+the five generators (C header 1.7, device tree 2.5, SVD 2.4, cancho-binding 2.3). The reason is the one 29.4 named and
+mis-weighed: most of the module is fixed text, and a fixed block is one constant, not a call per fragment. Sixteen
+blocks were taken from the Python source by a script (`ast`) and written out as constants, so the largest part of the
+generator was never typed by hand.
+
+### 30.2 Against `generate.py`, byte for byte
+
+Fixtures (50 files): stdout, stderr and exit status identical on **45**, 5 known differences; the 7 modules the tools
+write are the same bytes.
+
+Inputs (55,258 distinct: the mutants of `check_json.py`, 71 hand-made inputs and 5 source paths; 11,440 repeats skipped):
+
+| | count |
+|---|---:|
+| identical to `generate.py` (a module on 4,303, a refusal on 43,848) | 48,151 |
+| the checker's known differences (§13.5) | 1,192 |
+| `generate.py` raised (`AttributeError` 4,042, `TypeError` 1,772), cancho answered with exit 0 or 1 and no trap | 5,814 |
+| a name or path with an escape or a non-ASCII byte that cancho refuses (`non-ascii-name`) | 87 |
+| `"bus_width": 3.2e1`: Python writes `DATA_WIDTH = 32.0` (`float-bus-width`) | 3 |
+| `"bus_width": 32.0` with a reset: Python raises, cancho writes the module (`python-float-width-crash`) | 11 |
+| **unexplained** | **0** |
+
+### 30.3 What the oracle found, and what was decided
+
+1. **A bus width written as a float.** The schema calls `32.0` and `3.2e1` integers, so the checker accepts them. This
+   Python generator uses the value without `int()`: it writes `DATA_WIDTH = 32.0` and `32.0'h40000000`, which is not
+   SystemVerilog, and with a reset value it raises (`:08.0x` is not a format spec). Found by one fixture
+   (`tests/stage1/valid-float-integer.chw`) and then by ten mutants. cancho reads the integer and writes the module.
+   Both classes are admitted only on the whole-difference test (the first, by substituting `N.0` by `N`; the second
+   by the stated cause and a float bus width in the input). This is a **defect of the Python generator** that the port
+   does not reproduce and that the Python tool should fix, the same way the device-tree generator's float-width crash
+   was (§21). Neither is a defect of the port, and the Python tool is the oracle only.
+2. **`W0S` is written as `r & ~wdata`**, the same expression as `W1C` (29.3 predicted it from reading the source). The
+   port reproduces it; the access table of the spec says `W0S` sets bits. That is the Python tool's bug to fix, and
+   once it is fixed the port's one line follows. It is not hidden by being ported.
+3. **Everything else was identical on the first run**, including this generator's own snake rule (one pass, no digit
+   rule), which differs from the other three, the lower-case padded hex, and the order of registers.
+
+### 30.4 The checks can fail
+
+`tests/mutation/run_gen_sv.py` makes one break per decision of `gen_sv.cho` (the three branches of the snake rule and
+the lower-casing, the hex padding in each of its four uses, every access kind's line and its comment, the read mux and
+the WO special case, the enum constants, the reset and its undefined form, the order, every internal check, every
+span check, every narrowing, and one constant from each section of fixed text). **60 of 60 are killed on the first
+run.** That is not the same as the earlier stages: SVD and cancho-binding each began with survivors that taught
+something (§24.4, §27.4). This one began with none because the unit tests were written after those two and follow their
+pattern (an IR with one of everything and one piece swapped, per entity), and the harness was written with the
+double-escaping mistake of §27.4 in mind. It is stated here so a clean first run is not read as ease.
+
+### 30.5 What was easy, and what was not
+
+* **Easy:** the text. Extracting the fixed blocks with a script, rather than typing them, removed the whole class of
+  one-space errors the earlier generators were prone to.
+* **Not easy:** matching dynamic lines that interleave spans and numbers (the write conditions), where the first build
+  omitted an `r_` prefix; the differential found it on the second fixture.
+* **Cost:** the differential takes about 35 minutes on 4 cores.
+
+### 30.6 What stage 7 does not show
+
+* **No SystemVerilog tool read the module** (29.1). Byte equality with the Python tool shows the port is faithful;
+  it shows nothing about whether either tool writes RTL a simulator accepts. The Python roundtrip
+  `systemverilog_parses` runs a parse only if `iverilog`, `slang` or `yosys` is on `$PATH`, and none is in CI. Installing
+  `iverilog` in CI and parsing both tools' output is the next check and is not done.
+* The module is the Python tool's: its AXI4-Lite handshake is "simplified" by its own words, `wstrb` is ignored,
+  and the `W0S` expression is wrong (30.3, 2). The port does not improve it.
+* Names are ASCII only; a name with an escape or a non-ASCII byte is refused where Python writes it.
+* Only Linux x86-64.
+
+---
+
+## 31. Corrections (stage 7)
+
+* 29.4 estimated about 550 lines; it is 480, the first overestimate (30.1).
+* 29.1 said the CI image "could" install `iverilog`; that remains not done, and 30.6 says what is not shown for it.
+* §26 and §27.6 said SystemVerilog was not ported; it is. **Every generator of the Python tool is now ported.**
