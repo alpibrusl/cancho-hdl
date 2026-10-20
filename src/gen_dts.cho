@@ -1,0 +1,329 @@
+module chw.gen_dts;
+
+// gen_dts.cho -- `gen/devicetree/devicetree.py`: the DTSI fragment of a checked contract
+// (docs/cancho-port.md, 20). A pure function of the IR and the bytes its spans index; it prints
+// nothing and opens nothing. The line order, the spaces and the comments are the Python
+// generator's, because the oracle is its bytes.
+//
+// Answers the text and a status, as `gen_c.generate` does: 0 the fragment, 1 a refusal
+// (`generator-unimplemented`, text is the message), 3 `internal` (an IR the checker would have
+// refused). Never a partial fragment, never a trap.
+
+import std.buffer;
+import std.bytes;
+import std.vec;
+import chw.gen_c as gc;
+import chw.hexval;
+import chw.ir as model;
+
+pub fn status_ok() -> [] int {
+    return 0;
+}
+
+pub fn status_refused() -> [] int {
+    return 1;
+}
+
+pub fn status_internal() -> [] int {
+    return 3;
+}
+
+// ---- text ---------------------------------------------------------------
+
+// `{n:X}`: upper-case hex of a non-negative `n`, no padding.
+fn put_upper_hex[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    var o = out;
+    if n >= 16 {
+        o = put_upper_hex(heap, o, n / 16);
+    }
+    let d = n % 16;
+    if d < 10 {
+        return buffer.push(heap, o, byte_of('0' + d));
+    }
+    return buffer.push(heap, o, byte_of('A' + d - 10));
+}
+
+// `0x{n:X}`, the Python tool's `_hex`.
+fn put_hex[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    return put_upper_hex(heap, buffer.append(heap, out, "0x"), n);
+}
+
+// The digits of the literal at `a..e` as `{value:X}`, exact past 2^60 as well.
+fn put_upper_canon[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    let low = hexval.canon_into(heap, buffer.empty(heap, 24), src[a..e]);
+    var o = out;
+    borrow low as &lr in {
+        let t = buffer.bytes(lr);
+        var i = 0;
+        while i < len(t) {
+            o = buffer.push(heap, o, byte_of(bytes.to_upper(int_of(t[i]))));
+            i = i + 1;
+        }
+    }
+    buffer.drop(heap, low);
+    return o;
+}
+
+// `_snake` of the source text `a..e`, lower-cased. Two passes, as the Python tool's two regular
+// expressions: a capital that follows a capital and precedes a lower-case letter starts a word
+// (`HTTPServer` -> `HTTP_Server`), then a capital that follows a lower-case letter or a digit does
+// (`Server2Name` -> `Server2_Name`). The names it is given are ASCII (`unspellable`).
+fn put_snake[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    var one = buffer.empty(heap, 32);
+    var i = a;
+    while i < e {
+        let c = int_of(src[i]);
+        if i > a && bytes.is_upper(c) && bytes.is_upper(int_of(src[i - 1])) && i + 1 < e && bytes.is_lower(int_of(src[i + 1])) {
+            one = buffer.push(heap, one, byte_of('_'));
+        }
+        one = buffer.push(heap, one, byte_of(c));
+        i = i + 1;
+    }
+    var o = out;
+    borrow one as &oner in {
+        let t = buffer.bytes(oner);
+        var j = 0;
+        while j < len(t) {
+            let c = int_of(t[j]);
+            if j > 0 && bytes.is_upper(c) && (bytes.is_lower(int_of(t[j - 1])) || bytes.is_digit(int_of(t[j - 1]))) {
+                o = buffer.push(heap, o, byte_of('_'));
+            }
+            o = buffer.push(heap, o, byte_of(bytes.to_lower(c)));
+            j = j + 1;
+        }
+    }
+    buffer.drop(heap, one);
+    return o;
+}
+
+// The same, with `-` for `_` (`snake.replace("_", "-")`).
+fn put_dashed[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    let word = put_snake(heap, buffer.empty(heap, 32), src, a, e);
+    var o = out;
+    borrow word as &wr in {
+        let t = buffer.bytes(wr);
+        var i = 0;
+        while i < len(t) {
+            if int_of(t[i]) == '_' {
+                o = buffer.push(heap, o, byte_of('-'));
+            } else {
+                o = buffer.push(heap, o, t[i]);
+            }
+            i = i + 1;
+        }
+    }
+    buffer.drop(heap, word);
+    return o;
+}
+
+// ---- what the fragment can spell ----------------------------------------
+
+// ASCII, no backslash (a JSON escape is not decoded in a span) and no control byte.
+fn is_plain[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    var i = a;
+    while i < e {
+        let c = int_of(src[i]);
+        if c >= 128 || c == '\\' || c < 32 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A comment ends at `*/`; a `/*` inside one is only text to dtc (it is not nested, and no compiler warns of it), so it is allowed.
+fn no_comment_end[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    var i = a;
+    while i + 1 < e {
+        if int_of(src[i]) == '*' && int_of(src[i + 1]) == '/' {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn offset_value[&s](src: &s [byte], a: int, e: int) -> [] hexval.Hv {
+    return hexval.parse(src[a..e]);
+}
+
+// The major of the schema version: the text before the first `.`, or all of it. -1 .. -1 when the
+// IR carries the constant the text form implies (`0.1.0`, so `0`).
+fn major_end[&s](src: &s [byte], a: int, e: int) -> [] int {
+    var i = a;
+    while i < e && int_of(src[i]) != '.' {
+        i = i + 1;
+    }
+    return i;
+}
+
+// The first thing in the IR a checked contract does not have, as the message; empty when none.
+fn unusable[&h, &s, &q](heap: &!h Heap, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    if b.width < 0 || b.big {
+        return gc.internal_text(heap, "the bus width is not a number a register can be sized from");
+    }
+    if !hexval.parse(src[b.base_s..b.base_e]).ok {
+        return gc.internal_text(heap, "the base address is not a number");
+    }
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        if !offset_value(src, r.off_s, r.off_e).ok {
+            return gc.internal_text(heap, "a register offset is not a number");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.intrs) {
+        if vec.get(ir.intrs, i).number < 0 {
+            return gc.internal_text(heap, "an interrupt has no number");
+        }
+        i = i + 1;
+    }
+    return buffer.empty(heap, 1);
+}
+
+// The first name or text the fragment cannot carry; empty when there is none.
+fn unspellable[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    if !gc.is_identifier(src, b.name_s, b.name_e) || !is_plain(src, b.name_s, b.name_e) {
+        return gc.refusal(heap, src, b.name_s, b.name_e, "the block name", "is not a device-tree label (an ASCII identifier), and the generator does not mangle names");
+    }
+    var i = 0;
+    while i < vec.size(ir.intrs) {
+        let n = vec.get(ir.intrs, i);
+        if !no_comment_end(src, n.name_s, n.name_e) || !is_plain(src, n.name_s, n.name_e) {
+            return gc.refusal(heap, src, n.name_s, n.name_e, "the interrupt name", "cannot be written inside a comment as it stands (an escape, a non-ASCII byte, or `*/`)");
+        }
+        i = i + 1;
+    }
+    if b.ver_s >= 0 && !is_plain(src, b.ver_s, b.ver_e) {
+        return gc.refusal(heap, src, b.ver_s, b.ver_e, "the schema version", "cannot be written inside a string as it stands (an escape or a non-ASCII byte)");
+    }
+    if !no_comment_end(path, 0, len(path)) {
+        return gc.refusal(heap, path, 0, len(path), "the source path", "cannot be written inside a comment as it stands");
+    }
+    return buffer.empty(heap, 1);
+}
+
+// ---- the fragment -------------------------------------------------------
+
+fn put_indent[&h](heap: &!h Heap, out: buffer.Buffer, levels: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = 0;
+    while i < levels {
+        o = buffer.append(heap, o, "    ");
+        i = i + 1;
+    }
+    return o;
+}
+
+// The `interrupts = ...;` property and the comments that follow it.
+fn put_interrupts[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let n = vec.size(ir.intrs);
+    if n == 0 {
+        return out;
+    }
+    let b = ir.block;
+    var o = gc.put(heap, put_indent(heap, out, 2), "interrupt-parent = <&intc>;\n");
+    var i = 0;
+    while i < n {
+        let x = vec.get(ir.intrs, i);
+        if i == 0 {
+            o = gc.put(heap, put_indent(heap, o, 2), "interrupts = ");
+        } else {
+            o = gc.put(heap, put_indent(heap, o, 2), "             ");
+        }
+        o = gc.put_int(heap, gc.put(heap, o, "<"), x.number);
+        o = gc.put(heap, o, " 4>");
+        if i + 1 < n {
+            o = gc.put(heap, o, ",\n");
+        } else {
+            o = gc.put(heap, o, ";\n");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < n {
+        let x = vec.get(ir.intrs, i);
+        o = gc.put_span(heap, gc.put(heap, put_indent(heap, o, 2), "/* chw:"), src, b.name_s, b.name_e);
+        o = gc.put_span(heap, gc.put(heap, o, ".interrupt."), src, x.name_s, x.name_e);
+        o = gc.put_int(heap, gc.put(heap, o, ", IRQ "), x.number);
+        o = gc.put(heap, o, " */\n");
+        i = i + 1;
+    }
+    return o;
+}
+
+// The fragment of `ir` (whose spans index `src`), named `path` in the banner.
+pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] (buffer.Buffer, int) {
+    let b = ir.block;
+    let nregs = vec.size(ir.regs);
+    // The Python tool's refusals come first, as its order is: no registers, then a base that does not fit.
+    if nregs == 0 {
+        return (gc.internal_text(heap, "devicetree fragment with zero registers: the reg range is undefined; declare at least one register"), status_refused());
+    }
+    let bad = unusable(heap, src, ir);
+    var fine = false;
+    borrow bad as &br in {
+        fine = gc.is_empty(br);
+    }
+    if !fine {
+        return (bad, status_internal());
+    }
+    buffer.drop(heap, bad);
+    var max_offset = 0;
+    var i = 0;
+    while i < nregs {
+        let r = vec.get(ir.regs, i);
+        let hv = offset_value(src, r.off_s, r.off_e);
+        if hv.big {
+            return (gc.refusal(heap, src, r.off_s, r.off_e, "the register offset", "is past 2^60, which the generator cannot size a reg range from"), status_refused());
+        }
+        if hv.v > max_offset {
+            max_offset = hv.v;
+        }
+        i = i + 1;
+    }
+    let base = hexval.parse(src[b.base_s..b.base_e]);
+    if base.big || base.v > 4294967295 {
+        var m = gc.put(heap, buffer.empty(heap, 128), "base_address 0x");
+        m = put_upper_canon(heap, m, src, b.base_s, b.base_e);
+        m = gc.put(heap, m, " does not fit a single 32-bit address cell (#address-cells = <1>); refusing, not widening");
+        return (m, status_refused());
+    }
+    let refused = unspellable(heap, src, path, ir);
+    borrow refused as &rr in {
+        fine = gc.is_empty(rr);
+    }
+    if !fine {
+        return (refused, status_refused());
+    }
+    buffer.drop(heap, refused);
+    let size = max_offset + b.width / 8;
+    var o = gc.put(heap, buffer.empty(heap, 512), "/* Generated by cancho-hdl from ");
+    o = gc.put(heap, gc.put(heap, o, path), ". Do not edit. */\n&soc {\n    ");
+    o = put_snake(heap, o, src, b.name_s, b.name_e);
+    o = gc.put(heap, o, ": ");
+    o = put_snake(heap, o, src, b.name_s, b.name_e);
+    o = put_upper_hex(heap, gc.put(heap, o, "@"), base.v);
+    o = gc.put(heap, o, " {\n        /* chw:");
+    o = gc.put_span(heap, o, src, b.name_s, b.name_e);
+    o = gc.put(heap, o, " */\n        compatible = \"cancho,");
+    o = put_dashed(heap, o, src, b.name_s, b.name_e);
+    o = gc.put(heap, o, "-v");
+    if b.ver_s < 0 {
+        o = gc.put(heap, o, "0");
+    } else {
+        o = gc.put_span(heap, o, src, b.ver_s, major_end(src, b.ver_s, b.ver_e));
+    }
+    o = gc.put(heap, o, "\";\n        reg = <");
+    o = put_hex(heap, o, base.v);
+    o = put_hex(heap, gc.put(heap, o, " "), size);
+    o = gc.put(heap, o, ">;\n");
+    o = put_interrupts(heap, o, src, ir);
+    o = gc.put(heap, o, "        #address-cells = <1>;\n        #size-cells = <1>;\n        bus-width = <");
+    o = gc.put_int(heap, o, b.width);
+    return (gc.put(heap, o, ">;\n    };\n};\n"), status_ok());
+}

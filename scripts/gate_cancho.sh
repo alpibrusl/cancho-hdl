@@ -29,7 +29,7 @@ set -eu
 cd "$(dirname "$0")/.."
 CANCHO=${CANCHO:-../cancho/target/release/cancho}
 OUT=${TMPDIR:-/tmp}/chw
-LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho"
+LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho"
 PROGRAM="src/main.cho $LIB src/io.cho src/conform.cho"
 
 echo "== 1 fmt"
