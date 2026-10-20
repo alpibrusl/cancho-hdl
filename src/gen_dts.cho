@@ -68,7 +68,7 @@ fn put_upper_canon[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a
 // expressions: a capital that follows a capital and precedes a lower-case letter starts a word
 // (`HTTPServer` -> `HTTP_Server`), then a capital that follows a lower-case letter or a digit does
 // (`Server2Name` -> `Server2_Name`). The names it is given are ASCII (`unspellable`).
-fn put_snake[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+pub fn put_snake[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
     var one = buffer.empty(heap, 32);
     var i = a;
     while i < e {
@@ -119,7 +119,7 @@ fn put_dashed[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int
 // ---- what the fragment can spell ----------------------------------------
 
 // ASCII, no backslash (a JSON escape is not decoded in a span) and no control byte.
-fn is_plain[&s](src: &s [byte], a: int, e: int) -> [] bool {
+pub fn is_plain[&s](src: &s [byte], a: int, e: int) -> [] bool {
     var i = a;
     while i < e {
         let c = int_of(src[i]);
