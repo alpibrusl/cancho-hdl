@@ -28,6 +28,8 @@
 #                                    bytes on every fixture and mutant, documents checked with xmllint
 #  8f the cancho-binding generator  `chw generate --target cancho-binding` against tools/generate/generate.py:
 #                                    bytes on every fixture and mutant (no compiler for the output: the Python bytes are the oracle)
+#  8g the SystemVerilog generator   `chw generate --target systemverilog` against tools/generate/generate.py:
+#                                    bytes on every fixture and mutant (no RTL tool on the runner: the Python bytes are the oracle)
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -35,7 +37,7 @@ set -eu
 cd "$(dirname "$0")/.."
 CANCHO=${CANCHO:-../cancho/target/release/cancho}
 OUT=${TMPDIR:-/tmp}/chw
-LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho src/gen_svd.cho src/gen_binding.cho"
+LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho src/gen_svd.cho src/gen_binding.cho src/gen_sv.cho"
 PROGRAM="src/main.cho $LIB src/io.cho src/conform.cho"
 
 echo "== 1 fmt"
@@ -136,6 +138,10 @@ python3 tests/differential/generate_svd.py "$OUT"
 echo "== 8f the cancho-binding generator against generate.py"
 # No tool parses the output, so the Python tool's bytes are the only oracle (docs/cancho-port.md 26.1).
 python3 tests/differential/generate_binding.py "$OUT"
+
+echo "== 8g the SystemVerilog generator against generate.py"
+# No RTL tool is installed, so the Python tool's bytes are the only oracle (docs/cancho-port.md 29.1).
+python3 tests/differential/generate_sv.py "$OUT"
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"

@@ -1,0 +1,480 @@
+module chw.gen_sv;
+
+// gen_sv.cho -- `gen/systemverilog/systemverilog.py`: the AXI4-Lite register module of a checked contract
+// (docs/cancho-port.md, 29). A pure function of the IR and the bytes its spans index; it prints nothing and opens
+// nothing. The line order, the spaces and the comments are the Python generator's, because the oracle is its bytes.
+//
+// Answers the text and a status, as `gen_c.generate` does: 0 the module, 1 a refusal (`generator-unimplemented`,
+// text is the message), 3 `internal` (an IR the checker would have refused). The Python tool has no refusal of its
+// own; the only refusal here is this port's narrowing of names. Never partial text, never a trap.
+
+import std.buffer;
+import std.bytes;
+import std.vec;
+import chw.gen_c as gc;
+import chw.gen_dts as gd;
+import chw.hexval;
+import chw.ir as model;
+import chw.pyrepr;
+
+pub fn status_ok() -> [] int {
+    return 0;
+}
+
+pub fn status_refused() -> [] int {
+    return 1;
+}
+
+pub fn status_internal() -> [] int {
+    return 3;
+}
+
+// ---- the fixed text -----------------------------------------------------
+
+fn sv_banner_tail() -> [] &static [byte] {
+    return "// Synthesis output is a Trust boundary (see docs/guarantees.md).\n`default_nettype none\n\n";
+}
+
+fn sv_param_addr() -> [] &static [byte] {
+    return "    parameter ADDR_WIDTH = 32,\n";
+}
+
+fn sv_ports() -> [] &static [byte] {
+    return ") (\n    input  wire                       clk,\n    input  wire                       rst_n,\n\n    // AXI4-Lite write address channel\n    input  wire [ADDR_WIDTH-1:0]      s_axi_awaddr,\n    input  wire                       s_axi_awvalid,\n    output wire                       s_axi_awready,\n\n    // AXI4-Lite write data channel\n    input  wire [DATA_WIDTH-1:0]      s_axi_wdata,\n    input  wire [DATA_WIDTH/8-1:0]    s_axi_wstrb,\n    input  wire                       s_axi_wvalid,\n    output wire                       s_axi_wready,\n\n    // AXI4-Lite write response channel\n    output wire [1:0]                 s_axi_bresp,\n    output wire                       s_axi_bvalid,\n    input  wire                       s_axi_bready,\n\n    // AXI4-Lite read address channel\n    input  wire [ADDR_WIDTH-1:0]      s_axi_araddr,\n    input  wire                       s_axi_arvalid,\n    output wire                       s_axi_arready,\n\n    // AXI4-Lite read data channel\n    output wire [DATA_WIDTH-1:0]      s_axi_rdata,\n    output wire [1:0]                 s_axi_rresp,\n    output wire                       s_axi_rvalid,\n    input  wire                       s_axi_rready,\n\n";
+}
+
+fn sv_ports_end() -> [] &static [byte] {
+    return ");\n\n";
+}
+
+fn sv_storage_hdr() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // Internal storage\n    // ----------------------------------------------------------------\n";
+}
+
+fn sv_behav_hdr() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // Behavior ports: live register values for user to wire up\n    // ----------------------------------------------------------------\n";
+}
+
+fn sv_reset_hdr() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // Reset: apply contract reset values\n    // ----------------------------------------------------------------\n    always @(posedge clk) begin\n        if (!rst_n) begin\n";
+}
+
+fn sv_reset_end() -> [] &static [byte] {
+    return "        end\n    end\n\n";
+}
+
+fn sv_write_hdr() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // Write logic: per-register decode and access-kind handling\n    // ----------------------------------------------------------------\n";
+}
+
+fn sv_always_open() -> [] &static [byte] {
+    return "    always @(posedge clk) begin\n";
+}
+
+fn sv_always_close() -> [] &static [byte] {
+    return "    end\n\n";
+}
+
+fn sv_read_hdr() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // Read mux: per-register one-hot decode\n    // ----------------------------------------------------------------\n";
+}
+
+fn sv_read_body() -> [] &static [byte] {
+    return "    reg [DATA_WIDTH-1:0] rdata;\n    reg                  rdata_valid;\n    always @(*) begin\n        rdata = DATA_WIDTH'h0;\n        rdata_valid = 1'b0;\n";
+}
+
+fn sv_read_close() -> [] &static [byte] {
+    return "    end\n\n";
+}
+
+fn sv_handshake() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // AXI4-Lite handshake (simplified one-cycle response)\n    // ----------------------------------------------------------------\n    assign s_axi_awready = s_axi_awvalid;\n    assign s_axi_wready  = s_axi_wvalid;\n    assign s_axi_bvalid  = s_axi_awvalid && s_axi_wvalid;\n    assign s_axi_bresp   = 2'b00;  // OKAY\n\n    assign s_axi_arready = s_axi_arvalid;\n    assign s_axi_rdata   = rdata;\n    assign s_axi_rvalid  = rdata_valid;\n    assign s_axi_rresp   = 2'b00;  // OKAY\n\n";
+}
+
+fn sv_tail() -> [] &static [byte] {
+    return "endmodule\n\n`default_nettype wire\n";
+}
+
+// ---- names and numbers --------------------------------------------------
+
+// `_to_lower_snake`: one pass. An underscore before a capital that follows a lower-case letter, or that ends a run of
+// capitals before a lower-case letter; no rule for digits. Not the device tree's two passes (docs/cancho-port.md 29.3).
+fn put_snake[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = a;
+    while i < e {
+        let c = int_of(src[i]);
+        if bytes.is_upper(c) && i > a {
+            let prev_lower = bytes.is_lower(int_of(src[i - 1]));
+            let end_of_run = i + 1 < e && bytes.is_upper(int_of(src[i - 1])) && bytes.is_lower(int_of(src[i + 1]));
+            if prev_lower || end_of_run {
+                o = buffer.push(heap, o, byte_of('_'));
+            }
+        }
+        o = buffer.push(heap, o, byte_of(bytes.to_lower(c)));
+        i = i + 1;
+    }
+    return o;
+}
+
+// The digits of the literal at `a..e` as lower-case hex, exact past 2^60, left-padded with zeros to `min` digits.
+fn put_hex_digits[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int, min: int) -> [heap] buffer.Buffer {
+    let low = hexval.canon_into(heap, buffer.empty(heap, 24), src[a..e]);
+    var o = out;
+    borrow low as &lr in {
+        var pad = min - len(buffer.bytes(lr));
+        while pad > 0 {
+            o = buffer.push(heap, o, byte_of('0'));
+            pad = pad - 1;
+        }
+        o = buffer.append(heap, o, buffer.bytes(lr));
+    }
+    buffer.drop(heap, low);
+    return o;
+}
+
+fn span_ok[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    return a >= 0 && a <= e && e <= len(src);
+}
+
+// Every span the generator reads indexes the source and the tables are in range: a checked contract has this.
+fn usable[&s, &q](src: &s [byte], ir: &q model.Ir) -> [] bool {
+    let b = ir.block;
+    if !span_ok(src, b.name_s, b.name_e) || !span_ok(src, b.base_s, b.base_e) || b.width < 0 {
+        return false;
+    }
+    if !hexval.parse(src[b.base_s..b.base_e]).ok {
+        return false;
+    }
+    let nfields = vec.size(ir.fields);
+    let nenums = vec.size(ir.enums);
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        if !span_ok(src, r.name_s, r.name_e) || !span_ok(src, r.off_s, r.off_e) || !span_ok(src, r.kind_s, r.kind_e) || r.reset_s >= 0 && !span_ok(src, r.reset_s, r.reset_e) {
+            return false;
+        }
+        if !hexval.parse(src[r.off_s..r.off_e]).ok || r.reset_s >= 0 && !hexval.parse(src[r.reset_s..r.reset_e]).ok {
+            return false;
+        }
+        if r.first < 0 || r.n < 0 || r.first + r.n > nfields {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < nfields {
+        let f = vec.get(ir.fields, i);
+        if !span_ok(src, f.name_s, f.name_e) {
+            return false;
+        }
+        if f.has_enum && (f.enum_first < 0 || f.enum_n < 0 || f.enum_first + f.enum_n > nenums) {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < nenums {
+        if !span_ok(src, vec.get(ir.enums, i).name_s, vec.get(ir.enums, i).name_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The first name the module cannot carry (this port's narrowing of the Python tool); empty when none.
+fn unspellable[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    if !gd.is_plain(src, b.name_s, b.name_e) {
+        return gc.refusal(heap, src, b.name_s, b.name_e, "the block name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+    }
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        if !gd.is_plain(src, r.name_s, r.name_e) {
+            return gc.refusal(heap, src, r.name_s, r.name_e, "the register name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.fields) {
+        let f = vec.get(ir.fields, i);
+        if !gd.is_plain(src, f.name_s, f.name_e) {
+            return gc.refusal(heap, src, f.name_s, f.name_e, "the field name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.enums) {
+        let e = vec.get(ir.enums, i);
+        if !gd.is_plain(src, e.name_s, e.name_e) {
+            return gc.refusal(heap, src, e.name_s, e.name_e, "the enum label", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    if !gd.is_plain(path, 0, len(path)) {
+        return gc.refusal(heap, path, 0, len(path), "the source path", "cannot be written as it stands (a control byte or a non-ASCII byte)");
+    }
+    return buffer.empty(heap, 1);
+}
+
+// ---- pieces the lines share ---------------------------------------------
+
+// `// chw:<block>.register.<name>`'s id, without the comment marker: `chw:<block>.register.<name>`.
+fn put_register_id[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    var o = gc.put_span(heap, gc.put(heap, out, "chw:"), src, b.name_s, b.name_e);
+    return gc.put_span(heap, gc.put(heap, o, ".register."), src, r.name_s, r.name_e);
+}
+
+fn put_block_snake[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    return put_snake(heap, out, src, ir.block.name_s, ir.block.name_e);
+}
+
+// The condition of a register's write: the address match, the address and the data valid.
+fn put_write_cond[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
+    var o = put_block_snake(heap, gc.put(heap, out, "aw_match_"), src, ir);
+    o = gc.put(heap, o, " && (s_axi_awaddr == ADDR_");
+    o = gc.put_span(heap, o, src, r.name_s, r.name_e);
+    return gc.put(heap, o, ") && s_axi_wvalid");
+}
+
+// `r_<snake> <= <rhs>;`'s line start: `        if (<cond>) r_<snake> <= `.
+fn put_write_head[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
+    var o = put_write_cond(heap, gc.put(heap, out, "        if ("), src, ir, r);
+    o = put_snake(heap, gc.put(heap, o, ") r_"), src, r.name_s, r.name_e);
+    return gc.put(heap, o, " <= ");
+}
+
+fn put_snake_register[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], r: model.Reg) -> [heap] buffer.Buffer {
+    return put_snake(heap, out, src, r.name_s, r.name_e);
+}
+
+// ---- the sections -------------------------------------------------------
+
+fn put_write_logic[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
+    let kind = src[r.kind_s..r.kind_e];
+    var o = gc.put(heap, out, "        // ");
+    o = put_register_id(heap, o, src, ir, r);
+    o = gc.put_span(heap, gc.put(heap, o, " (kind="), src, r.kind_s, r.kind_e);
+    o = gc.put(heap, o, ")\n");
+    if bytes.equal(kind, "RO") {
+        o = gc.put(heap, o, "        // RO: writes are silently dropped. This is a Trust-tier behavioural choice; the checker flags WO/RO misuse.\n");
+        o = put_snake_register(heap, gc.put(heap, o, "        if (1'b0) r_"), src, r);
+        o = put_snake_register(heap, gc.put(heap, o, " <= r_"), src, r);
+        return gc.put(heap, o, ";  // no-op\n");
+    }
+    if bytes.equal(kind, "RW") || bytes.equal(kind, "WO") {
+        return gc.put(heap, put_write_head(heap, o, src, ir, r), "s_axi_wdata;\n");
+    }
+    if bytes.equal(kind, "W1C") || bytes.equal(kind, "W0S") {
+        o = put_snake_register(heap, gc.put(heap, put_write_head(heap, o, src, ir, r), "r_"), src, r);
+        return gc.put(heap, o, " & ~s_axi_wdata;\n");
+    }
+    if bytes.equal(kind, "W0C") {
+        o = put_snake_register(heap, gc.put(heap, put_write_head(heap, o, src, ir, r), "r_"), src, r);
+        return gc.put(heap, o, " & s_axi_wdata;\n");
+    }
+    if bytes.equal(kind, "W1S") {
+        o = put_snake_register(heap, gc.put(heap, put_write_head(heap, o, src, ir, r), "r_"), src, r);
+        return gc.put(heap, o, " | s_axi_wdata;\n");
+    }
+    if bytes.equal(kind, "RC") {
+        return gc.put(heap, put_write_head(heap, o, src, ir, r), "DATA_WIDTH'h0;  // RC: read clears, write has no effect\n");
+    }
+    o = gc.put(heap, o, "        // Unknown kind ");
+    o = pyrepr.str_repr(heap, o, kind);
+    return gc.put(heap, o, "; no write logic emitted.\n");
+}
+
+fn put_read_branch[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
+    var o = put_block_snake(heap, gc.put(heap, out, "        if (ar_match_"), src, ir);
+    o = gc.put(heap, o, " && (s_axi_araddr == ADDR_");
+    o = gc.put_span(heap, o, src, r.name_s, r.name_e);
+    o = gc.put(heap, o, ")) begin\n");
+    if bytes.equal(src[r.kind_s..r.kind_e], "WO") {
+        o = gc.put(heap, o, "            // WO register: reads return 0 (the spec notes this is a write-only register).\n");
+        o = gc.put(heap, o, "            rdata = DATA_WIDTH'h0;\n");
+    } else {
+        o = put_snake_register(heap, gc.put(heap, o, "            rdata = r_"), src, r);
+        o = gc.put(heap, o, ";\n");
+    }
+    return gc.put(heap, o, "            rdata_valid = 1'b1;\n        end\n");
+}
+
+// The module of `ir` (whose spans index `src`), named `path` in the banner.
+pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] (buffer.Buffer, int) {
+    if !usable(src, ir) {
+        return (gc.internal_text(heap, "a name or number of the contract is not usable: outside the source text, or not a number"), status_internal());
+    }
+    let b = ir.block;
+    let nregs = vec.size(ir.regs);
+    var i = 0;
+    while i < nregs {
+        let r = vec.get(ir.regs, i);
+        if hexval.parse(src[r.off_s..r.off_e]).big {
+            return (gc.refusal(heap, src, r.off_s, r.off_e, "the register offset", "is past 2^60, which the generator cannot order registers by"), status_refused());
+        }
+        i = i + 1;
+    }
+    let narrowed = unspellable(heap, src, path, ir);
+    var fine = false;
+    borrow narrowed as &nr in {
+        fine = gc.is_empty(nr);
+    }
+    if !fine {
+        return (narrowed, status_refused());
+    }
+    buffer.drop(heap, narrowed);
+    let keys = box_slice(heap, nregs + 1, 0);
+    borrow mut keys as &!kw in {
+        var k = 0;
+        while k < nregs {
+            let r = vec.get(ir.regs, k);
+            contents(kw)[k] = hexval.parse(src[r.off_s..r.off_e]).v;
+            k = k + 1;
+        }
+    }
+    let perm = gc.order_by(heap, keys, nregs);
+    var o = gc.put(heap, buffer.empty(heap, 4096), "// Generated by cancho-hdl from ");
+    borrow perm as &pr in {
+        o = gc.put(heap, gc.put(heap, o, path), ". Do not edit.\n// chw:");
+        o = gc.put_span(heap, o, src, b.name_s, b.name_e);
+        o = gc.put(heap, o, "\n");
+        o = gc.put(heap, o, sv_banner_tail());
+        o = put_block_snake(heap, gc.put(heap, o, "module "), src, ir);
+        o = gc.put(heap, o, "_axi #(\n");
+        o = gc.put(heap, o, sv_param_addr());
+        o = gc.put(heap, o, "   parameter DATA_WIDTH = ");
+        o = gc.put_int(heap, o, b.width);
+        o = gc.put(heap, o, "\n");
+        o = gc.put(heap, o, sv_ports());
+        var j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            o = put_snake_register(heap, gc.put(heap, o, "    output wire [DATA_WIDTH-1:0]      reg_"), src, r);
+            o = gc.put(heap, o, "_out,  // ");
+            o = put_register_id(heap, o, src, ir, r);
+            o = gc.put(heap, o, "\n");
+            j = j + 1;
+        }
+        o = gc.put(heap, o, sv_ports_end());
+        o = put_hex_digits(heap, gc.put(heap, o, "    // Base address from contract: 0x"), src, b.base_s, b.base_e, 8);
+        o = gc.put(heap, o, "\n    localparam [ADDR_WIDTH-1:0] BASE_ADDR = ");
+        o = gc.put_int(heap, o, b.width);
+        o = put_hex_digits(heap, gc.put(heap, o, "'h"), src, b.base_s, b.base_e, 8);
+        o = gc.put(heap, o, ";\n");
+        j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            o = gc.put_span(heap, gc.put(heap, o, "    localparam [ADDR_WIDTH-1:0] ADDR_"), src, r.name_s, r.name_e);
+            o = put_hex_digits(heap, gc.put(heap, o, " = ADDR_WIDTH'h"), src, r.off_s, r.off_e, 8);
+            o = gc.put(heap, o, ";  // ");
+            o = put_register_id(heap, o, src, ir, r);
+            o = gc.put(heap, o, "\n");
+            j = j + 1;
+        }
+        o = gc.put(heap, o, "\n");
+        j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            var k = 0;
+            while k < r.n {
+                let f = vec.get(ir.fields, r.first + k);
+                if f.has_enum {
+                    var x = 0;
+                    while x < f.enum_n {
+                        let en = vec.get(ir.enums, f.enum_first + x);
+                        o = gc.put_span(heap, gc.put(heap, o, "    localparam [DATA_WIDTH-1:0] "), src, r.name_s, r.name_e);
+                        o = gc.put_span(heap, gc.put(heap, o, "_"), src, f.name_s, f.name_e);
+                        o = put_upper(heap, gc.put(heap, o, "_"), src, en.name_s, en.name_e);
+                        o = gc.put_int(heap, gc.put(heap, o, " = "), b.width);
+                        o = gc.put_int(heap, gc.put(heap, o, "'d"), en.value);
+                        o = gc.put(heap, o, ";\n");
+                        x = x + 1;
+                    }
+                }
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        o = gc.put(heap, o, "\n");
+        o = gc.put(heap, o, sv_storage_hdr());
+        j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            o = put_register_id(heap, gc.put(heap, o, "    // "), src, ir, r);
+            o = put_snake_register(heap, gc.put(heap, o, "\n    reg [DATA_WIDTH-1:0] r_"), src, r);
+            o = gc.put(heap, o, ";\n");
+            j = j + 1;
+        }
+        o = gc.put(heap, gc.put(heap, o, "\n"), sv_behav_hdr());
+        j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            o = put_snake_register(heap, gc.put(heap, o, "    assign reg_"), src, r);
+            o = put_snake_register(heap, gc.put(heap, o, "_out = r_"), src, r);
+            o = gc.put(heap, o, ";\n");
+            j = j + 1;
+        }
+        o = gc.put(heap, gc.put(heap, o, "\n"), sv_reset_hdr());
+        j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            o = put_snake_register(heap, gc.put(heap, o, "            r_"), src, r);
+            if r.reset_s >= 0 {
+                o = gc.put(heap, o, " <= DATA_WIDTH'h");
+                o = put_hex_digits(heap, o, src, r.reset_s, r.reset_e, b.width / 4);
+                o = gc.put(heap, o, ";  // ");
+                o = put_register_id(heap, o, src, ir, r);
+                o = gc.put(heap, o, "\n");
+            } else {
+                o = gc.put(heap, o, " <= DATA_WIDTH'h0;  // ");
+                o = put_register_id(heap, o, src, ir, r);
+                o = gc.put(heap, o, " (reset undefined)\n");
+            }
+            j = j + 1;
+        }
+        o = gc.put(heap, o, sv_reset_end());
+        o = gc.put(heap, o, sv_write_hdr());
+        o = put_block_snake(heap, gc.put(heap, o, "    wire aw_match_"), src, ir);
+        o = gc.put(heap, o, ";\n    assign aw_match_");
+        o = put_block_snake(heap, o, src, ir);
+        o = gc.put(heap, o, " =\n        s_axi_awvalid && (s_axi_awaddr >= BASE_ADDR);\n\n");
+        o = gc.put(heap, o, sv_always_open());
+        j = 0;
+        while j < nregs {
+            o = put_write_logic(heap, o, src, ir, vec.get(ir.regs, contents(pr)[j]));
+            j = j + 1;
+        }
+        o = gc.put(heap, o, sv_always_close());
+        o = gc.put(heap, o, sv_read_hdr());
+        o = put_block_snake(heap, gc.put(heap, o, "    wire ar_match_"), src, ir);
+        o = gc.put(heap, o, ";\n    assign ar_match_");
+        o = put_block_snake(heap, o, src, ir);
+        o = gc.put(heap, o, " =\n        s_axi_arvalid && (s_axi_araddr >= BASE_ADDR);\n\n");
+        o = gc.put(heap, o, sv_read_body());
+        j = 0;
+        while j < nregs {
+            o = put_read_branch(heap, o, src, ir, vec.get(ir.regs, contents(pr)[j]));
+            j = j + 1;
+        }
+        o = gc.put(heap, o, sv_read_close());
+        o = gc.put(heap, o, sv_handshake());
+        o = gc.put(heap, o, sv_tail());
+    }
+    unbox_slice(heap, perm);
+    return (o, status_ok());
+}
+
+// The span upper-cased (`str.upper()` on ASCII).
+fn put_upper[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = a;
+    while i < e {
+        o = buffer.push(heap, o, byte_of(bytes.to_upper(int_of(src[i]))));
+        i = i + 1;
+    }
+    return o;
+}

@@ -2174,3 +2174,61 @@ does); the seven `plain-*` breaks and `plain-path` are killed by unit tests that
 
 * 26.4 estimated about 450 lines; it is 483 (27.1), the first estimate of the four that came close.
 * §23.6 and §24.6 said SystemVerilog and cancho-binding were not ported; cancho-binding is (SystemVerilog is not).
+
+---
+
+## 29. Stage 7 design: the SystemVerilog generator
+
+> **Status: design.** Written from reading `gen/systemverilog/systemverilog.py` (330 lines) and
+> `spec/generators/README.md` §5, with the four earlier generators (§17 to §28) as the pattern. What it measures is
+> §30, and a claim found false is corrected in §31.
+
+### 29.1 What this slice decides
+
+1. **Whether the shape carries the largest generator**, the one the spec names as the proposal's point (the AXI4-Lite
+   register block), and that is mostly fixed text rather than decisions about names.
+2. **What the oracle is when the output is real RTL and no RTL tool is on the machine.** `iverilog`, `verilator`,
+   `yosys` and `slang` are not installed here (the Python roundtrip `systemverilog_parses` runs a real parse only
+   "if one is on `$PATH`"). So, as for cancho-binding (§26.1), the oracle is the Python tool's bytes, and that has a
+   consequence this document states instead of hiding: **where both tools write invalid SystemVerilog, nothing
+   here will say so.** The CI image could install `iverilog` and run a parse as a second oracle; it is listed in 31 as
+   work, not claimed.
+
+It does **not** change what the generator emits.
+
+### 29.2 What the module is
+
+One module `<snake block>_axi` with an AXI4-Lite slave port set, a behaviour output port per register (in offset
+order), `localparam`s for the base, each register's address and each enum label, a `reg` per register, a reset block
+with the contract's reset values (`0` and a comment when there is none), a write block with one line per register
+whose form depends on the access kind, a read mux, and the simplified one-cycle handshake. The Python tool **has no
+refusal of its own**: whatever the checker passed is written.
+
+### 29.3 Where the port must be careful
+
+* **This generator's snake case is a third rule.** One pass: an underscore before a capital that follows a lower-case
+  letter, or that ends a capital run before a lower-case letter. No digit rule (`Server2Name` is `server2name`), unlike
+  the device tree's two passes (§20.3) and the C header's.
+* **Lower-case hex, zero-padded to 8 digits** for the base and each offset (`{x:08x}`), padded to `bus_width / 4` for a
+  reset; exact past 2^60 for a base. A register offset past 2^60 is refused (it cannot be ordered), as in SVD.
+* **Enum localparams are upper-cased labels** appended to `<register>_<field>_`, with `'d<value>` in the bus width, a
+  negative value written with its sign.
+* **`W0S` is written as `r & ~wdata`**, the same expression as `W1C`, and `W0C` as `r & wdata`: the Python tool's
+  choice, not the access-kind table of the spec. The port reproduces it and a correction note says so; it is not the
+  port's to change.
+* **An unknown kind writes a comment** quoting the kind with Python's `repr`; the checker refuses unknown kinds first.
+* **Names go into identifiers verbatim** (`ADDR_<Name>`, `<Reg>_<Field>_<LABEL>`). The Python tool writes anything; this
+  port refuses a name with a JSON escape or a non-ASCII byte (spans index undecoded text) and nothing else.
+
+### 29.4 Gate and size
+
+Step 8g of `scripts/gate_cancho.sh`. Budget, written before counting: about 550 lines against 330 of Python (the text
+is constant and a call per fragment costs about as much as the fragment, §14.7).
+
+### 29.5 The oracle, and what would make this slice fail
+
+The six tiers of §20.5: bytes on the 50 fixtures and the `check_json.py` mutants, hand-made inputs (every access
+kind, every width, resets, enums with negative values and mixed case, names that snake differently from the other
+generators, a big base, registers out of order), known classes admitted only for a stated structural reason, unit
+tests, and one deliberate break per decision. It fails if any difference is unexplained or a break survives without a
+stated reason.
