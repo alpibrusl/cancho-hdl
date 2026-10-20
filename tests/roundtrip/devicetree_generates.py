@@ -60,6 +60,15 @@ _snake = _devicetree_mod._snake
 FAILURES: list[str] = []
 
 
+# The tree a fragment is appended to for the `dtc` lane: the `soc` node and the `intc` interrupt controller it refers to.
+# (Until 2026-10-20 the lane parsed the bare fragment, which `dtc` rejects; it had never run, as no CI image had `dtc`.)
+DTS_TREE = (
+    "/dts-v1/;\n/ {\n    #address-cells = <1>;\n    #size-cells = <1>;\n"
+    "    soc: soc {\n        #address-cells = <1>;\n        #size-cells = <1>;\n    };\n"
+    "    intc: interrupt-controller {\n        interrupt-controller;\n        #interrupt-cells = <2>;\n    };\n};\n"
+)
+
+
 def expect(cond: bool, label: str, detail: str = "") -> None:
     if cond:
         print(f"  PASS  {label}")
@@ -128,7 +137,7 @@ def main() -> int:
         else:
             expect("interrupt" not in src, "no interrupt lines when none declared")
 
-    # dtc parse (when available)
+    # dtc parse (when available). The fragment refers to `&soc` and `&intc`, so it is appended to a tree that has them.
     dtc = shutil.which("dtc")
     if dtc:
         import tempfile
@@ -136,9 +145,9 @@ def main() -> int:
             ir, _ = load_contract(str(ROOT / rel))
             src = generate(ir, source_path=rel)
             with tempfile.NamedTemporaryFile(suffix=".dts", mode="w") as fh:
-                fh.write(src)
+                fh.write(DTS_TREE + src)
                 fh.flush()
-                proc = subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-q", fh.name],
+                proc = subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-q", "-o", "/dev/null", fh.name],
                                       capture_output=True, text=True)
                 expect(proc.returncode == 0, f"{rel}: dtc parses the fragment",
                        proc.stderr[:400])

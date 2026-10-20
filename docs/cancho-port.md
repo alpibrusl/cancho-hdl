@@ -1875,3 +1875,8 @@ killed 28 of 32; the four survivors were each a finding:
 * 20.2 listed no refusal for an interrupt without a number; there is one, `internal`, after Python's two refusals
   (21.3, 2).
 * §18.6 said four generators were not ported; three are not (§21.6).
+* The Python reference gate's `devicetree roundtrip` has a `dtc` lane (`tests/roundtrip/devicetree_generates.py`) that
+  parsed the bare fragment, which `dtc` rejects (`&soc {` is not a tree). It had never run: no image the project ran on had
+  `dtc`, so it printed "NOTE dtc not on $PATH". Installing `dtc` for gate step 8d turned it on and CI failed at once
+  (found by CI, not locally: the local gate does not run the Python reference). The lane now appends the fragment to the
+  same small tree as step 8d, and the test says so.
