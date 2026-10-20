@@ -1,0 +1,483 @@
+module chw.gen_binding;
+
+// gen_binding.cho -- `gen/cancho-binding/cancho_binding.py`: the typed accessor declarations of a checked contract
+// (docs/cancho-port.md, 26). A pure function of the IR and the bytes its spans index; it prints nothing and opens
+// nothing. The line order, the spaces and the comments are the Python generator's, because the oracle is its bytes.
+//
+// Answers the text and a status, as `gen_c.generate` does: 0 the declarations, 1 a refusal
+// (`generator-unimplemented`, text is the message), 3 `internal` (an IR the checker would have refused).
+// Never partial text, never a trap.
+
+import std.buffer;
+import std.bytes;
+import std.map;
+import std.vec;
+import chw.gen_c as gc;
+import chw.gen_dts as gd;
+import chw.gen_svd as gs;
+import chw.hexval;
+import chw.ir as model;
+import chw.pyrepr;
+
+pub fn status_ok() -> [] int {
+    return 0;
+}
+
+pub fn status_refused() -> [] int {
+    return 1;
+}
+
+pub fn status_internal() -> [] int {
+    return 3;
+}
+
+// ---- names --------------------------------------------------------------
+
+// `_pascal`: the snake form of the span split on `_`, each part's first letter upper-cased.
+fn put_pascal[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    let snake = gd.put_snake(heap, buffer.empty(heap, 32), src, a, e);
+    var o = out;
+    borrow snake as &sr in {
+        let t = buffer.bytes(sr);
+        var start = true;
+        var i = 0;
+        while i < len(t) {
+            let c = int_of(t[i]);
+            if c == '_' {
+                start = true;
+            } else if start {
+                o = buffer.push(heap, o, byte_of(bytes.to_upper(c)));
+                start = false;
+            } else {
+                o = buffer.push(heap, o, byte_of(c));
+            }
+            i = i + 1;
+        }
+    }
+    buffer.drop(heap, snake);
+    return o;
+}
+
+// The span at `a..e`, snake-cased.
+fn put_snaked[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    return gd.put_snake(heap, out, src, a, e);
+}
+
+// ---- the IR the generator can use ---------------------------------------
+
+fn span_ok[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    return a >= 0 && a <= e && e <= len(src);
+}
+
+// Every span the generator reads indexes the source, and the tables are in range: a checked contract has this; an IR left
+// by a parse that failed, or built by hand, may not.
+fn usable[&s, &q](src: &s [byte], ir: &q model.Ir) -> [] bool {
+    let b = ir.block;
+    if !span_ok(src, b.name_s, b.name_e) || !span_ok(src, b.base_s, b.base_e) || b.width < 0 {
+        return false;
+    }
+    if !hexval.parse(src[b.base_s..b.base_e]).ok {
+        return false;
+    }
+    let nfields = vec.size(ir.fields);
+    let nenums = vec.size(ir.enums);
+    let ndf = vec.size(ir.dfields);
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        if !span_ok(src, r.name_s, r.name_e) || !span_ok(src, r.kind_s, r.kind_e) || r.first < 0 || r.n < 0 || r.first + r.n > nfields {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < nfields {
+        let f = vec.get(ir.fields, i);
+        if !span_ok(src, f.name_s, f.name_e) || f.lsb < 0 || f.msb < 0 {
+            return false;
+        }
+        if f.has_enum && (f.enum_first < 0 || f.enum_n < 0 || f.enum_first + f.enum_n > nenums) {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < nenums {
+        if !span_ok(src, vec.get(ir.enums, i).name_s, vec.get(ir.enums, i).name_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.intrs) {
+        if !span_ok(src, vec.get(ir.intrs, i).name_s, vec.get(ir.intrs, i).name_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.bufs) {
+        let d = vec.get(ir.bufs, i);
+        if !span_ok(src, d.name_s, d.name_e) || d.first < 0 || d.n < 0 || d.first + d.n > ndf {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < ndf {
+        let d = vec.get(ir.dfields, i);
+        if !span_ok(src, d.name_s, d.name_e) || d.owner_s >= 0 && !span_ok(src, d.owner_s, d.owner_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// ---- what a register kind allows ----------------------------------------
+
+// (known, get, clear, set)
+fn kind_ops[&s](src: &s [byte], a: int, e: int) -> [] (bool, bool, bool, bool) {
+    let k = src[a..e];
+    if bytes.equal(k, "RO") || bytes.equal(k, "RC") {
+        return (true, true, false, false);
+    }
+    if bytes.equal(k, "WO") || bytes.equal(k, "W1S") || bytes.equal(k, "W0S") {
+        return (true, false, false, true);
+    }
+    if bytes.equal(k, "RW") {
+        return (true, true, false, true);
+    }
+    if bytes.equal(k, "W1C") || bytes.equal(k, "W0C") {
+        return (true, false, true, false);
+    }
+    return (false, false, false, false);
+}
+
+// A field is an enum when its enum has at least one label (an empty one is falsy in the Python tool).
+fn is_enum(f: model.Field) -> [] bool {
+    return f.has_enum && f.enum_n > 0;
+}
+
+fn same_labels[&s, &q](src: &s [byte], ir: &q model.Ir, a: model.Field, b: model.Field) -> [] bool {
+    if a.enum_n != b.enum_n {
+        return false;
+    }
+    var i = 0;
+    while i < a.enum_n {
+        let x = vec.get(ir.enums, a.enum_first + i);
+        let y = vec.get(ir.enums, b.enum_first + i);
+        if !bytes.equal(src[x.name_s..x.name_e], src[y.name_s..y.name_e]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// ---- refusals, in the order the Python tool meets them ------------------
+
+// The refusal, if any: an access kind with no mapping, or two enum fields whose names collide as types with different
+// label lists. Empty when there is none.
+fn refusal_found[&h, &s, &q](heap: &!h Heap, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    var declared = map.empty(heap, vec.size(ir.fields) + 1, 0, 17);
+    var out = buffer.empty(heap, 1);
+    var done = false;
+    var i = 0;
+    while i < vec.size(ir.regs) && !done {
+        let r = vec.get(ir.regs, i);
+        let (known, g, c, st) = kind_ops(src, r.kind_s, r.kind_e);
+        if !known {
+            var m = gc.put(heap, buffer.empty(heap, 64), "register kind ");
+            m = pyrepr.str_repr(heap, m, src[r.kind_s..r.kind_e]);
+            buffer.drop(heap, out);
+            out = gc.put(heap, m, " has no cancho accessor mapping");
+            done = true;
+        }
+        var k = 0;
+        while k < r.n && !done {
+            let f = vec.get(ir.fields, r.first + k);
+            if is_enum(f) {
+                let name = put_pascal(heap, buffer.empty(heap, 32), src, f.name_s, f.name_e);
+                borrow name as &nr in {
+                    var prev = 0 - 1;
+                    borrow declared as &dr in {
+                        prev = map.get(dr, buffer.bytes(nr), 0 - 1);
+                    }
+                    if prev >= 0 {
+                        if !same_labels(src, ir, vec.get(ir.fields, prev), f) {
+                            var m = gc.put(heap, buffer.empty(heap, 96), "two enum fields named ");
+                            m = pyrepr.str_repr(heap, m, src[f.name_s..f.name_e]);
+                            m = gc.put(heap, m, " carry different label sets; refusing to collide the type ");
+                            m = gc.put(heap, m, buffer.bytes(nr));
+                            buffer.drop(heap, out);
+                            out = m;
+                            done = true;
+                        }
+                    } else {
+                        declared = map.put(heap, declared, buffer.bytes(nr), r.first + k);
+                    }
+                }
+                buffer.drop(heap, name);
+            }
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    map.drop(heap, declared);
+    return out;
+}
+
+// The first name or text the declarations cannot carry (this port's narrowing of the Python tool); empty when none.
+fn unspellable[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    if !gd.is_plain(src, b.name_s, b.name_e) {
+        return gc.refusal(heap, src, b.name_s, b.name_e, "the block name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+    }
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        if !gd.is_plain(src, r.name_s, r.name_e) {
+            return gc.refusal(heap, src, r.name_s, r.name_e, "the register name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.fields) {
+        let f = vec.get(ir.fields, i);
+        if !gd.is_plain(src, f.name_s, f.name_e) {
+            return gc.refusal(heap, src, f.name_s, f.name_e, "the field name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.enums) {
+        let e = vec.get(ir.enums, i);
+        if !gd.is_plain(src, e.name_s, e.name_e) {
+            return gc.refusal(heap, src, e.name_s, e.name_e, "the enum label", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.intrs) {
+        let n = vec.get(ir.intrs, i);
+        if !gd.is_plain(src, n.name_s, n.name_e) {
+            return gc.refusal(heap, src, n.name_s, n.name_e, "the interrupt name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.bufs) {
+        let d = vec.get(ir.bufs, i);
+        if !gd.is_plain(src, d.name_s, d.name_e) {
+            return gc.refusal(heap, src, d.name_s, d.name_e, "the DMA buffer name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.dfields) {
+        let d = vec.get(ir.dfields, i);
+        if !gd.is_plain(src, d.name_s, d.name_e) {
+            return gc.refusal(heap, src, d.name_s, d.name_e, "the DMA field name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    if !gd.is_plain(path, 0, len(path)) {
+        return gc.refusal(heap, path, 0, len(path), "the source path", "cannot be written as it stands (a control byte or a non-ASCII byte)");
+    }
+    return buffer.empty(heap, 1);
+}
+
+// ---- the declarations ---------------------------------------------------
+
+// `bool`, an enum's name, or `u32` for the field.
+fn put_type[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], f: model.Field) -> [heap] buffer.Buffer {
+    if is_enum(f) {
+        return put_pascal(heap, out, src, f.name_s, f.name_e);
+    }
+    if f.msb - f.lsb + 1 == 1 {
+        return gc.put(heap, out, "bool");
+    }
+    return gc.put(heap, out, "u32");
+}
+
+fn put_register[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    let (known, can_get, can_clear, can_set) = kind_ops(src, r.kind_s, r.kind_e);
+    var o = out;
+    var k = 0;
+    while k < r.n {
+        let f = vec.get(ir.fields, r.first + k);
+        o = gc.put_span(heap, gc.put(heap, o, "    // chw:"), src, b.name_s, b.name_e);
+        o = gc.put_span(heap, gc.put(heap, o, ".register."), src, r.name_s, r.name_e);
+        o = gc.put_span(heap, gc.put(heap, o, ".field."), src, f.name_s, f.name_e);
+        o = gc.put(heap, o, "\n");
+        if can_get {
+            o = put_snaked(heap, gc.put(heap, o, "    fn "), src, r.name_s, r.name_e);
+            o = put_snaked(heap, gc.put(heap, o, "_"), src, f.name_s, f.name_e);
+            let bare = !is_enum(f) && f.msb - f.lsb + 1 == 1;
+            if !bare {
+                o = gc.put(heap, o, "_get");
+            }
+            o = put_type(heap, gc.put(heap, o, "() -> "), src, f);
+            o = gc.put(heap, o, ";\n");
+        }
+        if can_clear {
+            o = put_snaked(heap, gc.put(heap, o, "    fn "), src, r.name_s, r.name_e);
+            o = put_snaked(heap, gc.put(heap, o, "_"), src, f.name_s, f.name_e);
+            o = gc.put(heap, o, "_clear();\n");
+        }
+        if can_set {
+            o = put_snaked(heap, gc.put(heap, o, "    fn "), src, r.name_s, r.name_e);
+            o = put_snaked(heap, gc.put(heap, o, "_"), src, f.name_s, f.name_e);
+            o = put_type(heap, gc.put(heap, o, "_set(v: "), src, f);
+            o = gc.put(heap, o, ");\n");
+        }
+        k = k + 1;
+    }
+    return o;
+}
+
+fn put_interrupt[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, x: model.Intr) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    var o = gc.put_span(heap, gc.put(heap, out, "    // chw:"), src, b.name_s, b.name_e);
+    o = gc.put_span(heap, gc.put(heap, o, ".interrupt."), src, x.name_s, x.name_e);
+    o = put_pascal(heap, gc.put(heap, o, "\n    capability "), src, b.name_s, b.name_e);
+    o = put_pascal(heap, o, src, x.name_s, x.name_e);
+    o = gc.put(heap, o, "\n");
+    if model.has_key(x.order, 2) {
+        o = put_snaked(heap, gc.put(heap, o, "    fn "), src, x.name_s, x.name_e);
+        o = gc.put(heap, o, "_arm();\n");
+    }
+    if model.has_key(x.order, 3) {
+        o = put_snaked(heap, gc.put(heap, o, "    fn "), src, x.name_s, x.name_e);
+        o = gc.put(heap, o, "_status() -> bool;\n");
+    }
+    if model.has_key(x.order, 4) {
+        o = put_snaked(heap, gc.put(heap, o, "    fn "), src, x.name_s, x.name_e);
+        o = gc.put(heap, o, "_clear();\n");
+    }
+    return o;
+}
+
+fn put_buffer[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, buf: model.Buf) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    var o = gc.put_span(heap, gc.put(heap, out, "\n    // chw:"), src, b.name_s, b.name_e);
+    o = gc.put_span(heap, gc.put(heap, o, ".dma."), src, buf.name_s, buf.name_e);
+    o = gc.put_span(heap, gc.put(heap, o, "\n    buffer "), src, buf.name_s, buf.name_e);
+    o = gc.put(heap, o, " {\n");
+    var k = 0;
+    while k < buf.n {
+        let d = vec.get(ir.dfields, buf.first + k);
+        o = gc.put_span(heap, gc.put(heap, o, "        // chw:"), src, b.name_s, b.name_e);
+        o = gc.put_span(heap, gc.put(heap, o, ".dma."), src, buf.name_s, buf.name_e);
+        o = gc.put_span(heap, gc.put(heap, o, ".field."), src, d.name_s, d.name_e);
+        o = put_snaked(heap, gc.put(heap, o, "\n        fn "), src, d.name_s, d.name_e);
+        o = gc.put(heap, o, "() -> u32;\n");
+        if d.owner_s >= 0 && bytes.equal(src[d.owner_s..d.owner_e], "DEVICE") {
+            o = gc.put(heap, o, "        // no setter: DEVICE-owned (the field is the device's to write)\n");
+        } else {
+            o = put_snaked(heap, gc.put(heap, o, "        fn "), src, d.name_s, d.name_e);
+            o = gc.put(heap, o, "_set(v: u32);\n");
+        }
+        k = k + 1;
+    }
+    return gc.put(heap, o, "    }\n");
+}
+
+// The `enum` declarations, one per distinct enum field name, in the order the names first appear.
+fn put_enums[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    var declared = map.empty(heap, vec.size(ir.fields) + 1, 0, 17);
+    var o = out;
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        var k = 0;
+        while k < r.n {
+            let f = vec.get(ir.fields, r.first + k);
+            if is_enum(f) {
+                let name = put_pascal(heap, buffer.empty(heap, 32), src, f.name_s, f.name_e);
+                borrow name as &nr in {
+                    var seen = false;
+                    borrow declared as &dr in {
+                        seen = map.has(dr, buffer.bytes(nr));
+                    }
+                    if !seen {
+                        declared = map.put(heap, declared, buffer.bytes(nr), 1);
+                        o = gc.put(heap, gc.put(heap, o, "\nenum "), buffer.bytes(nr));
+                        o = gc.put(heap, o, " { ");
+                        var x = 0;
+                        while x < f.enum_n {
+                            if x > 0 {
+                                o = gc.put(heap, o, ", ");
+                            }
+                            let en = vec.get(ir.enums, f.enum_first + x);
+                            o = gc.put_span(heap, o, src, en.name_s, en.name_e);
+                            x = x + 1;
+                        }
+                        o = gc.put(heap, o, " }\n");
+                    }
+                }
+                buffer.drop(heap, name);
+            }
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    map.drop(heap, declared);
+    return o;
+}
+
+// The declarations of `ir` (whose spans index `src`), named `path` in the banner.
+pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] (buffer.Buffer, int) {
+    if !usable(src, ir) {
+        return (gc.internal_text(heap, "a name or number of the contract is not usable: outside the source text, or not a number"), status_internal());
+    }
+    let b = ir.block;
+    let refusal = refusal_found(heap, src, ir);
+    var fine = false;
+    borrow refusal as &rr in {
+        fine = gc.is_empty(rr);
+    }
+    if !fine {
+        return (refusal, status_refused());
+    }
+    buffer.drop(heap, refusal);
+    let narrowed = unspellable(heap, src, path, ir);
+    borrow narrowed as &nr in {
+        fine = gc.is_empty(nr);
+    }
+    if !fine {
+        return (narrowed, status_refused());
+    }
+    buffer.drop(heap, narrowed);
+    var o = gc.put(heap, buffer.empty(heap, 1024), "// Generated by cancho-hdl from ");
+    o = gc.put(heap, gc.put(heap, o, path), ". Do not edit.\n\nmodule ");
+    o = put_snaked(heap, o, src, b.name_s, b.name_e);
+    o = gc.put(heap, o, " {\n    foreign block ");
+    o = gc.put_span(heap, o, src, b.name_s, b.name_e);
+    o = gs.put_hex(heap, gc.put(heap, o, " @ "), src, b.base_s, b.base_e, 0);
+    o = gc.put_int(heap, gc.put(heap, o, " : u"), b.width);
+    o = gc.put(heap, o, ";\n\n");
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        o = put_register(heap, o, src, ir, vec.get(ir.regs, i));
+        i = i + 1;
+    }
+    if vec.size(ir.intrs) > 0 {
+        o = gc.put(heap, o, "\n");
+    }
+    i = 0;
+    while i < vec.size(ir.intrs) {
+        o = put_interrupt(heap, o, src, ir, vec.get(ir.intrs, i));
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.bufs) {
+        o = put_buffer(heap, o, src, ir, vec.get(ir.bufs, i));
+        i = i + 1;
+    }
+    o = gc.put(heap, o, "}\n");
+    o = put_enums(heap, o, src, ir);
+    return (o, status_ok());
+}

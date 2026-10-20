@@ -51,7 +51,7 @@ fn put_xml[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e
 }
 
 // `0x{n:X}` of the literal at `a..e`, exact past 2^60, left-padded with zeros to `min` digits.
-fn put_hex[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int, min: int) -> [heap] buffer.Buffer {
+pub fn put_hex[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int, min: int) -> [heap] buffer.Buffer {
     let low = hexval.canon_into(heap, buffer.empty(heap, 24), src[a..e]);
     var o = gc.put(heap, out, "0x");
     borrow low as &lr in {

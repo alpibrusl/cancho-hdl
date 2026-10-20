@@ -2029,3 +2029,55 @@ the span check). **65 of 65 are killed.** A first run killed 51; the 14 survivor
 * 23.1 said the differential would also check the vendored XSD "as well"; it does, for the 5 fixture documents and
   the hand-made inputs, and reports `schema-invalid` (10) as a shared fact rather than a failure (24.3, 2).
 * §21.6 and §18.6 said SVD was not ported; it is (SystemVerilog and cancho-binding are not).
+
+---
+
+## 26. Stage 6 design: the cancho-binding generator
+
+> **Status: design.** Written from reading `gen/cancho-binding/cancho_binding.py` (211 lines) and
+> `spec/generators/README.md` §3, with the three earlier generators (§17 to §25) as the pattern. What it measures is
+> §27, and a claim found false is corrected in §28.
+
+### 26.1 What this slice decides
+
+1. **Whether the shape carries a fourth generator** at the cost the third showed (2.4 times the Python).
+2. **What the oracle is when there is no compiler for the output.** The output is accessor declarations in a sketch
+   syntax (`module`, `foreign block`, `capability`, `buffer`) that no cancho tool parses; the Python
+   `cancho_binding_validates` roundtrip is a structural check. So the oracle is the Python tool's bytes and nothing else, and
+   this slice says so: a known-difference class can be admitted only for a stated structural reason (an escape or a
+   non-ASCII byte in a name, which the spans cannot decode), never by "it compiles".
+
+It does **not** decide SystemVerilog, which stays Python, and it does not change what the generator emits.
+
+### 26.2 What the declarations are
+
+`module <snake block> { foreign block <Block> @ <upper hex> : u<width>; ... }`; per register, in **declaration order**
+(not offset order, unlike the C header and SVD), per field: a stable-ID comment and the accessors its register kind
+allows (`RO`/`RC` get; `WO`/`W1S`/`W0S` set; `RW` both; `W1C`/`W0C` clear), typed `bool` for width 1, an `enum` for a field
+that has one, else `u32`; per interrupt a `capability` with `arm`/`status`/`clear` for the linkages it declares; per DMA
+buffer a `buffer` with a getter per field and a setter unless it is device-owned; then one `enum` declaration per distinct
+enum field name. Refusals are the Python tool's: an access kind with no mapping, and two enum fields whose names
+collide as types but carry different label lists.
+
+### 26.3 Where the port must be careful
+
+* **`_pascal` of the snake form**, which is the device tree's two-regex `_snake` then a split on `_`: `a__b` is `AB`.
+* **An empty `enum {}` is falsy in Python**: the field is typed `bool`/`u32` and declares no enum. Duplicate labels
+  collapse to their first occurrence (a dict), and the collision test compares the label *lists*.
+* **The DMA field size is not in the IR** (the schema has none), so it is always 4 and `u32`; the Python refusal for
+  another size is unreachable from a checked contract, and the port has no code for it.
+* **Names are verbatim** in the `foreign block` line, the capability and the buffer; an escape or a non-ASCII byte is
+  refused (spans index undecoded text), as before.
+
+### 26.4 Gate and size
+
+Step 8f of `scripts/gate_cancho.sh`. Budget, written before counting: about 450 lines for the generator against
+211 of Python (2 to 2.5 times).
+
+### 26.5 The oracle, and what would make this slice fail
+
+The six tiers of §20.5, with `xmllint`/`dtc`/`cc` replaced by nothing: bytes against the Python tool on the 50
+fixtures, the `check_json.py` mutants, hand-made inputs (every kind, enums with equal and different label lists,
+`a__b` names, empty enums, linkages of every shape, DMA owners), known classes each with a stated reason, unit tests,
+and one deliberate break per decision. It fails if any difference is unexplained or a break survives without a stated
+reason.

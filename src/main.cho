@@ -33,6 +33,7 @@ import chw.dg_text;
 import chw.diag;
 import chw.diagnostic as dg;
 import chw.gen_c;
+import chw.gen_binding;
 import chw.gen_dts;
 import chw.gen_svd;
 import chw.io as chwio;
@@ -300,7 +301,8 @@ fn run_generate_doc[&h, &i, &q, &g](heap: &!h Heap, io: &!i Io, doc: &q load.Doc
     }
     let is_c = bytes.equal(target, "c-header");
     let is_svd = bytes.equal(target, "svd");
-    if !is_c && !is_svd && !bytes.equal(target, "devicetree") {
+    let is_binding = bytes.equal(target, "cancho-binding");
+    if !is_c && !is_svd && !is_binding && !bytes.equal(target, "devicetree") {
         var line = buffer.append(heap, buffer.empty(heap, 128), "error[generator-unimplemented]: target ");
         line = buffer.append(heap, line, target);
         line = buffer.append(heap, line, ": not ported to cancho yet (the Python tool has it)\n");
@@ -314,6 +316,11 @@ fn run_generate_doc[&h, &i, &q, &g](heap: &!h Heap, io: &!i Io, doc: &q load.Doc
     var status = 0;
     if is_c {
         let (t, st) = gen_c.generate(heap, load.source_of(doc), arg(g, file_arg(g)), load.ir_of(doc));
+        buffer.drop(heap, text);
+        text = t;
+        status = st;
+    } else if is_binding {
+        let (t, st) = gen_binding.generate(heap, load.source_of(doc), arg(g, file_arg(g)), load.ir_of(doc));
         buffer.drop(heap, text);
         text = t;
         status = st;
