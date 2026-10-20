@@ -1858,7 +1858,7 @@ killed 28 of 32; the four survivors were each a finding:
 
 ### 21.6 What stage 4 does not show
 
-* SystemVerilog, cancho-binding and SVD are not ported. `chw generate` answers `generator-unimplemented` for them.
+* SystemVerilog, cancho-binding and SVD are not ported *(corrected: SVD is, §23 to §25)*. `chw generate` answers `generator-unimplemented` for them.
 * `dtc` checks syntax, labels and references in a tree that has `soc` and `intc`; it does not check the fragment
   against a board's bindings (the fragment is block-level by the spec, §4.3), and no kernel or Zephyr build was run.
 * The compatible string and the interrupt flag cell are the Python tool's placeholders (the spec's sketch); this
@@ -1880,3 +1880,152 @@ killed 28 of 32; the four survivors were each a finding:
   `dtc`, so it printed "NOTE dtc not on $PATH". Installing `dtc` for gate step 8d turned it on and CI failed at once
   (found by CI, not locally: the local gate does not run the Python reference). The lane now appends the fragment to the
   same small tree as step 8d, and the test says so.
+
+---
+
+## 23. Stage 5 design: the CMSIS-SVD generator
+
+> **Status: design, now built; measured in §24.** Written from reading `gen/svd/svd.py` (254 lines) and `spec/generators/README.md` §6, with
+> the two earlier generators (§17 to §22) as the pattern. The code follows; what it measures is §24, and a claim
+> found false is corrected in §25.
+
+### 23.1 What this slice decides
+
+1. **Whether the shape carries a third generator at a smaller marginal cost.** `(text, status)`, the three
+   statuses, the helpers in `gen_c.cho`. The test is whether the generator costs a fraction of the device tree's.
+2. **What an XML document's oracle is.** The Python tool's bytes remain the oracle; `xmllint --noout` stands in for
+   `dtc`/`cc`: a known-difference class is admitted only where the Python document is not well-formed. The
+   vendored `CMSIS-SVD.xsd` is also available (`xmllint --schema`), and the differential checks both tools'
+   documents against it as well, because well-formed is a weaker claim than valid.
+
+It does **not** decide SystemVerilog or cancho-binding, which stay Python.
+
+### 23.2 What the document is
+
+One `<device>` with one `<peripheral>` for the block; registers in offset order (Python's stable sort), each with
+its access mapping, a reset value (`0x0` and a comment when the contract has none), `modifiedWriteValues` or
+`readAction` for the write-one/zero and read-clear kinds, fields with `lsb`/`msb`, and `<enumeratedValues>`.
+Interrupts and DMA buffers are comments naming their stable IDs. Refusals are the Python tool's: **no register**
+and **a name that cannot sit in an XML comment** (`--`), checked in the order the Python tool meets them while
+writing.
+
+### 23.3 Where the port must be careful
+
+* **The refusal message quotes the joined stable ID** for an interrupt, a DMA buffer, a register and a field
+  (`'chw:Blk.register.R'`), the bare text for the block name and the source path. The order is the order of writing.
+* **Upper-case hex**, unpadded for the base and the offsets, padded to `bus_width / 4` digits for a reset value
+  (and exact past 2^60 for the digits the checker lets through).
+* **`<description>` carries the source path unescaped**, so a path with `&` or `<` makes the Python document not
+  well-formed. This port refuses it (a narrowing, admitted by the oracle only where `xmllint` rejects Python's).
+* **Names**: `&`, `<`, `>` are escaped in text; a name with a JSON escape or a non-ASCII byte is refused, as for the
+  device tree (the spans index the undecoded source).
+
+### 23.4 Gate and size
+
+Step 8e of `scripts/gate_cancho.sh` (and `libxml2-utils` in CI). Budget, written before counting: about 300 lines
+for the generator against 254 of Python (the device tree was 2.5 times; the XML text is more regular but there are
+more entities).
+
+### 23.5 The oracle, and what would make this slice fail
+
+The same six tiers as §20.5: the 50 fixtures, the `check_json.py` mutants, hand-made inputs only a generator can get
+wrong, known classes each admitted for a stated reason, unit tests, and one deliberate break per decision. The slice
+fails if any difference is unexplained, or a break survives without a stated reason.
+
+---
+
+## 24. Stage 5 measured
+
+Compiler cancho `7e4088b`, Linux x86-64; `xmllint` (libxml2) as the XML oracle. Everything below is the output of
+`tests/differential/generate_svd.py` (gate step 8e), `tests/mutation/run_gen_svd.py` and `cancho test`.
+
+### 24.1 What was built
+
+| file | lines | what |
+|---|---:|---|
+| `src/gen_svd.cho` | 611 | the generator |
+| `src/gen_c.cho` | 1 word | `pub` on `order_by` (the stable offset sort the C header already used) |
+| `src/main.cho` | 498 (+7) | the dispatcher answers `svd` as it does the other two |
+| `tests/unit/test_gen_svd.cho` | 683 | 35 tests |
+| `tests/differential/generate_svd.py` | 388 | the oracle driver |
+| `tests/mutation/run_gen_svd.py` | 145 | 65 deliberate breaks |
+
+The estimate of 23.4 (about 300 lines) was missed by a factor of two: **611 lines against 254 of Python, 2.4 times**
+(the device tree was 2.5). The cost is the same kind as before, plus one that is new here: the Python tool refuses in
+the order it meets a problem while writing, so the port needs a pass that finds those problems in that order before
+it writes anything (`found_while_writing`), and a second pass for what this port narrows (`unspellable`).
+
+### 24.2 Against `generate.py`, byte for byte
+
+Fixtures (50 files): stdout, stderr and exit status identical on **43**, 7 known differences; the 5 documents the
+tools write are the same bytes, well-formed for `xmllint`, and valid against the vendored `CMSIS-SVD.xsd`.
+
+Inputs (55,262 distinct: the mutants of `check_json.py`, 74 hand-made inputs and 6 source paths; 11,439 repeats skipped):
+
+| | count |
+|---|---:|
+| identical to `generate.py` (a document on 3,110, a refusal on 43,860) | 46,970 |
+| the checker's known differences (§13.5) | 1,192 |
+| both answer `internal` | 1,202 |
+| `generate.py` raised (`AttributeError` 4,042, `TypeError` 1,772), cancho answered with exit 0 or 1 and no trap | 5,814 |
+| a name or path with an escape, a non-ASCII byte or markup that cancho refuses (`non-ascii-name` 79, `unspellable` 2) | 81 |
+| `"number": 4.0` (`float-irq-number`) | 3 |
+| **unexplained** | **0** |
+
+### 24.3 What the oracle found, and what was decided
+
+1. **An interrupt number written as `4.0`.** The schema calls it an integer, so the checker accepts it; Python
+   prints the float it read (`IRQ 4.0`) in a comment, cancho the integer (`IRQ 4`). Found by 2 of the 55k mutants and
+   nothing else (the first full run reported exactly those two as unexplained). Not a defect of the port: the class
+   `float-irq-number` is admitted only if substituting `N.0` by `N` in Python's document gives cancho's, byte for
+   byte; a hand-made input now reaches it in the quick tier.
+2. **The document is valid, not only well-formed.** The 5 fixture documents and the 37 of 47 hand-made documents that
+   validate against the vendored XSD are the same bytes from both tools; the 10 that do not are shared (empty enum,
+   names the XSD's patterns exclude); they are listed as `schema-invalid` and not hidden behind "well-formed".
+3. **Python's `<description>` carries the source path unescaped.** A path with `&` or `<` gives a document that is not
+   well-formed. This port refuses it (`unspellable`, 2 cases) and the harness admits the refusal only where `xmllint`
+   rejects Python's document.
+4. **Everything else was identical on the first run**, including the order of refusals (a `--` in a block name, then
+   the zero-register refusal, then the path, then interrupts, DMA buffers, and each register's name, kind, fields and
+   enum labels), which 23.3 had spelled out in advance from reading the Python tool.
+
+### 24.4 The checks can fail
+
+`tests/mutation/run_gen_svd.py` makes one break per decision of `gen_svd.cho` (the escapes, the hex case and padding,
+each of the eight access mappings, the unknown kind, the reset comment, `modifiedWriteValues` and `readAction`, the
+field and enum lines, every double-dash check in the order the tool makes it, every narrowing, every internal check,
+the span check). **65 of 65 are killed.** A first run killed 51; the 14 survivors were each a finding, as in §21.4:
+
+* The seven **`plain-*`** narrowings (a name or version with a JSON escape or a non-ASCII byte, per entity) and
+  **`plain-path`**: the differential cannot see them. When cancho writes the name it writes the same bytes Python does,
+  so the break makes cancho *agree* with Python. Only a unit test that builds the IR by hand can fail it; there are now
+  eight, one per entity.
+* **`kind-message`, `base-internal`, `reset-internal`, `fields-internal`, `enums-internal`, `spans-block`**: a checked
+  contract never reaches them. `base-internal` had a test that passed for the wrong reason: its source text put a
+  letter where a register offset belongs, so the offset check answered `internal` first (§21.4 had the same kind of
+  false pass). All have a unit test that builds the IR by hand.
+
+### 24.5 What was easy, and what was not
+
+* **Easy:** the shape and the helpers carried over (`gen_c.put`, `put_span`, `put_int`, `refusal`, `order_by`); the
+  document needed no new abstraction.
+* **Not easy:** matching an order of refusals the Python tool never states, and the linear-ownership rule (a buffer
+  assigned over must be dropped first) in three places where a tuple or a result is built across branches.
+* **Cost:** the differential takes about 35 minutes on 4 cores, as the device tree did.
+
+### 24.6 What stage 5 does not show
+
+* SystemVerilog and cancho-binding are not ported. `chw generate` answers `generator-unimplemented` for them.
+* No CMSIS tool (svd2rust, cortex-debug) read the document; the XSD and `xmllint` are the oracle. The spec's non-guarantee
+  (§6.3) stands: CMSIS tools interpret the elements, the generator does not verify them.
+* Names are ASCII only; a name with an escape or a non-ASCII byte is refused where Python writes it.
+* Only Linux x86-64.
+
+---
+
+## 25. Corrections (stage 5)
+
+* 23.4 estimated about 300 lines for the generator; it is 611 (24.1).
+* 23.1 said the differential would also check the vendored XSD "as well"; it does, for the 5 fixture documents and
+  the hand-made inputs, and reports `schema-invalid` (10) as a shared fact rather than a failure (24.3, 2).
+* §21.6 and §18.6 said SVD was not ported; it is (SystemVerilog and cancho-binding are not).

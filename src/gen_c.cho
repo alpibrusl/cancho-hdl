@@ -170,7 +170,7 @@ pub fn internal_text[&h, &w](heap: &!h Heap, what: &w [byte]) -> [heap] buffer.B
 
 // The indices 0..n ordered by `keys[i]`, equal keys in index order: Python's stable
 // sort, as a bottom-up merge sort so a hostile contract costs n log n.
-fn order_by[&h](heap: &!h Heap, keys: Box[[int]], n: int) -> [heap] Box[[int]] {
+pub fn order_by[&h](heap: &!h Heap, keys: Box[[int]], n: int) -> [heap] Box[[int]] {
     var a = box_slice(heap, n + 1, 0);
     borrow mut a as &!aw in {
         var i = 0;

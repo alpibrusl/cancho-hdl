@@ -24,6 +24,8 @@
 #                                    bytes on every fixture and mutant, headers compiled with cc
 #  8d the device-tree generator     `chw generate --target devicetree` against tools/generate/generate.py:
 #                                    bytes on every fixture and mutant, fragments compiled with dtc
+#  8e the CMSIS-SVD generator       `chw generate --target svd` against tools/generate/generate.py:
+#                                    bytes on every fixture and mutant, documents checked with xmllint
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -31,7 +33,7 @@ set -eu
 cd "$(dirname "$0")/.."
 CANCHO=${CANCHO:-../cancho/target/release/cancho}
 OUT=${TMPDIR:-/tmp}/chw
-LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho"
+LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho src/gen_svd.cho"
 PROGRAM="src/main.cho $LIB src/io.cho src/conform.cho"
 
 echo "== 1 fmt"
@@ -124,6 +126,10 @@ python3 tests/differential/generate_c.py "$OUT"
 echo "== 8d the device-tree generator against generate.py"
 # Needs dtc (device-tree-compiler), the compile oracle (docs/cancho-port.md 20.5); without one the step fails.
 python3 tests/differential/generate_dts.py "$OUT"
+
+echo "== 8e the CMSIS-SVD generator against generate.py"
+# Needs xmllint (libxml2-utils), the well-formedness and schema oracle (docs/cancho-port.md 23.5); without one the step fails.
+python3 tests/differential/generate_svd.py "$OUT"
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"
