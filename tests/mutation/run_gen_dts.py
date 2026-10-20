@@ -54,7 +54,7 @@ M = [
     ("interrupt-name", "!no_comment_end(src, n.name_s, n.name_e) || !is_plain(src, n.name_s, n.name_e)", "false", "an interrupt name is not checked"),
     ("version-plain", "b.ver_s >= 0 && !is_plain(src, b.ver_s, b.ver_e)", "false", "a version with an escape is written"),
     ("path-comment", "!no_comment_end(path, 0, len(path))", "false", "a source path may end the comment"),
-    ("width-internal", "b.width < 0 || b.big", "b.big", "a negative width is sized"),
+    ("width-internal", "if b.width < 0 {", "if false {", "a negative width is sized"),
     ("offset-internal", "if !offset_value(src, r.off_s, r.off_e).ok {", "if false {", "an unreadable register offset is not noticed"),
     ("offset-big", "        if hv.big {", "        if false {", "a register offset past 2^60 is used saturated"),
     ("base-internal", "if !hexval.parse(src[b.base_s..b.base_e]).ok {", "if false {", "an unreadable base is not noticed"),

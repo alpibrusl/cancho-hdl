@@ -285,3 +285,15 @@ fn test_a_source_path_that_would_end_the_comment_is_refused[&h](heap: &!h Heap) 
     model.drop(heap, ir);
     return 0;
 }
+
+// `big` in the IR is the endianness, not a size: a big-endian block is written like a little-endian one.
+fn test_a_big_endian_block_is_written_like_any_other[&h](heap: &!h Heap) -> [heap] int {
+    let (out, st) = run(heap, "register-block B @ 0x10, width 32, big-endian {\n    register R @ 0x0 : RW {\n        field A : bits [0..0]\n    }\n}\n");
+    test.assert_eq(st, 0);
+    borrow out as &o in {
+        test.assert(has(o, "    b: b@10 {\n"));
+        test.assert(has(o, "        reg = <0x10 0x4>;\n"));
+    }
+    buffer.drop(heap, out);
+    return 0;
+}

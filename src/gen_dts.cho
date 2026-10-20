@@ -160,7 +160,7 @@ fn major_end[&s](src: &s [byte], a: int, e: int) -> [] int {
 // The first thing in the IR a checked contract does not have, as the message; empty when none.
 fn unusable[&h, &s, &q](heap: &!h Heap, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
     let b = ir.block;
-    if b.width < 0 || b.big {
+    if b.width < 0 {
         return gc.internal_text(heap, "the bus width is not a number a register can be sized from");
     }
     if !hexval.parse(src[b.base_s..b.base_e]).ok {
@@ -174,7 +174,12 @@ fn unusable[&h, &s, &q](heap: &!h Heap, src: &s [byte], ir: &q model.Ir) -> [hea
         }
         i = i + 1;
     }
-    i = 0;
+    return buffer.empty(heap, 1);
+}
+
+// An interrupt without a number: the Python tool finds it while writing, after its refusals, and so does this.
+fn unnumbered[&h, &q](heap: &!h Heap, ir: &q model.Ir) -> [heap] buffer.Buffer {
+    var i = 0;
     while i < vec.size(ir.intrs) {
         if vec.get(ir.intrs, i).number < 0 {
             return gc.internal_text(heap, "an interrupt has no number");
@@ -293,6 +298,14 @@ pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte],
         m = gc.put(heap, m, " does not fit a single 32-bit address cell (#address-cells = <1>); refusing, not widening");
         return (m, status_refused());
     }
+    let missing = unnumbered(heap, ir);
+    borrow missing as &mr in {
+        fine = gc.is_empty(mr);
+    }
+    if !fine {
+        return (missing, status_internal());
+    }
+    buffer.drop(heap, missing);
     let refused = unspellable(heap, src, path, ir);
     borrow refused as &rr in {
         fine = gc.is_empty(rr);

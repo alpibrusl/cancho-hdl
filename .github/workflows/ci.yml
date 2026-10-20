@@ -44,6 +44,10 @@ jobs:
       - name: Install the oracle's dependencies (lxml gives the SVD roundtrip its XSD validation)
         run: pip install jsonschema==4.26.0 lxml
 
+      # dtc is the compile oracle of the device-tree generator (gate step 8d); cc is already on the runner.
+      - name: Install dtc
+        run: sudo apt-get update -q && sudo apt-get install -y -q device-tree-compiler
+
       # fmt, check, cancho test, file lengths, build; the text parser against the Python parser; the
       # conformance runner over every fixture; the JSON loader and validator against json + jsonschema;
       # the semantic checker against checker.py (byte for byte on the fixtures, then 55k mutants).
