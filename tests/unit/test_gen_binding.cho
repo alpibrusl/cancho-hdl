@@ -493,3 +493,52 @@ fn test_an_enum_with_no_label_is_not_an_enum[&h](heap: &!h Heap) -> [heap] int {
     model.drop(heap, ir);
     return 0;
 }
+
+fn test_label_lists_of_different_lengths_differ_even_when_the_longer_one_starts_the_same[&h](heap: &!h Heap) -> [heap] int {
+    // Mode{X,Y} then Mode{X}, with a Y after the second: without the length test the second would read that Y.
+    let (out, st) = run(heap, "register-block B @ 0x0, width 32, little-endian {\n    register A @ 0x0 : RW {\n        field Mode : bits [0..1] enum { X=0, Y=1 }\n    }\n    register C @ 0x4 : RW {\n        field Mode : bits [0..1] enum { X=0 }\n        field Other : bits [2..3] enum { Y=1 }\n    }\n}\n");
+    test.assert_eq(st, gen_binding.status_refused());
+    borrow out as &o in {
+        test.assert(has(o, "carry different label sets"));
+    }
+    buffer.drop(heap, out);
+    return 0;
+}
+
+fn test_a_buffer_naming_fields_that_are_not_there_is_internal[&h](heap: &!h Heap) -> [heap] int {
+    let src = "B0x40d";
+    var ir = model.empty(heap);
+    ir = model.set_block(ir, model.Block { name_s: 0, name_e: 1, base_s: 1, base_e: 5, width: 32, big: false, ver_s: 0 - 1, ver_e: 0, sch_s: 0 - 1, sch_e: 0, has_schema: true });
+    ir = model.add_buf(heap, ir, model.Buf { name_s: 5, name_e: 6, first: 0, n: 4 });
+    var status = 0 - 1;
+    var text = buffer.empty(heap, 1);
+    borrow ir as &q in {
+        buffer.drop(heap, text);
+        let (o, s) = gen_binding.generate(heap, src, "t.chw", q);
+        text = o;
+        status = s;
+    }
+    test.assert_eq(status, gen_binding.status_internal());
+    buffer.drop(heap, text);
+    model.drop(heap, ir);
+    return 0;
+}
+
+fn test_a_register_span_outside_the_source_is_internal_not_a_trap[&h](heap: &!h Heap) -> [heap] int {
+    let src = "B0x40R";
+    var ir = model.empty(heap);
+    ir = model.set_block(ir, model.Block { name_s: 0, name_e: 1, base_s: 1, base_e: 5, width: 32, big: false, ver_s: 0 - 1, ver_e: 0, sch_s: 0 - 1, sch_e: 0, has_schema: true });
+    ir = model.add_reg(heap, ir, model.Reg { name_s: 5, name_e: 90, off_s: 0, off_e: 0, kind_s: 5, kind_e: 6, reset_s: 0 - 1, reset_e: 0, volatile: false, polling: false, order: 0, first: 0, n: 0 });
+    var status = 0 - 1;
+    var text = buffer.empty(heap, 1);
+    borrow ir as &q in {
+        buffer.drop(heap, text);
+        let (o, s) = gen_binding.generate(heap, src, "t.chw", q);
+        text = o;
+        status = s;
+    }
+    test.assert_eq(status, gen_binding.status_internal());
+    buffer.drop(heap, text);
+    model.drop(heap, ir);
+    return 0;
+}
