@@ -292,7 +292,8 @@ pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte],
         i = i + 1;
     }
     let base = hexval.parse(src[b.base_s..b.base_e]);
-    if base.big || base.v > 4294967295 {
+    // `v` saturates at 2^60 for a base that does not fit, so one comparison covers it; the digits quoted are exact.
+    if base.v > 4294967295 {
         var m = gc.put(heap, buffer.empty(heap, 128), "base_address 0x");
         m = put_upper_canon(heap, m, src, b.base_s, b.base_e);
         m = gc.put(heap, m, " does not fit a single 32-bit address cell (#address-cells = <1>); refusing, not widening");

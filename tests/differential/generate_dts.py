@@ -101,6 +101,11 @@ def checker_known(tmp, label, text):
     return problem is None and any(t.startswith("known:") for t in tags)
 
 
+# Hand-made inputs whose fragment cannot compile in the oracle's tree, and the generator (Python and cancho alike) writes it:
+# a block called `soc` or `intc` redefines a label of the tree the fragment is appended to. Stated in docs/cancho-port.md 21.3.
+SHARED_DEFECTS = {"gen:soc-block", "gen:intc-block"}
+
+
 def judge(tmp, label, text, py, path, compile_it):
     """-> (tags, unexplained or None)"""
     ca = cancho_run(path)
@@ -113,6 +118,10 @@ def judge(tmp, label, text, py, path, compile_it):
         if ca[0] == 0 and compile_it:
             ok, why = compiles(ca[1], tmp)
             tags.append("compiles" if ok else "shared-defect:does-not-compile")
+            if not ok and label.startswith("gen:") and label not in SHARED_DEFECTS:
+                # A hand-made input whose Python fragment does not compile must be refused by cancho (unspellable);
+                # writing the same broken fragment is not an agreement to admit.
+                return tags, f"{label}: cancho writes the fragment Python writes, and dtc rejects it ({why})"
         return tags, None
     if py[0] == 0 and ca[0] == 1 and "error[generator-unimplemented]: target devicetree:" in ca[2]:
         ok, why = compiles(py[1], tmp)

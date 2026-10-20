@@ -149,10 +149,85 @@ fn test_a_base_that_does_not_fit_one_address_cell_is_refused_not_widened[&h](hea
     return 0;
 }
 
+// A block named `name`, one register at 0x0, base 0x40, and a path; spans over a source built here, so a name the
+// text form could not spell can be tried.
+fn named_block[&h, &n](heap: &!h Heap, name: &n [byte]) -> [heap] (buffer.Buffer, int) {
+    var src = buffer.append(heap, buffer.empty(heap, 32), name);
+    let e = len(name);
+    src = buffer.append(heap, src, "0x40R0x0");
+    var ir = model.empty(heap);
+    ir = model.set_block(ir, model.Block { name_s: 0, name_e: e, base_s: e, base_e: e + 4, width: 32, big: false, ver_s: 0 - 1, ver_e: 0, sch_s: 0 - 1, sch_e: 0, has_schema: true });
+    ir = model.add_reg(heap, ir, model.Reg { name_s: e + 4, name_e: e + 5, off_s: e + 5, off_e: e + 8, kind_s: 0, kind_e: 0, reset_s: 0 - 1, reset_e: 0, volatile: false, polling: false, order: 0, first: 0, n: 0 });
+    var got = buffer.empty(heap, 1);
+    var status = 0 - 1;
+    borrow src as &sr in {
+        borrow ir as &q in {
+            buffer.drop(heap, got);
+            let (out, st) = gen_dts.generate(heap, buffer.bytes(sr), "t.chw", q);
+            got = out;
+            status = st;
+        }
+    }
+    buffer.drop(heap, src);
+    model.drop(heap, ir);
+    return (got, status);
+}
+
 fn test_a_name_that_is_not_a_label_is_refused[&h](heap: &!h Heap) -> [heap] int {
-    let (out, st) = run(heap, "register-block A-B @ 0x0, width 32, little-endian {\n    register R @ 0x0 : RW {\n        field A : bits [0..0]\n    }\n}\n");
-    test.assert_eq(st, gen_dts.status_refused());
-    buffer.drop(heap, out);
+    let (a, sa) = named_block(heap, "A-B");
+    test.assert_eq(sa, gen_dts.status_refused());
+    borrow a as &o in {
+        test.assert(has(o, "the block name 'A-B'"));
+    }
+    buffer.drop(heap, a);
+    let (b, sb) = named_block(heap, "9Blk");
+    test.assert_eq(sb, gen_dts.status_refused());
+    buffer.drop(heap, b);
+    let (c, sc) = named_block(heap, "Blk");
+    test.assert_eq(sc, 0);
+    buffer.drop(heap, c);
+    return 0;
+}
+
+fn test_an_interrupt_name_that_would_end_the_comment_is_refused[&h](heap: &!h Heap) -> [heap] int {
+    let src = "B0x40R0x0a*/b";
+    var ir = model.empty(heap);
+    ir = model.set_block(ir, model.Block { name_s: 0, name_e: 1, base_s: 1, base_e: 5, width: 32, big: false, ver_s: 0 - 1, ver_e: 0, sch_s: 0 - 1, sch_e: 0, has_schema: true });
+    ir = model.add_reg(heap, ir, model.Reg { name_s: 5, name_e: 6, off_s: 6, off_e: 9, kind_s: 0, kind_e: 0, reset_s: 0 - 1, reset_e: 0, volatile: false, polling: false, order: 0, first: 0, n: 0 });
+    ir = model.add_intr(heap, ir, model.Intr { name_s: 9, name_e: 13, number: 3, source: model.no_ref(), enable: model.no_ref(), status: model.no_ref(), clear: model.no_ref(), clear_kind_s: 0 - 1, clear_kind_e: 0, order: 0 });
+    var status = 0 - 1;
+    var text = buffer.empty(heap, 1);
+    borrow ir as &q in {
+        buffer.drop(heap, text);
+        let (out, st) = gen_dts.generate(heap, src, "t.chw", q);
+        text = out;
+        status = st;
+    }
+    test.assert_eq(status, gen_dts.status_refused());
+    borrow text as &o in {
+        test.assert(has(o, "the interrupt name 'a*/b'"));
+    }
+    buffer.drop(heap, text);
+    model.drop(heap, ir);
+    return 0;
+}
+
+fn test_a_base_that_is_not_a_number_is_internal[&h](heap: &!h Heap) -> [heap] int {
+    let src = "BZZZZR0x0";
+    var ir = model.empty(heap);
+    ir = model.set_block(ir, model.Block { name_s: 0, name_e: 1, base_s: 1, base_e: 5, width: 32, big: false, ver_s: 0 - 1, ver_e: 0, sch_s: 0 - 1, sch_e: 0, has_schema: true });
+    ir = model.add_reg(heap, ir, model.Reg { name_s: 5, name_e: 6, off_s: 6, off_e: 9, kind_s: 0, kind_e: 0, reset_s: 0 - 1, reset_e: 0, volatile: false, polling: false, order: 0, first: 0, n: 0 });
+    var status = 0 - 1;
+    var text = buffer.empty(heap, 1);
+    borrow ir as &q in {
+        buffer.drop(heap, text);
+        let (o2, st2) = gen_dts.generate(heap, src, "t.chw", q);
+        text = o2;
+        status = st2;
+    }
+    test.assert_eq(status, gen_dts.status_internal());
+    buffer.drop(heap, text);
+    model.drop(heap, ir);
     return 0;
 }
 

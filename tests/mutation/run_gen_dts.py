@@ -29,8 +29,7 @@ PROGRAM = ["main"] + MODULES + ["io", "conform"]
 # (name, old, new, what it breaks)
 M = [
     ("zero-registers", "    if nregs == 0 {", "    if nregs < 0 {", "a block with no register is not refused"),
-    ("base-limit", "base.big || base.v > 4294967295", "base.big || base.v > 4294967296", "a base one past 32 bits fits an address cell"),
-    ("base-big", "base.big || base.v", "base.v", "a base past 2^60 is read as the saturated value"),
+    ("base-limit", "base.v > 4294967295", "base.v > 4294967296", "a base one past 32 bits fits an address cell"),
     ("size-width", "max_offset + b.width / 8", "max_offset + b.width / 4", "the last register is two words wide"),
     ("size-max", "        if hv.v > max_offset {", "        if hv.v < max_offset {", "the range is sized from the first register, not the highest"),
     ("upper-hex", "return buffer.push(heap, o, byte_of('A' + d - 10));", "return buffer.push(heap, o, byte_of('a' + d - 10));", "hex digits in lower case"),
