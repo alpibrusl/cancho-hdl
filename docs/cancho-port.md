@@ -1880,3 +1880,54 @@ killed 28 of 32; the four survivors were each a finding:
   `dtc`, so it printed "NOTE dtc not on $PATH". Installing `dtc` for gate step 8d turned it on and CI failed at once
   (found by CI, not locally: the local gate does not run the Python reference). The lane now appends the fragment to the
   same small tree as step 8d, and the test says so.
+
+---
+
+## 23. Stage 5 design: the CMSIS-SVD generator
+
+> **Status: design.** Written from reading `gen/svd/svd.py` (254 lines) and `spec/generators/README.md` §6, with
+> the two earlier generators (§17 to §22) as the pattern. The code follows; what it measures is §24, and a claim
+> found false is corrected in §25.
+
+### 23.1 What this slice decides
+
+1. **Whether the shape carries a third generator at a smaller marginal cost.** `(text, status)`, the three
+   statuses, the helpers in `gen_c.cho`. The test is whether the generator costs a fraction of the device tree's.
+2. **What an XML document's oracle is.** The Python tool's bytes remain the oracle; `xmllint --noout` stands in for
+   `dtc`/`cc`: a known-difference class is admitted only where the Python document is not well-formed. The
+   vendored `CMSIS-SVD.xsd` is also available (`xmllint --schema`), and the differential checks both tools'
+   documents against it as well, because well-formed is a weaker claim than valid.
+
+It does **not** decide SystemVerilog or cancho-binding, which stay Python.
+
+### 23.2 What the document is
+
+One `<device>` with one `<peripheral>` for the block; registers in offset order (Python's stable sort), each with
+its access mapping, a reset value (`0x0` and a comment when the contract has none), `modifiedWriteValues` or
+`readAction` for the write-one/zero and read-clear kinds, fields with `lsb`/`msb`, and `<enumeratedValues>`.
+Interrupts and DMA buffers are comments naming their stable IDs. Refusals are the Python tool's: **no register**
+and **a name that cannot sit in an XML comment** (`--`), checked in the order the Python tool meets them while
+writing.
+
+### 23.3 Where the port must be careful
+
+* **The refusal message quotes the joined stable ID** for an interrupt, a DMA buffer, a register and a field
+  (`'chw:Blk.register.R'`), the bare text for the block name and the source path. The order is the order of writing.
+* **Upper-case hex**, unpadded for the base and the offsets, padded to `bus_width / 4` digits for a reset value
+  (and exact past 2^60 for the digits the checker lets through).
+* **`<description>` carries the source path unescaped**, so a path with `&` or `<` makes the Python document not
+  well-formed. This port refuses it (a narrowing, admitted by the oracle only where `xmllint` rejects Python's).
+* **Names**: `&`, `<`, `>` are escaped in text; a name with a JSON escape or a non-ASCII byte is refused, as for the
+  device tree (the spans index the undecoded source).
+
+### 23.4 Gate and size
+
+Step 8e of `scripts/gate_cancho.sh` (and `libxml2-utils` in CI). Budget, written before counting: about 300 lines
+for the generator against 254 of Python (the device tree was 2.5 times; the XML text is more regular but there are
+more entities).
+
+### 23.5 The oracle, and what would make this slice fail
+
+The same six tiers as §20.5: the 50 fixtures, the `check_json.py` mutants, hand-made inputs only a generator can get
+wrong, known classes each admitted for a stated reason, unit tests, and one deliberate break per decision. The slice
+fails if any difference is unexplained, or a break survives without a stated reason.

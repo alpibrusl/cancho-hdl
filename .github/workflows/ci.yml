@@ -48,6 +48,10 @@ jobs:
       - name: Install dtc
         run: sudo apt-get update -q && sudo apt-get install -y -q device-tree-compiler
 
+      # xmllint is the oracle of the CMSIS-SVD generator (gate step 8e): well-formed, and valid against the vendored XSD.
+      - name: Install xmllint
+        run: sudo apt-get install -y -q libxml2-utils
+
       # fmt, check, cancho test, file lengths, build; the text parser against the Python parser; the
       # conformance runner over every fixture; the JSON loader and validator against json + jsonschema;
       # the semantic checker against checker.py (byte for byte on the fixtures, then 55k mutants).

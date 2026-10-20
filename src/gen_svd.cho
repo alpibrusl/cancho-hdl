@@ -1,0 +1,611 @@
+module chw.gen_svd;
+
+// gen_svd.cho -- `gen/svd/svd.py`: the CMSIS-SVD document of a checked contract (docs/cancho-port.md, 23). A
+// pure function of the IR and the bytes its spans index; it prints nothing and opens nothing. The line order, the
+// spaces and the comments are the Python generator's, because the oracle is its bytes.
+//
+// Answers the text and a status, as `gen_c.generate` does: 0 the document, 1 a refusal
+// (`generator-unimplemented`, text is the message), 3 `internal` (an IR the checker would have refused).
+// Never a partial document, never a trap.
+
+import std.buffer;
+import std.bytes;
+import std.vec;
+import chw.gen_c as gc;
+import chw.hexval;
+import chw.ir as model;
+import chw.pyrepr;
+
+pub fn status_ok() -> [] int {
+    return 0;
+}
+
+pub fn status_refused() -> [] int {
+    return 1;
+}
+
+pub fn status_internal() -> [] int {
+    return 3;
+}
+
+// ---- text ---------------------------------------------------------------
+
+// The span `a..e` with `&`, `<` and `>` escaped, as the Python tool's `_xml`.
+fn put_xml[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var i = a;
+    while i < e {
+        let c = int_of(src[i]);
+        if c == '&' {
+            o = gc.put(heap, o, "&amp;");
+        } else if c == '<' {
+            o = gc.put(heap, o, "&lt;");
+        } else if c == '>' {
+            o = gc.put(heap, o, "&gt;");
+        } else {
+            o = buffer.push(heap, o, byte_of(c));
+        }
+        i = i + 1;
+    }
+    return o;
+}
+
+// `0x{n:X}` of the literal at `a..e`, exact past 2^60, left-padded with zeros to `min` digits.
+fn put_hex[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int, min: int) -> [heap] buffer.Buffer {
+    let low = hexval.canon_into(heap, buffer.empty(heap, 24), src[a..e]);
+    var o = gc.put(heap, out, "0x");
+    borrow low as &lr in {
+        let t = buffer.bytes(lr);
+        var pad = min - len(t);
+        while pad > 0 {
+            o = buffer.push(heap, o, byte_of('0'));
+            pad = pad - 1;
+        }
+        var i = 0;
+        while i < len(t) {
+            o = buffer.push(heap, o, byte_of(bytes.to_upper(int_of(t[i]))));
+            i = i + 1;
+        }
+    }
+    buffer.drop(heap, low);
+    return o;
+}
+
+fn has_double_dash[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    var i = a;
+    while i + 1 < e {
+        if int_of(src[i]) == '-' && int_of(src[i + 1]) == '-' {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// `_comment_safe`: the message when the text `a..e` of `src` cannot sit in an XML comment, else empty.
+fn comment_message[&h, &s](heap: &!h Heap, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+    if !has_double_dash(src, a, e) {
+        return buffer.empty(heap, 1);
+    }
+    var m = gc.put(heap, buffer.empty(heap, 128), "stable-ID component ");
+    m = pyrepr.str_repr(heap, m, src[a..e]);
+    return gc.put(heap, m, " contains '--', which a legal XML comment cannot carry; refusing, not substituting");
+}
+
+// The same for the stable ID `chw:<block>.<kind>.<name>` (an interrupt, a DMA buffer) or, with `reg` >= 0, the
+// register-and-field forms are never joined: Python checks the bare name first and the joined text cannot add a `--`.
+fn joined_message[&h, &s](heap: &!h Heap, src: &s [byte], block_s: int, block_e: int, kind: &static [byte], name_s: int, name_e: int) -> [heap] buffer.Buffer {
+    var j = gc.put_span(heap, gc.put(heap, buffer.empty(heap, 64), "chw:"), src, block_s, block_e);
+    j = gc.put_span(heap, gc.put(heap, j, kind), src, name_s, name_e);
+    var m = buffer.empty(heap, 1);
+    borrow j as &jr in {
+        buffer.drop(heap, m);
+        m = comment_message(heap, buffer.bytes(jr), 0, len(buffer.bytes(jr)));
+    }
+    buffer.drop(heap, j);
+    return m;
+}
+
+// ---- what the document can spell ----------------------------------------
+
+// ASCII, no backslash (a JSON escape is not decoded in a span) and no control byte.
+fn is_plain[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    var i = a;
+    while i < e {
+        let c = int_of(src[i]);
+        if c >= 128 || c == '\\' || c < 32 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The path goes into `<description>` unescaped, so it must not need escaping there.
+fn no_markup[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    var i = a;
+    while i < e {
+        let c = int_of(src[i]);
+        if c == '&' || c == '<' {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn offset_value[&s](src: &s [byte], a: int, e: int) -> [] hexval.Hv {
+    return hexval.parse(src[a..e]);
+}
+
+// The access of a register kind: (access, modifiedWriteValues, readAction), "" for none; false when there is no mapping.
+fn kind_access[&s](src: &s [byte], a: int, e: int) -> [] (bool, &static [byte], &static [byte], &static [byte]) {
+    let k = src[a..e];
+    if bytes.equal(k, "RO") {
+        return (true, "read-only", "", "");
+    }
+    if bytes.equal(k, "WO") {
+        return (true, "write-only", "", "");
+    }
+    if bytes.equal(k, "RW") {
+        return (true, "read-write", "", "");
+    }
+    if bytes.equal(k, "RC") {
+        return (true, "read-write", "", "clear");
+    }
+    if bytes.equal(k, "W0C") {
+        return (true, "read-write", "zeroToClear", "");
+    }
+    if bytes.equal(k, "W0S") {
+        return (true, "read-write", "zeroToSet", "");
+    }
+    if bytes.equal(k, "W1C") {
+        return (true, "read-write", "oneToClear", "");
+    }
+    if bytes.equal(k, "W1S") {
+        return (true, "read-write", "oneToSet", "");
+    }
+    return (false, "", "", "");
+}
+
+// A span the text can be sliced by.
+fn span_ok[&s](src: &s [byte], a: int, e: int) -> [] bool {
+    return a >= 0 && a <= e && e <= len(src);
+}
+
+// Every span of the IR indexes the source: a checked contract has this, and an IR left by a parse that failed may not.
+fn spans_ok[&s, &q](src: &s [byte], ir: &q model.Ir) -> [] bool {
+    let b = ir.block;
+    if !span_ok(src, b.name_s, b.name_e) || !span_ok(src, b.base_s, b.base_e) || b.ver_s >= 0 && !span_ok(src, b.ver_s, b.ver_e) {
+        return false;
+    }
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        if !span_ok(src, r.name_s, r.name_e) || !span_ok(src, r.off_s, r.off_e) || !span_ok(src, r.kind_s, r.kind_e) || r.reset_s >= 0 && !span_ok(src, r.reset_s, r.reset_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.fields) {
+        let f = vec.get(ir.fields, i);
+        if !span_ok(src, f.name_s, f.name_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.enums) {
+        let e = vec.get(ir.enums, i);
+        if !span_ok(src, e.name_s, e.name_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.intrs) {
+        let n = vec.get(ir.intrs, i);
+        if !span_ok(src, n.name_s, n.name_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.bufs) {
+        let d = vec.get(ir.bufs, i);
+        if !span_ok(src, d.name_s, d.name_e) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// What the generator needs of the IR, which a checked contract has: spans that index the source, numbers that are
+// numbers, tables in range. Empty when it holds, else the first thing that does not.
+fn unusable[&h, &s, &q](heap: &!h Heap, src: &s [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    if !spans_ok(src, ir) {
+        return gc.internal_text(heap, "a name or number of the contract lies outside the source text");
+    }
+    if b.width < 0 {
+        return gc.internal_text(heap, "the bus width is not a number a reset value can be sized from");
+    }
+    if !hexval.parse(src[b.base_s..b.base_e]).ok {
+        return gc.internal_text(heap, "the base address is not a number");
+    }
+    let nfields = vec.size(ir.fields);
+    let nenums = vec.size(ir.enums);
+    var i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        let off = offset_value(src, r.off_s, r.off_e);
+        if !off.ok {
+            return gc.internal_text(heap, "a register offset is not a number");
+        }
+        if r.reset_s >= 0 && !hexval.parse(src[r.reset_s..r.reset_e]).ok {
+            return gc.internal_text(heap, "a reset value is not a number");
+        }
+        if r.first < 0 || r.n < 0 || r.first + r.n > nfields {
+            return gc.internal_text(heap, "a register names fields that are not there");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < nfields {
+        let f = vec.get(ir.fields, i);
+        if f.has_enum && (f.enum_first < 0 || f.enum_n < 0 || f.enum_first + f.enum_n > nenums) {
+            return gc.internal_text(heap, "a field names enum entries that are not there");
+        }
+        i = i + 1;
+    }
+    return buffer.empty(heap, 1);
+}
+
+// A refusal or internal answer that the Python tool finds while writing, in its order: (text, status), empty text when
+// nothing is wrong. `perm` orders the registers by offset.
+fn found_while_writing[&h, &s, &q, &p](heap: &!h Heap, src: &s [byte], ir: &q model.Ir, perm: &p [int]) -> [heap] (buffer.Buffer, int) {
+    let b = ir.block;
+    var i = 0;
+    while i < vec.size(ir.intrs) {
+        let n = vec.get(ir.intrs, i);
+        let m = joined_message(heap, src, b.name_s, b.name_e, ".interrupt.", n.name_s, n.name_e);
+        var fine = false;
+        borrow m as &mr in {
+            fine = gc.is_empty(mr);
+        }
+        if !fine {
+            return (m, status_refused());
+        }
+        buffer.drop(heap, m);
+        if n.number < 0 {
+            return (gc.internal_text(heap, "an interrupt has no number"), status_internal());
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.bufs) {
+        let d = vec.get(ir.bufs, i);
+        let m = joined_message(heap, src, b.name_s, b.name_e, ".dma.", d.name_s, d.name_e);
+        var fine = false;
+        borrow m as &mr in {
+            fine = gc.is_empty(mr);
+        }
+        if !fine {
+            return (m, status_refused());
+        }
+        buffer.drop(heap, m);
+        i = i + 1;
+    }
+    var j = 0;
+    while j < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, perm[j]);
+        let m = comment_message(heap, src, r.name_s, r.name_e);
+        var fine = false;
+        borrow m as &mr in {
+            fine = gc.is_empty(mr);
+        }
+        if !fine {
+            return (m, status_refused());
+        }
+        buffer.drop(heap, m);
+        let (known, access, mwv, ra) = kind_access(src, r.kind_s, r.kind_e);
+        if !known {
+            var t = gc.put(heap, buffer.empty(heap, 64), "access kind ");
+            t = pyrepr.str_repr(heap, t, src[r.kind_s..r.kind_e]);
+            return (gc.put(heap, t, " has no CMSIS-SVD mapping"), status_refused());
+        }
+        var k = 0;
+        while k < r.n {
+            let f = vec.get(ir.fields, r.first + k);
+            let fm = comment_message(heap, src, f.name_s, f.name_e);
+            borrow fm as &fr in {
+                fine = gc.is_empty(fr);
+            }
+            if !fine {
+                return (fm, status_refused());
+            }
+            buffer.drop(heap, fm);
+            if f.has_enum {
+                var x = 0;
+                while x < f.enum_n {
+                    let en = vec.get(ir.enums, f.enum_first + x);
+                    let em = comment_message(heap, src, en.name_s, en.name_e);
+                    borrow em as &er in {
+                        fine = gc.is_empty(er);
+                    }
+                    if !fine {
+                        return (em, status_refused());
+                    }
+                    buffer.drop(heap, em);
+                    x = x + 1;
+                }
+            }
+            k = k + 1;
+        }
+        j = j + 1;
+    }
+    return (buffer.empty(heap, 1), status_ok());
+}
+
+// The first name or text the document cannot carry (this port's narrowing of the Python tool); empty when none.
+fn unspellable[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    if !is_plain(src, b.name_s, b.name_e) {
+        return gc.refusal(heap, src, b.name_s, b.name_e, "the block name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+    }
+    if b.ver_s >= 0 && !is_plain(src, b.ver_s, b.ver_e) {
+        return gc.refusal(heap, src, b.ver_s, b.ver_e, "the schema version", "cannot be written as it stands (an escape or a non-ASCII byte)");
+    }
+    var i = 0;
+    while i < vec.size(ir.intrs) {
+        let n = vec.get(ir.intrs, i);
+        if !is_plain(src, n.name_s, n.name_e) {
+            return gc.refusal(heap, src, n.name_s, n.name_e, "the interrupt name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.bufs) {
+        let d = vec.get(ir.bufs, i);
+        if !is_plain(src, d.name_s, d.name_e) {
+            return gc.refusal(heap, src, d.name_s, d.name_e, "the DMA buffer name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.regs) {
+        let r = vec.get(ir.regs, i);
+        if !is_plain(src, r.name_s, r.name_e) {
+            return gc.refusal(heap, src, r.name_s, r.name_e, "the register name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.fields) {
+        let f = vec.get(ir.fields, i);
+        if !is_plain(src, f.name_s, f.name_e) {
+            return gc.refusal(heap, src, f.name_s, f.name_e, "the field name", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec.size(ir.enums) {
+        let e = vec.get(ir.enums, i);
+        if !is_plain(src, e.name_s, e.name_e) {
+            return gc.refusal(heap, src, e.name_s, e.name_e, "the enum label", "cannot be written as it stands (an escape or a non-ASCII byte)");
+        }
+        i = i + 1;
+    }
+    if !is_plain(path, 0, len(path)) || !no_markup(path, 0, len(path)) {
+        return gc.refusal(heap, path, 0, len(path), "the source path", "cannot be written as it stands (non-ASCII, or markup in a description that is not escaped)");
+    }
+    return buffer.empty(heap, 1);
+}
+
+// ---- the document -------------------------------------------------------
+
+fn put_register[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
+    let b = ir.block;
+    let (known, access, mwv, ra) = kind_access(src, r.kind_s, r.kind_e);
+    var o = gc.put(heap, out, "        <register>\n          <name>");
+    o = put_xml(heap, o, src, r.name_s, r.name_e);
+    o = gc.put(heap, o, "</name>  <!-- chw:");
+    o = gc.put_span(heap, o, src, b.name_s, b.name_e);
+    o = gc.put_span(heap, gc.put(heap, o, ".register."), src, r.name_s, r.name_e);
+    o = gc.put(heap, o, " -->\n          <addressOffset>");
+    o = put_hex(heap, o, src, r.off_s, r.off_e, 0);
+    o = gc.put(heap, o, "</addressOffset>\n          <access>");
+    o = gc.put(heap, o, access);
+    o = gc.put(heap, o, "</access>\n");
+    if r.reset_s >= 0 {
+        o = gc.put(heap, o, "          <resetValue>");
+        o = put_hex(heap, o, src, r.reset_s, r.reset_e, b.width / 4);
+        o = gc.put(heap, o, "</resetValue>\n");
+    } else {
+        o = gc.put(heap, o, "          <!-- reset undefined in the contract; emitting 0x0 per §6.2 -->\n          <resetValue>0x0</resetValue>\n");
+    }
+    if len(mwv) > 0 {
+        o = gc.put(heap, gc.put(heap, gc.put(heap, o, "          <modifiedWriteValues>"), mwv), "</modifiedWriteValues>\n");
+    }
+    if len(ra) > 0 {
+        o = gc.put(heap, gc.put(heap, gc.put(heap, o, "          <readAction>"), ra), "</readAction>\n");
+    }
+    if r.n > 0 {
+        o = gc.put(heap, o, "          <fields>\n");
+        var k = 0;
+        while k < r.n {
+            let f = vec.get(ir.fields, r.first + k);
+            o = gc.put(heap, o, "          <field>\n            <name>");
+            o = put_xml(heap, o, src, f.name_s, f.name_e);
+            o = gc.put(heap, o, "</name>  <!-- chw:");
+            o = gc.put_span(heap, o, src, b.name_s, b.name_e);
+            o = gc.put_span(heap, gc.put(heap, o, ".register."), src, r.name_s, r.name_e);
+            o = gc.put_span(heap, gc.put(heap, o, ".field."), src, f.name_s, f.name_e);
+            o = gc.put(heap, o, " -->\n            <lsb>");
+            o = gc.put_int(heap, o, f.lsb);
+            o = gc.put(heap, o, "</lsb><msb>");
+            o = gc.put_int(heap, o, f.msb);
+            o = gc.put(heap, o, "</msb>\n            <access>");
+            o = gc.put(heap, o, access);
+            o = gc.put(heap, o, "</access>\n");
+            if f.has_enum {
+                o = gc.put(heap, o, "            <enumeratedValues>\n");
+                var x = 0;
+                while x < f.enum_n {
+                    let en = vec.get(ir.enums, f.enum_first + x);
+                    o = gc.put(heap, o, "              <enumeratedValue>\n                <name>");
+                    o = put_xml(heap, o, src, en.name_s, en.name_e);
+                    o = gc.put(heap, o, "</name>\n                <value>");
+                    o = gc.put_int(heap, o, en.value);
+                    o = gc.put(heap, o, "</value>\n              </enumeratedValue>\n");
+                    x = x + 1;
+                }
+                o = gc.put(heap, o, "            </enumeratedValues>\n");
+            }
+            o = gc.put(heap, o, "          </field>\n");
+            k = k + 1;
+        }
+        o = gc.put(heap, o, "          </fields>\n");
+    }
+    return gc.put(heap, o, "        </register>\n");
+}
+
+// The document of `ir` (whose spans index `src`), named `path` in the banner.
+pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte], ir: &q model.Ir) -> [heap] (buffer.Buffer, int) {
+    let b = ir.block;
+    let nregs = vec.size(ir.regs);
+    if !spans_ok(src, ir) {
+        return (gc.internal_text(heap, "a name or number of the contract lies outside the source text"), status_internal());
+    }
+    // The Python tool's order: the block name, then the zero-register refusal, then the path.
+    let first = comment_message(heap, src, b.name_s, b.name_e);
+    var fine = false;
+    borrow first as &fr in {
+        fine = gc.is_empty(fr);
+    }
+    if !fine {
+        return (first, status_refused());
+    }
+    buffer.drop(heap, first);
+    if nregs == 0 {
+        return (gc.internal_text(heap, "SVD peripheral with zero registers: <registers> requires at least one register; declare at least one"), status_refused());
+    }
+    let bad = unusable(heap, src, ir);
+    borrow bad as &br in {
+        fine = gc.is_empty(br);
+    }
+    if !fine {
+        return (bad, status_internal());
+    }
+    buffer.drop(heap, bad);
+    let pm = comment_message(heap, path, 0, len(path));
+    borrow pm as &pr in {
+        fine = gc.is_empty(pr);
+    }
+    if !fine {
+        return (pm, status_refused());
+    }
+    buffer.drop(heap, pm);
+    var i = 0;
+    while i < nregs {
+        let r = vec.get(ir.regs, i);
+        if offset_value(src, r.off_s, r.off_e).big {
+            return (gc.refusal(heap, src, r.off_s, r.off_e, "the register offset", "is past 2^60, which the generator cannot order registers by"), status_refused());
+        }
+        i = i + 1;
+    }
+    let keys = box_slice(heap, nregs + 1, 0);
+    borrow mut keys as &!kw in {
+        var k = 0;
+        while k < nregs {
+            let r = vec.get(ir.regs, k);
+            contents(kw)[k] = offset_value(src, r.off_s, r.off_e).v;
+            k = k + 1;
+        }
+    }
+    let perm = gc.order_by(heap, keys, nregs);
+    var out_text = buffer.empty(heap, 1);
+    var out_status = status_ok();
+    borrow perm as &permr in {
+        let (text, status) = found_while_writing(heap, src, ir, contents(permr));
+        if status != 0 {
+            buffer.drop(heap, out_text);
+            out_text = text;
+            out_status = status;
+        } else {
+            buffer.drop(heap, text);
+            let narrowed = unspellable(heap, src, path, ir);
+            var clean = false;
+            borrow narrowed as &nr in {
+                clean = gc.is_empty(nr);
+            }
+            if !clean {
+                buffer.drop(heap, out_text);
+                out_text = narrowed;
+                out_status = status_refused();
+            } else {
+                buffer.drop(heap, narrowed);
+                var o = gc.put(heap, buffer.empty(heap, 2048), "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Generated by cancho-hdl from ");
+                o = gc.put(heap, gc.put(heap, o, path), ". Do not edit. -->\n<device schemaVersion=\"1.0\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema-instance\" xs:noNamespaceSchemaLocation=\"CMSIS-SVD.xsd\">\n  <!-- chw:");
+                o = gc.put_span(heap, o, src, b.name_s, b.name_e);
+                o = gc.put(heap, o, " -->\n  <name>");
+                o = put_xml(heap, o, src, b.name_s, b.name_e);
+                o = gc.put(heap, o, "</name>\n  <version>");
+                if b.ver_s < 0 {
+                    o = gc.put(heap, o, "0.1.0");
+                } else {
+                    o = put_xml(heap, o, src, b.ver_s, b.ver_e);
+                }
+                o = gc.put(heap, o, "</version>\n  <description>Register map generated by cancho-hdl from ");
+                o = gc.put(heap, gc.put(heap, o, path), ".</description>\n  <addressUnitBits>8</addressUnitBits>\n  <width>");
+                o = gc.put_int(heap, o, b.width);
+                o = gc.put(heap, o, "</width>\n  <peripherals>\n    <peripheral>\n      <!-- chw:");
+                o = gc.put_span(heap, o, src, b.name_s, b.name_e);
+                o = gc.put(heap, o, " -->\n      <name>");
+                o = put_xml(heap, o, src, b.name_s, b.name_e);
+                o = gc.put(heap, o, "</name>\n      <baseAddress>");
+                o = put_hex(heap, o, src, b.base_s, b.base_e, 0);
+                o = gc.put(heap, o, "</baseAddress>\n      <size>");
+                o = gc.put_int(heap, o, b.width);
+                o = gc.put(heap, o, "</size>\n");
+                if vec.size(ir.intrs) > 0 {
+                    o = gc.put(heap, o, "      <!-- interrupts are board-level in CMSIS-SVD and are not emitted as <interrupt> elements (spec/generators README §6.3) -->\n");
+                    var n = 0;
+                    while n < vec.size(ir.intrs) {
+                        let x = vec.get(ir.intrs, n);
+                        o = gc.put_span(heap, gc.put(heap, o, "      <!-- chw:"), src, b.name_s, b.name_e);
+                        o = gc.put_span(heap, gc.put(heap, o, ".interrupt."), src, x.name_s, x.name_e);
+                        o = gc.put_int(heap, gc.put(heap, o, ", IRQ "), x.number);
+                        o = gc.put(heap, o, " -->\n");
+                        n = n + 1;
+                    }
+                }
+                if vec.size(ir.bufs) > 0 {
+                    o = gc.put(heap, o, "      <!-- DMA buffers are not part of the peripheral register map; named by stable ID -->\n");
+                    var d = 0;
+                    while d < vec.size(ir.bufs) {
+                        let x = vec.get(ir.bufs, d);
+                        o = gc.put_span(heap, gc.put(heap, o, "      <!-- chw:"), src, b.name_s, b.name_e);
+                        o = gc.put_span(heap, gc.put(heap, o, ".dma."), src, x.name_s, x.name_e);
+                        o = gc.put(heap, o, " -->\n");
+                        d = d + 1;
+                    }
+                }
+                o = gc.put(heap, o, "      <registers>\n");
+                var j = 0;
+                while j < nregs {
+                    o = put_register(heap, o, src, ir, vec.get(ir.regs, contents(permr)[j]));
+                    j = j + 1;
+                }
+                o = gc.put(heap, o, "      </registers>\n    </peripheral>\n  </peripherals>\n</device>\n");
+                buffer.drop(heap, out_text);
+                out_text = o;
+                out_status = status_ok();
+            }
+        }
+    }
+    unbox_slice(heap, perm);
+    return (out_text, out_status);
+}
