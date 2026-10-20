@@ -22,6 +22,8 @@
 #                                    then the semantic mutants (about four minutes)
 #  8c the C header generator        `chw generate --target c-header` against tools/generate/generate.py:
 #                                    bytes on every fixture and mutant, headers compiled with cc
+#  8d the device-tree generator     `chw generate --target devicetree` against tools/generate/generate.py:
+#                                    bytes on every fixture and mutant, fragments compiled with dtc
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -29,7 +31,7 @@ set -eu
 cd "$(dirname "$0")/.."
 CANCHO=${CANCHO:-../cancho/target/release/cancho}
 OUT=${TMPDIR:-/tmp}/chw
-LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho"
+LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho"
 PROGRAM="src/main.cho $LIB src/io.cho src/conform.cho"
 
 echo "== 1 fmt"
@@ -118,6 +120,10 @@ echo "== 8c the C header generator against generate.py"
 # Needs cc, the compile oracle (docs/cancho-port.md 17.5): two of its known-difference classes are admitted only because
 # a header does or does not compile, so without one the step fails and does not pass quietly.
 python3 tests/differential/generate_c.py "$OUT"
+
+echo "== 8d the device-tree generator against generate.py"
+# Needs dtc (device-tree-compiler), the compile oracle (docs/cancho-port.md 20.5); without one the step fails.
+python3 tests/differential/generate_dts.py "$OUT"
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"

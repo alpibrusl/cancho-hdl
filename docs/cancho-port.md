@@ -1678,7 +1678,7 @@ Not easy:
 
 ### 18.6 What stage 3 does not show
 
-* The four other generators (SystemVerilog, devicetree, cancho-binding, SVD) are not ported. `chw generate`
+* The four other generators (SystemVerilog, devicetree, cancho-binding, SVD) are not ported *(corrected: devicetree is, §20 to §22)*. `chw generate`
   answers `generator-unimplemented` for them and `generator-target-unknown` for anything else; the Python tool
   has all five.
 * Only Linux x86-64 and gcc. clang was not run as the compile oracle, MSVC cannot be.
@@ -1701,3 +1701,182 @@ Not easy:
 * 17.4 predicted that names would be taken from the contract as they are. They are not: 18.3 (1) and (2).
 * 17.5 predicted the oracle's classes as `checker-known`, `python-crash` and `unspellable`. Six were needed
   (adding non-ASCII names, `32.0` widths, both-internal and offsets past 2^60), each in 18.3.
+
+---
+
+## 20. Stage 4 design: the device-tree generator
+
+> **Status: design, now built; measured in §21.** Written from reading `gen/devicetree/devicetree.py`
+> (138 lines), `tools/generate/generate.py` and `spec/generators/README.md` §4, with the stage 3 generator
+> (§17 to §19) as the pattern. *Order of work, honestly:* the code was written first as a probe of the Python
+> generator's behaviour and this section was written to match what it had to decide; the differential in §21
+> is what judges it, and a claim found false is corrected in §22.
+
+### 20.1 What this slice decides
+
+1. **Whether the stage 3 shape carries a second generator**: a pure function of the IR and the source bytes,
+   `(text, status)`, the same three statuses (0 written, 1 `generator-unimplemented`, 3 `internal`), the same
+   dispatcher. The test is whether the second generator costs a fraction of the first.
+2. **What a fragment's oracle is.** The C header had `cc -fsyntax-only`. A DTSI fragment has `dtc`: the fragment is
+   appended to a small tree that defines the `soc` node and the `intc` label it refers to, and compiled with
+   `dtc -I dts -O dtb`. That is a syntax and reference check, not a check against a board's bindings (the
+   fragment is block-level by the spec's own words, §4.3).
+
+It does **not** decide SystemVerilog, cancho-binding or SVD, which stay Python, and it does not change what
+the generator emits: the oracle is the Python generator's bytes.
+
+### 20.2 What the fragment is
+
+One node per block under `&soc`: label and node name `snake(block)`, unit address `base` in upper-case hex,
+`compatible = "cancho,<snake with dashes>-v<major>"`, `reg = <base size>` with `size = max register offset +
+bus_width / 8`, an `interrupt-parent` and one `<number 4>` cell per interrupt in declaration order when the block
+has any, and `bus-width`. Stable IDs go in comments (`chw:Block`, `chw:Block.interrupt.name, IRQ n`). Its
+refusals are the Python tool's: **no register** (the range is undefined) and **a base that does not fit one
+32-bit address cell** (refused, never widened).
+
+### 20.3 Where the port must be careful
+
+* **`_snake` is not the C header's.** It is two regular expressions: a capital that follows a capital and
+  precedes a lower-case letter starts a word, then a capital that follows a lower-case letter *or a digit*
+  does. `HTTPServer2Name` is `http_server2_name`; the C header's rule would not split at the digit. The
+  port is two passes over the bytes and says so.
+* **Upper-case hex without padding** (`f"{base:X}"`), also for a base past 2^60, whose digits come from
+  `hexval.canon_into` upper-cased, so the refusal quotes the exact value.
+* **Names.** The block name becomes a label, so it must be an ASCII identifier; the Python tool writes anything.
+  A name that is not, an interrupt name, version or source path with a JSON escape, a non-ASCII byte or `*/`
+  (which would end the comment that carries it) is refused (`generator-unimplemented`), a narrowing admitted by
+  the oracle only where `dtc` really rejects the Python fragment, or where the name is non-ASCII (§21).
+  `/*` inside a comment is only text to `dtc` and is allowed, unlike in C.
+* **Integers are exact below 2^60** (`hexval.cho`). A register offset past it is refused; a checked contract
+  cannot have one (its offsets must fit the bus range, so the refusal is reachable only from an IR built by hand).
+
+### 20.4 Gate and size
+
+Step 8d of `scripts/gate_cancho.sh` (and `dtc` in CI). Budget (estimate, written before counting): about 250 lines for
+the generator against 138 of Python, since text assembly costs about three lines a piece (§14.7).
+
+### 20.5 The oracle, and what would make this slice fail
+
+1. **Fixtures**: the 50 files through both command lines; stdout, stderr and exit status compared byte for byte;
+   every fragment either tool writes compiled with `dtc`.
+2. **Mutants**: the mutants of `check_json.py`, through both command lines.
+3. **Hand-made inputs** only a generator can get wrong: names a label cannot spell, versions, bases at and past 32
+   bits, interrupts, one block with no register, large contracts.
+4. **Known classes**, as in §18.3, each admitted only for its stated reason; anything else is an unexplained
+   difference and fails the step. A hand-made input whose fragment `dtc` rejects must be *refused* by cancho: writing
+   the same broken fragment as Python is not an agreement (the exceptions are two names, 21.3).
+5. **Unit tests** for what the command line cannot reach (an IR built by hand, a source path).
+6. **Mutation checks**: one deliberate break per decision of the generator, each killed by one of the three tiers.
+
+The slice fails if the second generator costs as much as the first, if any difference is unexplained, or if a break
+survives without a stated reason.
+
+---
+
+## 21. Stage 4 measured
+
+Compiler cancho `7e4088b`, Linux x86-64; `dtc` 1.7.0 as the compile oracle. Everything below is the output of
+`tests/differential/generate_dts.py` (the gate's step 8d), `tests/mutation/run_gen_dts.py` and `cancho test`.
+
+### 21.1 What was built
+
+| file | lines | what |
+|---|---:|---|
+| `src/gen_dts.cho` | 343 | the generator |
+| `src/gen_c.cho` | 7 words | `pub` on the seven helpers both generators use (`put`, `put_span`, `put_int`, `is_identifier`, `is_empty`, `refusal`, `internal_text`) |
+| `src/main.cho` | 491 (+16) | the dispatcher answers `devicetree` as it does `c-header` |
+| `tests/unit/test_gen_dts.cho` | 374 | 16 tests |
+| `tests/differential/generate_dts.py` | 322 | the oracle driver |
+| `tests/mutation/run_gen_dts.py` | 111 | 31 deliberate breaks |
+
+The estimate of 20.4 (about 250 lines) was missed: **343 lines against 138 of Python, 2.5 times**. The C header's
+ratio was 590 against 340. The cost is the same kind: spans instead of strings, every append a call with the heap
+threaded through, and two passes where Python has two regular expressions. `chw` builds in about 15 s; the
+authority report of `chw` is unchanged.
+
+### 21.2 Against `generate.py`, byte for byte
+
+Fixtures (50 files): stdout, stderr and exit status identical on **43**, 7 known differences, and all 5 fragments
+the tools write compile with `dtc` (both tools write the same 5).
+
+Inputs (55,224 distinct: the mutants of `check_json.py` and 42 hand-made inputs; 11,438 repeats skipped):
+
+| | count |
+|---|---:|
+| identical to `generate.py` (a fragment on 3,123, a refusal on 43,896) | 47,019 |
+| the checker's known differences (§13.5) | 1,192 |
+| both answer `internal` | 1,172 |
+| `generate.py` raised (`AttributeError` 4,042, `TypeError` 1,772), cancho answered with exit 0 or 1 and no trap | 5,814 |
+| a name cancho refuses and Python writes: `dtc` rejects Python's fragment (`unspellable`) | 20 |
+| the same with a non-ASCII byte or an escape, where Python's fragment compiles (`non-ascii-name`) | 7 |
+| **unexplained** | **0** |
+
+### 21.3 What the oracle found, and what was decided
+
+1. **`Block.big` is the endianness, not a size.** The first version refused a block with `big` set as having "a bus
+   width that is not a number". The differential found it at once (`endianness: 1`, then every big-endian contract):
+   a guess about what a field meant, not a reading of `ir.cho`. Fixed, and a unit test writes a big-endian block.
+2. **Refusal order.** Python finds an interrupt with no number only while writing, after its two refusals; the first
+   version checked it before the base. Fixed: the order is Python's.
+3. **`/*` in a comment.** The first version refused it as the C header does; `dtc` accepts it, so the refusal was
+   too much. The check is for `*/` only (the harness reported it as "Python's fragment compiles").
+4. **A block called `soc` or `intc`** redefines a label of the tree the fragment is appended to, and `dtc` rejects the
+   result. Python writes the same fragment and so does this generator: a **shared defect**, not fixed (the
+   oracle's tree has those labels because the spec's fragment refers to `&soc` and `&intc`; a board whose node has
+   another name is the board's concern). The harness lists the two names and fails on any other hand-made input
+   whose fragment `dtc` rejects but cancho writes.
+5. **Names.** A block name must be an ASCII identifier (a label); an interrupt name, a version and the source path
+   must be ASCII, free of a JSON escape and of `*/`. This narrows Python, which writes anything: 20 inputs where
+   Python's fragment does not compile and 7 where it does (non-ASCII).
+6. **Register offsets past 2^60** cannot occur in a checked contract (offsets must fit the bus range, so the checker
+   refuses them: `register-offset-overflow`); the refusal is reachable only from an IR built by hand, and a unit test
+   reaches it.
+
+### 21.4 The checks can fail
+
+`tests/mutation/run_gen_dts.py` makes one break per decision of `gen_dts.cho` (the zero-register refusal, the 32-bit
+limit, the size formula, hex case and prefix, both passes of the snake rule, the dashed form, the major of the
+version, the interrupt layout, the name and comment guards, the internal checks). **31 of 31 are killed.** A first run
+killed 28 of 32; the four survivors were each a finding:
+
+* `base-big` was an equivalent break: `base.big || base.v > 2^32-1` and `base.v > 2^32-1` are the same because the
+  value saturates at 2^60. The redundant test was removed rather than excused.
+* `label` and `interrupt-name`: nothing could fail them. The only unit test for a name that is not a label used the
+  text form, whose lexer rejects `A-B`, so the generator saw an empty IR and refused it for having no register: the
+  right answer for the wrong reason. And the harness accepted any input on which both tools wrote the same broken
+  fragment. The unit tests now build the name as spans, and the harness fails on that case (21.3, 4).
+* `base-internal` had no test: the checker never lets an unreadable base through. A unit test builds one.
+
+### 21.5 What was easy, and what was not
+
+* **Easy:** the shape. `(text, status)`, the three statuses, the helpers of §18 and the dispatcher carried over;
+  the generator was written in one sitting once the Python was read, and `dtc` as an oracle needed one small tree.
+* **Not easy:** two guesses were wrong in ways the byte comparison found in the first run (21.3, 1 and 2), and the
+  hand-made inputs were not enough to find the third and fourth survivors (21.4). The mutation tier found what the
+  differential could not, as in §18.4.
+* **Cost:** the differential over 55k mutants takes about 35 minutes on 4 cores, most of it the Python side.
+
+### 21.6 What stage 4 does not show
+
+* SystemVerilog, cancho-binding and SVD are not ported. `chw generate` answers `generator-unimplemented` for them.
+* `dtc` checks syntax, labels and references in a tree that has `soc` and `intc`; it does not check the fragment
+  against a board's bindings (the fragment is block-level by the spec, §4.3), and no kernel or Zephyr build was run.
+* The compatible string and the interrupt flag cell are the Python tool's placeholders (the spec's sketch); this
+  port reproduces them and does not improve them.
+* Only Linux x86-64.
+
+---
+
+## 22. Corrections (stage 4)
+
+* 20.4 estimated about 250 lines for the generator; it is 343 (21.1).
+* 20.3 predicted that names would be refused only where `dtc` rejects Python's fragment, or where they are non-ASCII.
+  The first version also refused `/*`, which `dtc` accepts; corrected (21.3, 3).
+* 20.2 listed no refusal for an interrupt without a number; there is one, `internal`, after Python's two refusals
+  (21.3, 2).
+* §18.6 said four generators were not ported; three are not (§21.6).
+* The Python reference gate's `devicetree roundtrip` has a `dtc` lane (`tests/roundtrip/devicetree_generates.py`) that
+  parsed the bare fragment, which `dtc` rejects (`&soc {` is not a tree). It had never run: no image the project ran on had
+  `dtc`, so it printed "NOTE dtc not on $PATH". Installing `dtc` for gate step 8d turned it on and CI failed at once
+  (found by CI, not locally: the local gate does not run the Python reference). The lane now appends the fragment to the
+  same small tree as step 8d, and the test says so.

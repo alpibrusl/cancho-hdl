@@ -32,11 +32,11 @@ pub fn status_internal() -> [] int {
 
 // ---- text ---------------------------------------------------------------
 
-fn put[&h, &t](heap: &!h Heap, out: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+pub fn put[&h, &t](heap: &!h Heap, out: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
     return buffer.append(heap, out, text);
 }
 
-fn put_span[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
+pub fn put_span[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int, e: int) -> [heap] buffer.Buffer {
     return buffer.append(heap, out, src[a..e]);
 }
 
@@ -74,7 +74,7 @@ fn put_snake[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], a: int,
     return o;
 }
 
-fn put_int[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+pub fn put_int[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
     return json_out.num(heap, out, n);
 }
 
@@ -103,7 +103,7 @@ fn is_keyword[&t](text: &t [byte]) -> [] bool {
 
 // `[A-Za-z_][A-Za-z0-9_]*`. A name that is anything else cannot be a member, a type or a
 // macro, and one with `*/` in it would end the comment that carries its stable ID.
-fn is_identifier[&s](src: &s [byte], a: int, e: int) -> [] bool {
+pub fn is_identifier[&s](src: &s [byte], a: int, e: int) -> [] bool {
     if e <= a {
         return false;
     }
@@ -149,12 +149,12 @@ fn is_comment_text[&s](src: &s [byte], a: int, e: int) -> [] bool {
     return true;
 }
 
-fn is_empty[&x](b: &x buffer.Buffer) -> [] bool {
+pub fn is_empty[&x](b: &x buffer.Buffer) -> [] bool {
     return buffer.size(b) == 0;
 }
 
 // The refusal text: `{what} {repr} {why}`.
-fn refusal[&h, &s, &w](heap: &!h Heap, src: &s [byte], a: int, e: int, what: &w [byte], why: &static [byte]) -> [heap] buffer.Buffer {
+pub fn refusal[&h, &s, &w](heap: &!h Heap, src: &s [byte], a: int, e: int, what: &w [byte], why: &static [byte]) -> [heap] buffer.Buffer {
     var m = put(heap, buffer.empty(heap, 96), what);
     m = put(heap, m, " ");
     m = pyrepr.str_repr(heap, m, src[a..e]);
@@ -162,7 +162,7 @@ fn refusal[&h, &s, &w](heap: &!h Heap, src: &s [byte], a: int, e: int, what: &w 
     return put(heap, m, why);
 }
 
-fn internal_text[&h, &w](heap: &!h Heap, what: &w [byte]) -> [heap] buffer.Buffer {
+pub fn internal_text[&h, &w](heap: &!h Heap, what: &w [byte]) -> [heap] buffer.Buffer {
     return put(heap, buffer.empty(heap, 64), what);
 }
 
