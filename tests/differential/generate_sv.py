@@ -20,6 +20,8 @@ Known classes, each with its reason:
   non-ascii-name     a name has a non-ASCII byte or a JSON escape; cancho writes ASCII only and refuses the rest. A
                      narrowing, stated in the document, admitted only if the input really holds such a byte or escape.
   both-internal      both tools answer `internal`; each says it in its own words.
+  python-float-width-crash  `"bus_width": 32.0` with a reset value: Python raises (a float as a format width); cancho
+                     reads the integer and writes the module. Admitted only if the input holds a float bus width.
   float-bus-width    `"bus_width": 3.2e1`: an integer to the schema; Python writes `32.0` where SystemVerilog needs
                      `32`, cancho writes `32`. Admitted only if that is the whole difference.
 
@@ -104,6 +106,10 @@ def judge(tmp, label, text, py, path):
         fixed = re.sub(r"= (\d+)\.0'h", r"= \1'h", fixed)
         if fixed == ca[1] and py[2] == ca[2]:
             return ["known:float-bus-width"], None
+    if py[0] == 3 and ca[0] == 0 and "Precision not allowed" in py[2] and re.search(r'"bus_width":\s*[0-9]+(\.[0-9]+|[eE][0-9+-]+)', text):
+        # `"bus_width": 32.0` with a reset value: Python formats the reset with a float width (`:08.0x`) and raises;
+        # cancho reads the integer and writes the module.
+        return ["known:python-float-width-crash"], None
     if checker_known(tmp, label, text):
         return ["known:checker"], None
     return [], f"{label}: rc python={py[0]} cancho={ca[0]}\n   python stderr: {py[2].strip()[:140]}\n   cancho stderr: {ca[2].strip()[:140]}"
@@ -206,6 +212,7 @@ GENERATOR_INPUTS = [
     ("no-registers", doc(registers=[])),
     ("big-endian", doc(endianness="big")),
     ("float-bus-width", doc(bus_width=32.0, registers=[reg()])),
+    ("float-bus-width-with-reset", doc(bus_width=32.0)),
 ]
 
 
@@ -303,7 +310,7 @@ def main():
     print(f"  stdout, stderr and exit status identical to generate.py: {tally['identical']}"
           f" (declarations written on {tally['rc0']}, refused on {tally['rc1']})")
     print(f"  known differences: checker {tally['known:checker']}, non-ASCII name {tally['known:non-ascii-name']},"
-          f" both internal {tally['known:both-internal']}, float bus width {tally['known:float-bus-width']}")
+          f" both internal {tally['known:both-internal']}, float bus width {tally['known:float-bus-width']}, float-width crash {tally['known:python-float-width-crash']}")
     crashes = sum(v for k, v in tally.items() if k.startswith("python-crash:"))
     print(f"  generate.py raised, cancho answered with exit 0 or 1 and no trap: {crashes}")
     for k in sorted(tally):
