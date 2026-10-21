@@ -52,6 +52,10 @@ jobs:
       - name: Install xmllint
         run: sudo apt-get install -y -q libxml2-utils
 
+      # iverilog reads the SystemVerilog both tools write (gate step 8j): it refuses it today, in both (docs/cancho-port.md 34).
+      - name: Install iverilog
+        run: sudo apt-get install -y -q iverilog
+
       # fmt, check, cancho test, file lengths, build; the text parser against the Python parser; the
       # conformance runner over every fixture; the JSON loader and validator against json + jsonschema;
       # the semantic checker against checker.py (byte for byte on the fixtures, then 55k mutants).

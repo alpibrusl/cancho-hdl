@@ -32,6 +32,7 @@
 #                                    bytes on every fixture and mutant (no RTL tool on the runner: the Python bytes are the oracle)
 #  8h the rule groups that ran      `chw check --ran` against `checker.check(ir, ran=...)`, the fixtures and the mutants
 #  8i diff and impact               `chw diff` and `chw impact` against tools/diff/diff.py, bytes and exit status
+#  8j the SystemVerilog output       both tools' modules through iverilog: the verdicts must agree (both refuse them, 34)
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -154,6 +155,11 @@ echo "== 8i diff and impact against diff.py"
 # `chw diff` and `chw impact` against tools/diff/diff.py: bytes, standard error and exit status, on pairs of the fixtures
 # and on every mutant of a seed against its seed (docs/cancho-port.md, 33).
 python3 tests/differential/diff_cmp.py "$OUT"
+
+echo "== 8j SystemVerilog output read by a parser (iverilog)"
+# Both tools' modules through `iverilog -g2012 -tnull`: today it refuses every one, in both, for the same two reasons
+# (docs/cancho-port.md, 34); the step fails only if the two tools disagree, or iverilog is missing where $CI is set.
+python3 tests/differential/sv_parse.py "$OUT" ${CI:+--require}
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"
