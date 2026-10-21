@@ -31,6 +31,7 @@
 #  8g the SystemVerilog generator   `chw generate --target systemverilog` against tools/generate/generate.py:
 #                                    bytes on every fixture and mutant (no RTL tool on the runner: the Python bytes are the oracle)
 #  8h the rule groups that ran      `chw check --ran` against `checker.check(ir, ran=...)`, the fixtures and the mutants
+#  8i diff and impact               `chw diff` and `chw impact` against tools/diff/diff.py, bytes and exit status
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -38,7 +39,7 @@ set -eu
 cd "$(dirname "$0")/.."
 CANCHO=${CANCHO:-../cancho/target/release/cancho}
 OUT=${TMPDIR:-/tmp}/chw
-LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho src/gen_svd.cho src/gen_binding.cho src/gen_sv.cho"
+LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho src/gen_svd.cho src/gen_binding.cho src/gen_sv.cho src/diff_util.cho src/diff.cho src/diff_fmt.cho src/impact.cho"
 PROGRAM="src/main.cho $LIB src/io.cho src/conform.cho"
 
 echo "== 1 fmt"
@@ -148,6 +149,11 @@ echo "== 8h the rule groups the checker ran against checker.py"
 # `chw check --ran` against `checker.check(ir, ran=...)`: the fixtures, then the mutants of the checker's differential
 # (docs/cancho-port.md, 32).
 python3 tests/differential/check_ran.py "$OUT"
+
+echo "== 8i diff and impact against diff.py"
+# `chw diff` and `chw impact` against tools/diff/diff.py: bytes, standard error and exit status, on pairs of the fixtures
+# and on every mutant of a seed against its seed (docs/cancho-port.md, 33).
+python3 tests/differential/diff_cmp.py "$OUT"
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"

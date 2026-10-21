@@ -22,8 +22,9 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CANCHO = os.environ.get("CANCHO", str(ROOT.parent / "cancho/target/release/cancho"))
-MODULES = """lex ir parse json_out json_in diag pyrepr pattern schema front load diagnostic hexval check_util
-check_block check_regs check_intr check_dma check dg_json dg_text dg_report gen_c gen_dts gen_svd gen_binding gen_sv""".split()
+MODULES = """lex ir parse json_out json_in diag pyrepr pattern schema front load diagnostic hexval check_util check_block
+check_regs check_intr check_dma check dg_json dg_text dg_report gen_c gen_dts gen_svd gen_binding gen_sv
+diff_util diff diff_fmt impact""".split()
 PROGRAM = ["main"] + MODULES + ["io", "conform"]
 
 # (name, old, new, what it breaks)

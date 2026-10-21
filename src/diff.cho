@@ -1,0 +1,634 @@
+module chw.diff;
+
+// diff.cho -- `compute_diff` of tools/diff/diff.py: the semantic diff of two contracts, as the text of the
+// document `json.dumps` writes (docs/cancho-port.md, 33).
+//
+// Each of the sixteen lists of the document is one pass over the two inputs, so the order within a list is the
+// order of the Python loop that fills it. The inputs are the JSON the IR prints as, parsed to tapes; a register, a
+// field, an interrupt, a buffer is matched by name as Python's dicts do (chw.diff_util).
+
+import std.buffer;
+import std.bytes;
+import std.json;
+import chw.diff_util as du;
+
+fn block_of[&s, &t](src: &s [byte], tape: &t [int]) -> [] int {
+    return json.get(src, tape, 0, "block");
+}
+
+fn registers_of[&s, &t](src: &s [byte], tape: &t [int]) -> [] int {
+    return json.get(src, tape, block_of(src, tape), "registers");
+}
+
+fn interrupts_of[&s, &t](src: &s [byte], tape: &t [int]) -> [] int {
+    return json.get(src, tape, block_of(src, tape), "interrupts");
+}
+
+fn buffers_of[&s, &t](src: &s [byte], tape: &t [int]) -> [] int {
+    return json.get(src, tape, 0, "dma_buffers");
+}
+
+fn block_name[&s, &t](src: &s [byte], tape: &t [int]) -> [] &s [byte] {
+    return du.body(src, tape, json.get(src, tape, block_of(src, tape), "name"));
+}
+
+// ---- registers ------------------------------------------------------------------------------------------------
+
+// `{"id": .., "offset": .., "kind": ..}`: a register added or removed.
+fn register_entry[&h, &b, &n, &s, &t](heap: &!h Heap, out: buffer.Buffer, block: &b [byte], name: &n [byte], src: &s [byte], tape: &t [int], reg: int) -> [heap] buffer.Buffer {
+    var o = du.lit(heap, out, "{\"id\": ");
+    o = du.id(heap, o, block, "register", name);
+    o = du.lit(heap, o, ", \"offset\": ");
+    o = du.value(heap, o, src, tape, json.get(src, tape, reg, "offset"));
+    o = du.lit(heap, o, ", \"kind\": ");
+    o = du.value(heap, o, src, tape, json.get(src, tape, reg, "kind"));
+    return du.lit(heap, o, "}");
+}
+
+// The registers of `a` that `b` does not have (all of them when the blocks differ): `added_registers` with the
+// candidate as `a`, `removed_registers` with the base.
+fn registers_only_in[&h, &s1, &t1, &s2, &t2](heap: &!h Heap, out: buffer.Buffer, s1: &s1 [byte], t1: &t1 [int], s2: &s2 [byte], t2: &t2 [int], same: bool) -> [heap] buffer.Buffer {
+    var o = out;
+    let arr = registers_of(s1, t1);
+    let other = registers_of(s2, t2);
+    var j = arr + 1;
+    var left = json.count(t1, arr);
+    var n = 0;
+    while left > 0 {
+        if du.is_first(s1, t1, arr, j) {
+            let name = du.name_of(s1, t1, j);
+            if !same || du.last_named(s2, t2, other, name) < 0 {
+                o = register_entry(heap, du.sep(heap, o, n), block_name(s1, t1), name, s1, t1, du.last_named(s1, t1, arr, name));
+                n = n + 1;
+            }
+        }
+        j = json.skip(t1, j);
+        left = left - 1;
+    }
+    return o;
+}
+
+// `moved_registers` (what = 0) and `changed_reset_values` (what = 1): the registers both sides have, whose offset or
+// whose reset differs.
+fn registers_changed[&h, &bs, &bt, &cs, &ct](heap: &!h Heap, out: buffer.Buffer, bs: &bs [byte], bt: &bt [int], cs: &cs [byte], ct: &ct [int], same: bool, what: int) -> [heap] buffer.Buffer {
+    var o = out;
+    if !same {
+        return o;
+    }
+    let carr = registers_of(cs, ct);
+    let barr = registers_of(bs, bt);
+    var j = carr + 1;
+    var left = json.count(ct, carr);
+    var n = 0;
+    while left > 0 {
+        if du.is_first(cs, ct, carr, j) {
+            let name = du.name_of(cs, ct, j);
+            let creg = du.last_named(cs, ct, carr, name);
+            let breg = du.last_named(bs, bt, barr, name);
+            if breg >= 0 {
+                if what == 0 {
+                    let bo = json.get(bs, bt, breg, "offset");
+                    let co = json.get(cs, ct, creg, "offset");
+                    if !du.hex_equal_nodes(bs, bt, bo, cs, ct, co) {
+                        o = du.id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(cs, ct), "register", name);
+                        o = du.value(heap, du.lit(heap, o, ", \"from_offset\": "), bs, bt, bo);
+                        o = du.value(heap, du.lit(heap, o, ", \"to_offset\": "), cs, ct, co);
+                        o = du.lit(heap, o, "}");
+                        n = n + 1;
+                    }
+                } else {
+                    let br = json.get(bs, bt, breg, "reset");
+                    let cr = json.get(cs, ct, creg, "reset");
+                    if !du.hex_equal_nodes(bs, bt, br, cs, ct, cr) {
+                        o = du.id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(cs, ct), "register", name);
+                        o = du.value(heap, du.lit(heap, o, ", \"from\": "), bs, bt, br);
+                        o = du.value(heap, du.lit(heap, o, ", \"to\": "), cs, ct, cr);
+                        o = du.lit(heap, o, "}");
+                        n = n + 1;
+                    }
+                }
+            }
+        }
+        j = json.skip(ct, j);
+        left = left - 1;
+    }
+    return o;
+}
+
+// ---- fields ---------------------------------------------------------------------------------------------------
+
+// widened 0, narrowed 1, repositioned 2: `_classify_field` of a field whose bit range changed.
+fn classify[&bs, &bt, &cs, &ct](bs: &bs [byte], bt: &bt [int], bf: int, cs: &cs [byte], ct: &ct [int], cf: int) -> [] int {
+    let b_lsb = json.to_int(bs, bt, json.get(bs, bt, bf, "lsb"));
+    let b_msb = json.to_int(bs, bt, json.get(bs, bt, bf, "msb"));
+    let c_lsb = json.to_int(cs, ct, json.get(cs, ct, cf, "lsb"));
+    let c_msb = json.to_int(cs, ct, json.get(cs, ct, cf, "msb"));
+    if c_lsb <= b_lsb && c_msb >= b_msb {
+        return 0;
+    }
+    if c_lsb >= b_lsb && c_msb <= b_msb {
+        return 1;
+    }
+    return 2;
+}
+
+fn range_entry[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], f: int) -> [heap] buffer.Buffer {
+    var o = du.lit(heap, out, "{\"lsb\": ");
+    o = du.value(heap, o, src, tape, json.get(src, tape, f, "lsb"));
+    o = du.lit(heap, o, ", \"msb\": ");
+    o = du.value(heap, o, src, tape, json.get(src, tape, f, "msb"));
+    return du.lit(heap, o, "}");
+}
+
+// `{"id": .., "label": .., "from": .., "to": ..}`.
+fn enum_entry[&h, &b, &r, &f, &l, &s1, &t1, &s2, &t2](heap: &!h Heap, out: buffer.Buffer, block: &b [byte], reg: &r [byte], fld: &f [byte], label: &l [byte], s1: &s1 [byte], t1: &t1 [int], from: int, s2: &s2 [byte], t2: &t2 [int], to: int) -> [heap] buffer.Buffer {
+    var o = du.field_id(heap, du.lit(heap, out, "{\"id\": "), block, "register", reg, fld);
+    o = du.lit(heap, o, ", \"label\": ");
+    o = du.quote(heap, o, label);
+    o = du.lit(heap, o, ", \"from\": ");
+    o = du.value(heap, o, s1, t1, from);
+    o = du.lit(heap, o, ", \"to\": ");
+    o = du.value(heap, o, s2, t2, to);
+    return du.lit(heap, o, "}");
+}
+
+// The enum changes of one surviving field: the labels of the candidate (new or changed), then the labels it dropped.
+fn enum_changes[&h, &bs, &bt, &cs, &ct, &r, &f](heap: &!h Heap, out: buffer.Buffer, bs: &bs [byte], bt: &bt [int], bf: int, cs: &cs [byte], ct: &ct [int], cf: int, reg: &r [byte], fld: &f [byte], n0: int) -> [heap] (buffer.Buffer, int) {
+    var o = out;
+    var n = n0;
+    let be = json.get(bs, bt, bf, "enum");
+    let ce = json.get(cs, ct, cf, "enum");
+    var j = ce + 1;
+    var left = json.count(ct, ce);
+    while left > 0 {
+        if du.key_is_first(cs, ct, ce, j) {
+            let label = du.body(cs, ct, j);
+            let cv = du.last_key(cs, ct, ce, label);
+            let bv = du.last_key(bs, bt, be, label);
+            if bv < 0 || !bytes.equal(du.digits(bs, bt, bv), du.digits(cs, ct, cv)) {
+                o = enum_entry(heap, du.sep(heap, o, n), block_name(cs, ct), reg, fld, label, bs, bt, bv, cs, ct, cv);
+                n = n + 1;
+            }
+        }
+        j = json.skip(ct, j + 1);
+        left = left - 1;
+    }
+    j = be + 1;
+    left = json.count(bt, be);
+    while left > 0 {
+        if du.key_is_first(bs, bt, be, j) {
+            let label = du.body(bs, bt, j);
+            if du.last_key(cs, ct, ce, label) < 0 {
+                o = enum_entry(heap, du.sep(heap, o, n), block_name(cs, ct), reg, fld, label, bs, bt, du.last_key(bs, bt, be, label), cs, ct, 0 - 1);
+                n = n + 1;
+            }
+        }
+        j = json.skip(bt, j + 1);
+        left = left - 1;
+    }
+    return (o, n);
+}
+
+// One of the lists made by the loop over the fields of the registers both sides have: widened 0, narrowed 1,
+// repositioned 2, added 3, removed 4, changed enum values 5.
+fn fields_pass[&h, &bs, &bt, &cs, &ct](heap: &!h Heap, out: buffer.Buffer, bs: &bs [byte], bt: &bt [int], cs: &cs [byte], ct: &ct [int], same: bool, mode: int) -> [heap] buffer.Buffer {
+    var o = out;
+    if !same {
+        return o;
+    }
+    let carr = registers_of(cs, ct);
+    let barr = registers_of(bs, bt);
+    var j = carr + 1;
+    var left = json.count(ct, carr);
+    var n = 0;
+    while left > 0 {
+        if du.is_first(cs, ct, carr, j) {
+            let rname = du.name_of(cs, ct, j);
+            let creg = du.last_named(cs, ct, carr, rname);
+            let breg = du.last_named(bs, bt, barr, rname);
+            if breg >= 0 {
+                let cfs = json.get(cs, ct, creg, "fields");
+                let bfs = json.get(bs, bt, breg, "fields");
+                var k = cfs + 1;
+                var more = json.count(ct, cfs);
+                while more > 0 {
+                    if du.is_first(cs, ct, cfs, k) {
+                        let fname = du.name_of(cs, ct, k);
+                        let cf = du.last_named(cs, ct, cfs, fname);
+                        let bf = du.last_named(bs, bt, bfs, fname);
+                        if bf < 0 {
+                            if mode == 3 {
+                                o = du.field_id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(cs, ct), "register", rname, fname);
+                                o = du.lit(heap, o, ", \"lsb\": ");
+                                o = du.value(heap, o, cs, ct, json.get(cs, ct, cf, "lsb"));
+                                o = du.lit(heap, o, ", \"msb\": ");
+                                o = du.value(heap, o, cs, ct, json.get(cs, ct, cf, "msb"));
+                                o = du.lit(heap, o, "}");
+                                n = n + 1;
+                            }
+                        } else {
+                            let moved = !bytes.equal(du.digits(bs, bt, json.get(bs, bt, bf, "lsb")), du.digits(cs, ct, json.get(cs, ct, cf, "lsb"))) || !bytes.equal(du.digits(bs, bt, json.get(bs, bt, bf, "msb")), du.digits(cs, ct, json.get(cs, ct, cf, "msb")));
+                            if moved && mode < 3 && classify(bs, bt, bf, cs, ct, cf) == mode {
+                                o = du.field_id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(cs, ct), "register", rname, fname);
+                                o = range_entry(heap, du.lit(heap, o, ", \"from\": "), bs, bt, bf);
+                                o = range_entry(heap, du.lit(heap, o, ", \"to\": "), cs, ct, cf);
+                                o = du.lit(heap, o, "}");
+                                n = n + 1;
+                            }
+                            if mode == 5 {
+                                let (o2, n2) = enum_changes(heap, o, bs, bt, bf, cs, ct, cf, rname, fname, n);
+                                o = o2;
+                                n = n2;
+                            }
+                        }
+                    }
+                    k = json.skip(ct, k);
+                    more = more - 1;
+                }
+                if mode == 4 {
+                    var x = bfs + 1;
+                    var rest = json.count(bt, bfs);
+                    while rest > 0 {
+                        if du.is_first(bs, bt, bfs, x) {
+                            let fname = du.name_of(bs, bt, x);
+                            if du.last_named(cs, ct, cfs, fname) < 0 {
+                                let bf = du.last_named(bs, bt, bfs, fname);
+                                o = du.field_id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(cs, ct), "register", rname, fname);
+                                o = du.lit(heap, o, ", \"lsb\": ");
+                                o = du.value(heap, o, bs, bt, json.get(bs, bt, bf, "lsb"));
+                                o = du.lit(heap, o, ", \"msb\": ");
+                                o = du.value(heap, o, bs, bt, json.get(bs, bt, bf, "msb"));
+                                o = du.lit(heap, o, "}");
+                                n = n + 1;
+                            }
+                        }
+                        x = json.skip(bt, x);
+                        rest = rest - 1;
+                    }
+                }
+            }
+        }
+        j = json.skip(ct, j);
+        left = left - 1;
+    }
+    return o;
+}
+
+// ---- interrupts -----------------------------------------------------------------------------------------------
+
+// `added_interrupts` (the candidate as `a`) and `removed_interrupts` (the base as `a`).
+fn interrupts_only_in[&h, &s1, &t1, &s2, &t2](heap: &!h Heap, out: buffer.Buffer, s1: &s1 [byte], t1: &t1 [int], s2: &s2 [byte], t2: &t2 [int], same: bool) -> [heap] buffer.Buffer {
+    var o = out;
+    let arr = interrupts_of(s1, t1);
+    let other = interrupts_of(s2, t2);
+    var j = arr + 1;
+    var left = json.count(t1, arr);
+    var n = 0;
+    while left > 0 {
+        if du.is_first(s1, t1, arr, j) {
+            let name = du.name_of(s1, t1, j);
+            if !same || du.last_named(s2, t2, other, name) < 0 {
+                o = du.id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(s1, t1), "interrupt", name);
+                o = du.lit(heap, o, "}");
+                n = n + 1;
+            }
+        }
+        j = json.skip(t1, j);
+        left = left - 1;
+    }
+    return o;
+}
+
+fn role_name(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "number";
+    }
+    if i == 1 {
+        return "source";
+    }
+    if i == 2 {
+        return "enable";
+    }
+    if i == 3 {
+        return "status";
+    }
+    return "clear";
+}
+
+// `changed_interrupts`: the interrupts both sides have, with the roles whose value differs.
+fn interrupts_changed[&h, &bs, &bt, &cs, &ct](heap: &!h Heap, out: buffer.Buffer, bs: &bs [byte], bt: &bt [int], cs: &cs [byte], ct: &ct [int], same: bool) -> [heap] buffer.Buffer {
+    var o = out;
+    if !same {
+        return o;
+    }
+    let carr = interrupts_of(cs, ct);
+    let barr = interrupts_of(bs, bt);
+    var j = carr + 1;
+    var left = json.count(ct, carr);
+    var n = 0;
+    while left > 0 {
+        if du.is_first(cs, ct, carr, j) {
+            let name = du.name_of(cs, ct, j);
+            let ci = du.last_named(cs, ct, carr, name);
+            let bi = du.last_named(bs, bt, barr, name);
+            if bi >= 0 {
+                var changes = buffer.empty(heap, 64);
+                var m = 0;
+                var r = 0;
+                while r < 5 {
+                    let bv = json.get(bs, bt, bi, role_name(r));
+                    let cv = json.get(cs, ct, ci, role_name(r));
+                    if !du.equal(bs, bt, bv, cs, ct, cv) {
+                        changes = du.lit(heap, du.sep(heap, changes, m), "{\"role\": ");
+                        changes = du.quote(heap, changes, role_name(r));
+                        changes = du.value(heap, du.lit(heap, changes, ", \"from\": "), bs, bt, bv);
+                        changes = du.value(heap, du.lit(heap, changes, ", \"to\": "), cs, ct, cv);
+                        changes = du.lit(heap, changes, "}");
+                        m = m + 1;
+                    }
+                    r = r + 1;
+                }
+                if m > 0 {
+                    o = du.id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(cs, ct), "interrupt", name);
+                    o = du.lit(heap, o, ", \"changes\": [");
+                    borrow changes as &cr in {
+                        o = du.raw(heap, o, buffer.bytes(cr));
+                    }
+                    o = du.lit(heap, o, "]}");
+                    n = n + 1;
+                }
+                buffer.drop(heap, changes);
+            }
+        }
+        j = json.skip(ct, j);
+        left = left - 1;
+    }
+    return o;
+}
+
+// ---- DMA ------------------------------------------------------------------------------------------------------
+
+// `[ids..]` of the fields of the buffer `d` of `src`, in list order, or only those that `other` lacks.
+fn field_ids[&h, &b, &n, &s, &t](heap: &!h Heap, out: buffer.Buffer, block: &b [byte], buf: &n [byte], src: &s [byte], tape: &t [int], d: int) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('['));
+    let fs = json.get(src, tape, d, "fields");
+    var j = fs + 1;
+    var left = json.count(tape, fs);
+    var n = 0;
+    while left > 0 {
+        o = du.field_id(heap, du.sep(heap, o, n), block, "dma", buf, du.name_of(src, tape, j));
+        j = json.skip(tape, j);
+        left = left - 1;
+        n = n + 1;
+    }
+    return buffer.push(heap, o, byte_of(']'));
+}
+
+// The ids of the fields of `s1`'s buffer `d1` that `d2` of `s2` lacks (by name, as a dict).
+fn missing_field_ids[&h, &b, &n, &s1, &t1, &s2, &t2](heap: &!h Heap, out: buffer.Buffer, block: &b [byte], buf: &n [byte], s1: &s1 [byte], t1: &t1 [int], d1: int, s2: &s2 [byte], t2: &t2 [int], d2: int) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('['));
+    let f1 = json.get(s1, t1, d1, "fields");
+    let f2 = json.get(s2, t2, d2, "fields");
+    var j = f1 + 1;
+    var left = json.count(t1, f1);
+    var n = 0;
+    while left > 0 {
+        if du.is_first(s1, t1, f1, j) {
+            let name = du.name_of(s1, t1, j);
+            if du.last_named(s2, t2, f2, name) < 0 {
+                o = du.field_id(heap, du.sep(heap, o, n), block, "dma", buf, name);
+                n = n + 1;
+            }
+        }
+        j = json.skip(t1, j);
+        left = left - 1;
+    }
+    return buffer.push(heap, o, byte_of(']'));
+}
+
+// `[{"id": .., "from_offset": .., "to_offset": ..}..]` for the fields both buffers have at another offset (what = 0),
+// `owner_changes` (1) or `coherence_changes` (2). Empty text when there are none, so the caller can omit the key.
+fn field_changes[&h, &b, &n, &bs, &bt, &cs, &ct](heap: &!h Heap, out: buffer.Buffer, block: &b [byte], buf: &n [byte], bs: &bs [byte], bt: &bt [int], bd: int, cs: &cs [byte], ct: &ct [int], cd: int, what: int) -> [heap] (buffer.Buffer, int) {
+    var o = out;
+    let cfs = json.get(cs, ct, cd, "fields");
+    let bfs = json.get(bs, bt, bd, "fields");
+    var j = cfs + 1;
+    var left = json.count(ct, cfs);
+    var n = 0;
+    while left > 0 {
+        if du.is_first(cs, ct, cfs, j) {
+            let name = du.name_of(cs, ct, j);
+            let cf = du.last_named(cs, ct, cfs, name);
+            let bf = du.last_named(bs, bt, bfs, name);
+            if bf >= 0 {
+                var key = "offset";
+                if what == 1 {
+                    key = "owner";
+                }
+                if what == 2 {
+                    key = "coherent";
+                }
+                let bv = json.get(bs, bt, bf, key);
+                let cv = json.get(cs, ct, cf, key);
+                if !du.equal(bs, bt, bv, cs, ct, cv) {
+                    o = du.field_id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block, "dma", buf, name);
+                    if what == 0 {
+                        o = du.value(heap, du.lit(heap, o, ", \"from_offset\": "), bs, bt, bv);
+                        o = du.value(heap, du.lit(heap, o, ", \"to_offset\": "), cs, ct, cv);
+                    } else {
+                        o = du.value(heap, du.lit(heap, o, ", \"from\": "), bs, bt, bv);
+                        o = du.value(heap, du.lit(heap, o, ", \"to\": "), cs, ct, cv);
+                    }
+                    o = du.lit(heap, o, "}");
+                    n = n + 1;
+                }
+            }
+        }
+        j = json.skip(ct, j);
+        left = left - 1;
+    }
+    return (o, n);
+}
+
+// One layout entry of a buffer both sides have, or nothing when it did not change.
+fn layout_changed[&h, &n, &bs, &bt, &cs, &ct](heap: &!h Heap, out: buffer.Buffer, buf: &n [byte], bs: &bs [byte], bt: &bt [int], bd: int, cs: &cs [byte], ct: &ct [int], cd: int, k: int) -> [heap] (buffer.Buffer, int) {
+    let block = block_name(cs, ct);
+    let added = missing_field_ids(heap, buffer.empty(heap, 16), block, buf, cs, ct, cd, bs, bt, bd);
+    let removed = missing_field_ids(heap, buffer.empty(heap, 16), block, buf, bs, bt, bd, cs, ct, cd);
+    let (moved, nm) = field_changes(heap, buffer.empty(heap, 16), block, buf, bs, bt, bd, cs, ct, cd, 0);
+    let (owners, no) = field_changes(heap, buffer.empty(heap, 16), block, buf, bs, bt, bd, cs, ct, cd, 1);
+    let (cohs, nc) = field_changes(heap, buffer.empty(heap, 16), block, buf, bs, bt, bd, cs, ct, cd, 2);
+    var changed = nm + no + nc > 0;
+    borrow added as &ar in {
+        if len(buffer.bytes(ar)) > 2 {
+            changed = true;
+        }
+    }
+    borrow removed as &rr in {
+        if len(buffer.bytes(rr)) > 2 {
+            changed = true;
+        }
+    }
+    var o = out;
+    var wrote = 0;
+    if changed {
+        o = du.id(heap, du.lit(heap, du.sep(heap, o, k), "{\"id\": "), block, "dma", buf);
+        borrow added as &ar in {
+            o = du.raw(heap, du.lit(heap, o, ", \"added_field_ids\": "), buffer.bytes(ar));
+        }
+        borrow removed as &rr in {
+            o = du.raw(heap, du.lit(heap, o, ", \"removed_field_ids\": "), buffer.bytes(rr));
+        }
+        borrow moved as &mr in {
+            o = du.lit(heap, o, ", \"moved_fields\": [");
+            o = du.raw(heap, o, buffer.bytes(mr));
+            o = du.lit(heap, o, "]");
+        }
+        if no > 0 {
+            borrow owners as &wr in {
+                o = du.lit(heap, o, ", \"owner_changes\": [");
+                o = du.raw(heap, o, buffer.bytes(wr));
+                o = du.lit(heap, o, "]");
+            }
+        }
+        if nc > 0 {
+            borrow cohs as &qr in {
+                o = du.lit(heap, o, ", \"coherence_changes\": [");
+                o = du.raw(heap, o, buffer.bytes(qr));
+                o = du.lit(heap, o, "]");
+            }
+        }
+        o = du.lit(heap, o, "}");
+        wrote = 1;
+    }
+    buffer.drop(heap, added);
+    buffer.drop(heap, removed);
+    buffer.drop(heap, moved);
+    buffer.drop(heap, owners);
+    buffer.drop(heap, cohs);
+    return (o, wrote);
+}
+
+// `changed_dma_layouts`: the candidate's buffers (new ones, with every field added; those both sides have, if their
+// layout changed), then the base's that the candidate dropped.
+fn dma_layouts[&h, &bs, &bt, &cs, &ct](heap: &!h Heap, out: buffer.Buffer, bs: &bs [byte], bt: &bt [int], cs: &cs [byte], ct: &ct [int], same: bool) -> [heap] buffer.Buffer {
+    var o = out;
+    let carr = buffers_of(cs, ct);
+    let barr = buffers_of(bs, bt);
+    var j = carr + 1;
+    var left = json.count(ct, carr);
+    var n = 0;
+    while left > 0 {
+        if du.is_first(cs, ct, carr, j) {
+            let name = du.name_of(cs, ct, j);
+            let cd = du.last_named(cs, ct, carr, name);
+            let bd = du.last_named(bs, bt, barr, name);
+            if !same || bd < 0 {
+                o = du.id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(cs, ct), "dma", name);
+                o = du.lit(heap, o, ", \"added_field_ids\": ");
+                o = field_ids(heap, o, block_name(cs, ct), name, cs, ct, cd);
+                o = du.lit(heap, o, ", \"removed_field_ids\": [], \"moved_fields\": [], \"owner_changes\": []}");
+                n = n + 1;
+            } else {
+                let (o2, wrote) = layout_changed(heap, o, name, bs, bt, bd, cs, ct, cd, n);
+                o = o2;
+                n = n + wrote;
+            }
+        }
+        j = json.skip(ct, j);
+        left = left - 1;
+    }
+    j = barr + 1;
+    left = json.count(bt, barr);
+    while left > 0 {
+        if du.is_first(bs, bt, barr, j) {
+            let name = du.name_of(bs, bt, j);
+            if !same || du.last_named(cs, ct, carr, name) < 0 {
+                let bd = du.last_named(bs, bt, barr, name);
+                o = du.id(heap, du.lit(heap, du.sep(heap, o, n), "{\"id\": "), block_name(bs, bt), "dma", name);
+                o = du.lit(heap, o, ", \"added_field_ids\": [], \"removed_field_ids\": ");
+                o = field_ids(heap, o, block_name(bs, bt), name, bs, bt, bd);
+                o = du.lit(heap, o, ", \"moved_fields\": []}");
+                n = n + 1;
+            }
+        }
+        j = json.skip(bt, j);
+        left = left - 1;
+    }
+    return o;
+}
+
+// ---- the block ------------------------------------------------------------------------------------------------
+
+fn property_name(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "name";
+    }
+    if i == 1 {
+        return "base_address";
+    }
+    if i == 2 {
+        return "bus_width";
+    }
+    return "endianness";
+}
+
+fn block_properties[&h, &bs, &bt, &cs, &ct](heap: &!h Heap, out: buffer.Buffer, bs: &bs [byte], bt: &bt [int], cs: &cs [byte], ct: &ct [int]) -> [heap] buffer.Buffer {
+    var o = out;
+    var n = 0;
+    var i = 0;
+    while i < 4 {
+        let a = json.get(bs, bt, block_of(bs, bt), property_name(i));
+        let b = json.get(cs, ct, block_of(cs, ct), property_name(i));
+        var equal = du.equal(bs, bt, a, cs, ct, b);
+        if i == 1 {
+            equal = du.hex_equal_nodes(bs, bt, a, cs, ct, b);
+        }
+        if !equal {
+            o = du.quote(heap, du.lit(heap, du.sep(heap, o, n), "{\"property\": "), property_name(i));
+            o = du.value(heap, du.lit(heap, o, ", \"from\": "), bs, bt, a);
+            o = du.value(heap, du.lit(heap, o, ", \"to\": "), cs, ct, b);
+            o = du.lit(heap, o, "}");
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return o;
+}
+
+// ---- the document ---------------------------------------------------------------------------------------------
+
+fn open_list[&h](heap: &!h Heap, out: buffer.Buffer, key: &static [byte]) -> [heap] buffer.Buffer {
+    var o = du.lit(heap, out, ", \"");
+    o = du.lit(heap, o, key);
+    return du.lit(heap, o, "\": [");
+}
+
+fn close_list[&h](heap: &!h Heap, out: buffer.Buffer) -> [heap] buffer.Buffer {
+    return buffer.push(heap, out, byte_of(']'));
+}
+
+// The §7 document of the base `bs`/`bt` and the candidate `cs`/`ct` (the JSON of two checked IRs, parsed to tapes),
+// as `json.dumps(compute_diff(base, candidate))` writes it, appended to `out`.
+pub fn document[&h, &bs, &bt, &cs, &ct](heap: &!h Heap, out: buffer.Buffer, bs: &bs [byte], bt: &bt [int], cs: &cs [byte], ct: &ct [int]) -> [heap] buffer.Buffer {
+    let same = bytes.equal(block_name(bs, bt), block_name(cs, ct));
+    var o = du.lit(heap, out, "{\"schema\": \"cancho-hdl-diff\", \"version\": \"0.1.0\", \"base_id\": \"chw:");
+    o = du.lit(heap, du.raw(heap, o, block_name(bs, bt)), ".register\", \"candidate_id\": \"chw:");
+    o = du.lit(heap, du.raw(heap, o, block_name(cs, ct)), ".register\"");
+    o = close_list(heap, registers_only_in(heap, open_list(heap, o, "added_registers"), cs, ct, bs, bt, same));
+    o = close_list(heap, registers_only_in(heap, open_list(heap, o, "removed_registers"), bs, bt, cs, ct, same));
+    o = close_list(heap, registers_changed(heap, open_list(heap, o, "moved_registers"), bs, bt, cs, ct, same, 0));
+    o = close_list(heap, fields_pass(heap, open_list(heap, o, "widened_fields"), bs, bt, cs, ct, same, 0));
+    o = close_list(heap, fields_pass(heap, open_list(heap, o, "narrowed_fields"), bs, bt, cs, ct, same, 1));
+    o = close_list(heap, fields_pass(heap, open_list(heap, o, "repositioned_fields"), bs, bt, cs, ct, same, 2));
+    o = close_list(heap, fields_pass(heap, open_list(heap, o, "added_fields"), bs, bt, cs, ct, same, 3));
+    o = close_list(heap, fields_pass(heap, open_list(heap, o, "removed_fields"), bs, bt, cs, ct, same, 4));
+    o = close_list(heap, fields_pass(heap, open_list(heap, o, "changed_enum_values"), bs, bt, cs, ct, same, 5));
+    o = close_list(heap, interrupts_changed(heap, open_list(heap, o, "changed_interrupts"), bs, bt, cs, ct, same));
+    o = close_list(heap, interrupts_only_in(heap, open_list(heap, o, "added_interrupts"), cs, ct, bs, bt, same));
+    o = close_list(heap, interrupts_only_in(heap, open_list(heap, o, "removed_interrupts"), bs, bt, cs, ct, same));
+    o = close_list(heap, dma_layouts(heap, open_list(heap, o, "changed_dma_layouts"), bs, bt, cs, ct, same));
+    o = close_list(heap, registers_changed(heap, open_list(heap, o, "changed_reset_values"), bs, bt, cs, ct, same, 1));
+    o = close_list(heap, block_properties(heap, open_list(heap, o, "changed_block_properties"), bs, bt, cs, ct));
+    return du.lit(heap, o, "}");
+}

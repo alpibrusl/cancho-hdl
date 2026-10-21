@@ -1,0 +1,169 @@
+module chw.impact;
+
+// impact.cho -- `compute_impact` of tools/diff/diff.py: the §7 diff plus, for each generator target, whether its
+// artifact is stale, decided by generating both contracts under one neutral label and comparing the bytes. The label
+// is `diff` where Python writes `<diff>`: only the equality of the two outputs is reported, the label is the same on both
+// sides, and the SVD generator refuses a `<` in the path (33.4)
+// (docs/cancho-port.md, 33).
+
+import std.buffer;
+import std.bytes;
+import std.json;
+import chw.diff_util as du;
+import chw.gen_binding;
+import chw.gen_c;
+import chw.gen_dts;
+import chw.gen_sv;
+import chw.gen_svd;
+import chw.ir as model;
+
+// The lists of the diff that `_short_reason` counts, in its order.
+fn list_name(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "added_registers";
+    }
+    if i == 1 {
+        return "removed_registers";
+    }
+    if i == 2 {
+        return "moved_registers";
+    }
+    if i == 3 {
+        return "widened_fields";
+    }
+    if i == 4 {
+        return "narrowed_fields";
+    }
+    if i == 5 {
+        return "repositioned_fields";
+    }
+    if i == 6 {
+        return "added_fields";
+    }
+    if i == 7 {
+        return "removed_fields";
+    }
+    if i == 8 {
+        return "changed_enum_values";
+    }
+    if i == 9 {
+        return "changed_interrupts";
+    }
+    if i == 10 {
+        return "added_interrupts";
+    }
+    if i == 11 {
+        return "removed_interrupts";
+    }
+    if i == 12 {
+        return "changed_dma_layouts";
+    }
+    return "changed_reset_values";
+}
+
+// `_short_reason(doc)`: "block properties changed" then `list=N` for each non-empty list, joined by "; ". Empty when
+// nothing changed (Python's None).
+pub fn reason[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int]) -> [heap] buffer.Buffer {
+    var o = buffer.empty(heap, 64);
+    var n = 0;
+    if json.count(tape, json.get(src, tape, 0, "changed_block_properties")) > 0 {
+        o = buffer.append(heap, o, "block properties changed");
+        n = 1;
+    }
+    var i = 0;
+    while i < 14 {
+        let c = json.count(tape, json.get(src, tape, 0, list_name(i)));
+        if c > 0 {
+            if n > 0 {
+                o = buffer.append(heap, o, "; ");
+            }
+            o = buffer.append(heap, o, list_name(i));
+            o = buffer.push(heap, o, byte_of('='));
+            o = buffer.push_nat(heap, o, c);
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return o;
+}
+
+pub fn target(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "c-header";
+    }
+    if i == 1 {
+        return "cancho-binding";
+    }
+    if i == 2 {
+        return "devicetree";
+    }
+    if i == 3 {
+        return "systemverilog";
+    }
+    return "svd";
+}
+
+// The generated artifact of target `t` for one contract under the neutral label, and the generator's status.
+fn generate[&h, &s, &q](heap: &!h Heap, t: int, src: &s [byte], ir: &q model.Ir) -> [heap] (buffer.Buffer, int) {
+    if t == 0 {
+        return gen_c.generate(heap, src, "diff", ir);
+    }
+    if t == 1 {
+        return gen_binding.generate(heap, src, "diff", ir);
+    }
+    if t == 2 {
+        return gen_dts.generate(heap, src, "diff", ir);
+    }
+    if t == 3 {
+        return gen_sv.generate(heap, src, "diff", ir);
+    }
+    return gen_svd.generate(heap, src, "diff", ir);
+}
+
+// Append `"affected_artifacts": [..]` entries to `out` for the contracts `bsrc`/`bir` and `csrc`/`cir`, the reason for
+// a stale one taken from the diff document `dsrc`/`dtape`. The answer is (text, status): status 0, or the status of
+// the first generator that did not produce an artifact, with the text its message and the target's name.
+pub fn artifacts[&h, &ds, &dt, &bs, &bq, &cs, &cq](heap: &!h Heap, out: buffer.Buffer, dsrc: &ds [byte], dtape: &dt [int], bsrc: &bs [byte], bir: &bq model.Ir, csrc: &cs [byte], cir: &cq model.Ir) -> [heap] (buffer.Buffer, int, int) {
+    var o = out;
+    var t = 0;
+    while t < 5 {
+        let (b, bst) = generate(heap, t, bsrc, bir);
+        let (c, cst) = generate(heap, t, csrc, cir);
+        if bst != 0 {
+            buffer.drop(heap, c);
+            buffer.drop(heap, o);
+            return (b, bst, t);
+        }
+        if cst != 0 {
+            buffer.drop(heap, b);
+            buffer.drop(heap, o);
+            return (c, cst, t);
+        }
+        var same = false;
+        borrow b as &br in {
+            borrow c as &cr in {
+                same = bytes.equal(buffer.bytes(br), buffer.bytes(cr));
+            }
+        }
+        buffer.drop(heap, b);
+        buffer.drop(heap, c);
+        o = du.quote(heap, du.lit(heap, du.sep(heap, o, t), "{\"target\": "), target(t));
+        if same {
+            o = du.lit(heap, o, ", \"stale\": false, \"reason\": \"no change (byte-identical output for both contracts)\"}");
+        } else {
+            let why = reason(heap, dsrc, dtape);
+            o = du.lit(heap, o, ", \"stale\": true, \"reason\": \"");
+            borrow why as &wr in {
+                if len(buffer.bytes(wr)) == 0 {
+                    o = du.lit(heap, o, "artifact bytes differ");
+                } else {
+                    o = du.raw(heap, o, buffer.bytes(wr));
+                }
+            }
+            buffer.drop(heap, why);
+            o = du.lit(heap, o, "\"}");
+        }
+        t = t + 1;
+    }
+    return (o, 0, 0);
+}

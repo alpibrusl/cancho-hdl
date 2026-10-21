@@ -1,0 +1,332 @@
+module chw.diff_util;
+
+// diff_util.cho -- what `chw diff` and `chw impact` share: reading the JSON the IR prints as, and writing the
+// documents of tools/diff/diff.py as `json.dumps(doc)` writes them (docs/cancho-port.md, 33).
+//
+// Both inputs are the text `chw.json_out.render` gives (`json.dumps(ir)`, ensure_ascii, keys in the order the Python
+// parser keeps), parsed to a tape. A string's body is therefore already in the form `json.dumps` writes it, so a
+// name is copied between documents as bytes and an escape is never decoded. Python keeps a list of objects with a
+// `name` as a dict keyed by it: the first position, the last value (`{r["name"]: r for r in regs}`). The helpers
+// here are that dict, without allocating, at the cost of a scan for each lookup.
+
+import std.buffer;
+import std.bytes;
+import std.json;
+
+// ---- reading ---------------------------------------------------------------------------------------------------
+
+// The bytes inside the quotes of the string at `node`, or nothing when it is not one.
+pub fn body[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] &s [byte] {
+    if json.is_string(tape, node) {
+        return src[tape[3 * node + 1]..tape[3 * node + 2]];
+    }
+    return src[0..0];
+}
+
+// The bytes of the number at `node` as the printer wrote them, or nothing when it is not one.
+pub fn digits[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] &s [byte] {
+    if json.is_number(tape, node) {
+        return src[tape[3 * node + 1]..tape[3 * node + 2]];
+    }
+    return src[0..0];
+}
+
+// The `name` of the object `e`.
+pub fn name_of[&s, &t](src: &s [byte], tape: &t [int], e: int) -> [] &s [byte] {
+    return body(src, tape, json.get(src, tape, e, "name"));
+}
+
+// Is the element `j` of the array `arr` the first with its name?
+pub fn is_first[&s, &t](src: &s [byte], tape: &t [int], arr: int, j: int) -> [] bool {
+    let name = name_of(src, tape, j);
+    var k = arr + 1;
+    while k != j {
+        if bytes.equal(name_of(src, tape, k), name) {
+            return false;
+        }
+        k = json.skip(tape, k);
+    }
+    return true;
+}
+
+// The last element of the array `arr` named `name`, or -1: the value Python's dict keeps.
+pub fn last_named[&s, &t, &n](src: &s [byte], tape: &t [int], arr: int, name: &n [byte]) -> [] int {
+    var found = 0 - 1;
+    var k = arr + 1;
+    var left = json.count(tape, arr);
+    while left > 0 {
+        if bytes.equal(name_of(src, tape, k), name) {
+            found = k;
+        }
+        k = json.skip(tape, k);
+        left = left - 1;
+    }
+    return found;
+}
+
+// Is the pair whose key is at `k` in the object `obj` the first with its key?
+pub fn key_is_first[&s, &t](src: &s [byte], tape: &t [int], obj: int, k: int) -> [] bool {
+    let key = body(src, tape, k);
+    var j = obj + 1;
+    while j != k {
+        if bytes.equal(body(src, tape, j), key) {
+            return false;
+        }
+        j = json.skip(tape, j + 1);
+    }
+    return true;
+}
+
+// The value node of the last pair of the object `obj` with this key, or -1.
+pub fn last_key[&s, &t, &n](src: &s [byte], tape: &t [int], obj: int, key: &n [byte]) -> [] int {
+    var found = 0 - 1;
+    var j = obj + 1;
+    var left = json.count(tape, obj);
+    while left > 0 {
+        if bytes.equal(body(src, tape, j), key) {
+            found = j + 1;
+        }
+        j = json.skip(tape, j + 1);
+        left = left - 1;
+    }
+    return found;
+}
+
+// `a == b` for two JSON values of Python (an absent value, -1, is None): numbers by their digits, strings by their
+// bodies, an object as a dict (the same keys with equal values, in any order), an array element by element.
+pub fn equal[&s1, &t1, &s2, &t2](s1: &s1 [byte], t1: &t1 [int], a: int, s2: &s2 [byte], t2: &t2 [int], b: int) -> [] bool {
+    if a < 0 || b < 0 {
+        return a < 0 && b < 0;
+    }
+    let ka = json.kind(t1, a);
+    let kb = json.kind(t2, b);
+    if ka != kb {
+        return false;
+    }
+    if json.is_number(t1, a) {
+        return bytes.equal(digits(s1, t1, a), digits(s2, t2, b));
+    }
+    if json.is_string(t1, a) {
+        return bytes.equal(body(s1, t1, a), body(s2, t2, b));
+    }
+    if json.is_array(t1, a) {
+        if json.count(t1, a) != json.count(t2, b) {
+            return false;
+        }
+        var x = a + 1;
+        var y = b + 1;
+        var left = json.count(t1, a);
+        while left > 0 {
+            if !equal(s1, t1, x, s2, t2, y) {
+                return false;
+            }
+            x = json.skip(t1, x);
+            y = json.skip(t2, y);
+            left = left - 1;
+        }
+        return true;
+    }
+    if json.is_object(t1, a) {
+        var x = a + 1;
+        var left = json.count(t1, a);
+        var distinct = 0;
+        while left > 0 {
+            if key_is_first(s1, t1, a, x) {
+                distinct = distinct + 1;
+                let other = last_key(s2, t2, b, body(s1, t1, x));
+                if !equal(s1, t1, last_key(s1, t1, a, body(s1, t1, x)), s2, t2, other) {
+                    return false;
+                }
+            }
+            x = json.skip(t1, x + 1);
+            left = left - 1;
+        }
+        var y = b + 1;
+        var right = json.count(t2, b);
+        var distinct_b = 0;
+        while right > 0 {
+            if key_is_first(s2, t2, b, y) {
+                distinct_b = distinct_b + 1;
+            }
+            y = json.skip(t2, y + 1);
+            right = right - 1;
+        }
+        return distinct == distinct_b;
+    }
+    return true;
+}
+
+// Can the port copy what is in this file as Python would write it? A file in the JSON wire form is read as it is
+// written, so a string must be in the form `json.dumps` gives it (printable ASCII, no escape: an escape is not decoded
+// here) and a number a plain integer (`1.0` and `1E1` are floats to Python, `-0` is `0`). `nodes` is the count
+// `json.parse` returned.
+pub fn plain_json[&s, &t](src: &s [byte], tape: &t [int], nodes: int) -> [] bool {
+    var i = 0;
+    while i < nodes {
+        if json.is_string(tape, i) {
+            var k = tape[3 * i + 1];
+            while k < tape[3 * i + 2] {
+                let c = int_of(src[k]);
+                if c < 32 || c >= 127 || c == '\\' {
+                    return false;
+                }
+                k = k + 1;
+            }
+        }
+        if json.is_number(tape, i) {
+            var k = tape[3 * i + 1];
+            while k < tape[3 * i + 2] {
+                let c = int_of(src[k]);
+                if c < '0' || c > '9' {
+                    if !(c == '-' && k == tape[3 * i + 1]) {
+                        return false;
+                    }
+                }
+                k = k + 1;
+            }
+            if bytes.equal(digits(src, tape, i), "-0") {
+                return false;
+            }
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// ---- hex -------------------------------------------------------------------------------------------------------
+
+fn lower_of(c: int) -> [] int {
+    if c >= 'A' && c <= 'Z' {
+        return c + 32;
+    }
+    return c;
+}
+
+// The digits of `0x..` with the prefix and the leading zeros taken off.
+fn significant[&x](h: &x [byte]) -> [] &x [byte] {
+    var i = 0;
+    if len(h) >= 2 && h[0] == byte_of('0') && (h[1] == byte_of('x') || h[1] == byte_of('X')) {
+        i = 2;
+    }
+    while i < len(h) && h[i] == byte_of('0') {
+        i = i + 1;
+    }
+    return h[i..len(h)];
+}
+
+// `int(a, 16) == int(b, 16)` of `_hex_eq`, for two `0x` strings of the schema's pattern: any length, either case.
+pub fn hex_equal[&p, &q](a: &p [byte], b: &q [byte]) -> [] bool {
+    let x = significant(a);
+    let y = significant(b);
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if lower_of(int_of(x[i])) != lower_of(int_of(y[i])) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// `_hex_eq` of two values that may be absent (-1, None): equal only if both are, else by the hex number.
+pub fn hex_equal_nodes[&s1, &t1, &s2, &t2](s1: &s1 [byte], t1: &t1 [int], a: int, s2: &s2 [byte], t2: &t2 [int], b: int) -> [] bool {
+    if a < 0 || b < 0 {
+        return a < 0 && b < 0;
+    }
+    return hex_equal(body(s1, t1, a), body(s2, t2, b));
+}
+
+// ---- writing ---------------------------------------------------------------------------------------------------
+
+pub fn lit[&h](heap: &!h Heap, out: buffer.Buffer, text: &static [byte]) -> [heap] buffer.Buffer {
+    return buffer.append(heap, out, text);
+}
+
+pub fn raw[&h, &x](heap: &!h Heap, out: buffer.Buffer, text: &x [byte]) -> [heap] buffer.Buffer {
+    return buffer.append(heap, out, text);
+}
+
+// `"` + body + `"`.
+pub fn quote[&h, &x](heap: &!h Heap, out: buffer.Buffer, text: &x [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('"'));
+    o = buffer.append(heap, o, text);
+    return buffer.push(heap, o, byte_of('"'));
+}
+
+// The separator before the `k`th element of a list or the `k`th pair of an object.
+pub fn sep[&h](heap: &!h Heap, out: buffer.Buffer, k: int) -> [heap] buffer.Buffer {
+    if k > 0 {
+        return buffer.append(heap, out, ", ");
+    }
+    return out;
+}
+
+// The value at `node` as `json.dumps` writes it (`null` for an absent one).
+pub fn value[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    let k = json.kind(tape, node);
+    if k < 0 || k == 0 {
+        return buffer.append(heap, out, "null");
+    }
+    if k == 1 {
+        return buffer.append(heap, out, "false");
+    }
+    if k == 2 {
+        return buffer.append(heap, out, "true");
+    }
+    if k == 3 || k == 4 {
+        return buffer.append(heap, out, digits(src, tape, node));
+    }
+    if k == 5 {
+        return quote(heap, out, body(src, tape, node));
+    }
+    var o = out;
+    var j = node + 1;
+    var left = json.count(tape, node);
+    var n = 0;
+    if k == 6 {
+        o = buffer.push(heap, o, byte_of('['));
+        while left > 0 {
+            o = value(heap, sep(heap, o, n), src, tape, j);
+            j = json.skip(tape, j);
+            left = left - 1;
+            n = n + 1;
+        }
+        return buffer.push(heap, o, byte_of(']'));
+    }
+    o = buffer.push(heap, o, byte_of('{'));
+    while left > 0 {
+        o = quote(heap, sep(heap, o, n), body(src, tape, j));
+        o = buffer.append(heap, o, ": ");
+        o = value(heap, o, src, tape, j + 1);
+        j = json.skip(tape, j + 1);
+        left = left - 1;
+        n = n + 1;
+    }
+    return buffer.push(heap, o, byte_of('}'));
+}
+
+// `"id": "chw:` + block + `.` + kind + `.` + name [+ `.field.` + field] + `"` : the stable handle of an entity.
+pub fn id[&h, &b, &n](heap: &!h Heap, out: buffer.Buffer, block: &b [byte], kind: &static [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, "\"chw:");
+    o = buffer.append(heap, o, block);
+    o = buffer.push(heap, o, byte_of('.'));
+    o = buffer.append(heap, o, kind);
+    o = buffer.push(heap, o, byte_of('.'));
+    o = buffer.append(heap, o, name);
+    return buffer.push(heap, o, byte_of('"'));
+}
+
+pub fn field_id[&h, &b, &n, &f](heap: &!h Heap, out: buffer.Buffer, block: &b [byte], kind: &static [byte], name: &n [byte], fld: &f [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, "\"chw:");
+    o = buffer.append(heap, o, block);
+    o = buffer.push(heap, o, byte_of('.'));
+    o = buffer.append(heap, o, kind);
+    o = buffer.push(heap, o, byte_of('.'));
+    o = buffer.append(heap, o, name);
+    o = buffer.append(heap, o, ".field.");
+    o = buffer.append(heap, o, fld);
+    return buffer.push(heap, o, byte_of('"'));
+}
