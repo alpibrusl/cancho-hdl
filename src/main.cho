@@ -16,6 +16,10 @@ edition 6;
 //     chw generate FILE --target T [--schema S]
 //                                     the artifact of target T for a contract the checker accepts
 //                                     (tools/generate/generate.py): c-header and devicetree are ported
+//     chw report FILE [--schema S] [--output json|text] [--pretty] [--strict] [--no-roundtrips] [--lanes FILE]
+//                                     the evidence report of tools/report/report.py (docs/cancho-port.md, 35);
+//                                     the roundtrips are read from the oracle's results (--lanes), the product runs no tool
+//     chw report --validate DOC       the refusals report.py's `validate_report` gives a report in the file DOC
 //     chw catalog                     every rule with its subject, severity and tier
 //     chw conform [ROOT] [--fixtures DIR[,DIR...]]
 //                                     run the examples and the refusal fixtures under ROOT
@@ -45,9 +49,11 @@ import chw.gen_svd;
 import chw.io as chwio;
 import chw.load;
 import chw.pyrepr;
+import chw.report;
+import chw.report_check;
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] [--output json] [--located] | chw check FILE [--schema S] [--output text|json] [--located] [--ran] | chw generate FILE --target T [--schema S] | chw diff BASE CANDIDATE [--schema S] [--pretty] | chw impact BASE CANDIDATE [--schema S] [--pretty] | chw catalog | chw conform [ROOT] [--fixtures DIR[,DIR...]]\n");
+    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] [--output json] [--located] | chw check FILE [--schema S] [--output text|json] [--located] [--ran] | chw generate FILE --target T [--schema S] | chw diff BASE CANDIDATE [--schema S] [--pretty] | chw impact BASE CANDIDATE [--schema S] [--pretty] | chw report FILE [--schema S] [--output json|text] [--pretty] [--strict] [--no-roundtrips] [--lanes FILE] | chw report --validate DOC | chw catalog | chw conform [ROOT] [--fixtures DIR[,DIR...]]\n");
     return 2;
 }
 
@@ -267,6 +273,204 @@ fn run_check[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Ar
             }
         }
         buffer.drop(heap, text);
+    }
+    load.drop_schema(heap, sch);
+    return status;
+}
+
+fn flag_value[&g](g: &g Args, name: &static [byte]) -> [args] int {
+    let at = flag_at(g, name);
+    if at > 0 && at + 1 < arg_count(g) {
+        return at + 1;
+    }
+    return 0 - 1;
+}
+
+// Write the report `built` (the compact text `report.build` wrote) as asked, after it has refused itself or not; the
+// answer is the exit status.
+fn emit_report[&h, &i, &b](heap: &!h Heap, io: &!i Io, built: &b [byte], as_text: bool, pretty: bool, strict: bool) -> [heap, io_write, err_write] int {
+    let (tape, nodes) = tape_of(heap, built);
+    var status = 0;
+    if nodes < 0 {
+        status = internal_error(io, "error[internal]: the report printed as invalid JSON\n");
+    } else {
+        borrow tape as &tr in {
+            let refusals = report_check.validate(heap, buffer.empty(heap, 128), built, contents(tr));
+            var refused_n = 0;
+            borrow refusals as &rf in {
+                refused_n = len(buffer.bytes(rf));
+                if refused_n > 0 {
+                    console.error_all(io, buffer.bytes(rf));
+                }
+            }
+            if refused_n > 0 {
+                status = 1;
+            } else {
+                var out = buffer.empty(heap, 4096);
+                if as_text {
+                    out = report.text(heap, out, built, contents(tr));
+                } else if pretty {
+                    out = buffer.push(heap, diff_fmt.pretty(heap, out, built, contents(tr), 0, 0), byte_of('\n'));
+                } else {
+                    out = buffer.push(heap, buffer.append(heap, out, built), byte_of('\n'));
+                }
+                borrow out as &o in {
+                    buffer.write(io, o);
+                }
+                buffer.drop(heap, out);
+                if strict && !report.strict_ok(built, contents(tr)) {
+                    status = 1;
+                }
+            }
+            buffer.drop(heap, refusals);
+        }
+    }
+    unbox_slice(heap, tape);
+    return status;
+}
+
+fn lanes_refused[&i, &r](io: &!i Io, reason: &r [byte]) -> [err_write] int {
+    console.error_all(io, "error[lanes-invalid]: ");
+    console.error_all(io, reason);
+    console.error_all(io, "\n");
+    return 1;
+}
+
+// `chw report FILE ...`: the contract is loaded and checked, then described. `lanes` is the oracle's results, or `[]`.
+fn report_file[&h, &i, &f, &g, &t](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args, sch: &t load.Schema) -> [heap, io_write, err_write, fs_read(""), file_read, args] int {
+    var as_text = false;
+    let out_at = flag_value(g, "--output");
+    if out_at > 0 {
+        as_text = bytes.equal(arg(g, out_at), "text");
+    }
+    var mode = 0;
+    var lanes = buffer.append(heap, buffer.empty(heap, 16), "[]");
+    var lanes_ok = true;
+    var status = 0;
+    let lane_at = flag_value(g, "--lanes");
+    if flag_at(g, "--no-roundtrips") > 0 {
+        mode = 2;
+    } else if lane_at > 0 {
+        mode = 1;
+        let (ltext, lgot) = chwio.read_file(heap, fs, arg(g, lane_at), buffer.empty(heap, 1024));
+        buffer.drop(heap, lanes);
+        lanes = ltext;
+        if lgot < 0 {
+            lanes_ok = false;
+            status = lanes_refused(io, "the lanes file cannot be read");
+        }
+    }
+    var ltape = box_slice(heap, 0, 0);
+    var lnodes = 0;
+    borrow lanes as &lr in {
+        unbox_slice(heap, ltape);
+        let (lt0, ln0) = tape_of(heap, buffer.bytes(lr));
+        ltape = lt0;
+        lnodes = ln0;
+    }
+    if lanes_ok && mode == 1 {
+        if lnodes < 0 {
+            lanes_ok = false;
+            status = lanes_refused(io, "the lanes file is not JSON");
+        } else {
+            borrow lanes as &lr in {
+                borrow ltape as &lt in {
+                    let why = report.lanes_check(buffer.bytes(lr), contents(lt));
+                    if why != 0 {
+                        lanes_ok = false;
+                        status = lanes_refused(io, report.lanes_reason(why));
+                    }
+                }
+            }
+        }
+    }
+    if lanes_ok {
+        let (text, got) = chwio.read_file(heap, fs, arg(g, 2), buffer.empty(heap, 4096));
+        if got < 0 {
+            console.error_all(io, "cannot read file\n");
+            status = 2;
+        } else {
+            borrow text as &t2 in {
+                let doc = load.load(heap, buffer.bytes(t2), sch);
+                borrow doc as &dr in {
+                    var built = buffer.empty(heap, 1);
+                    borrow lanes as &lr in {
+                        borrow ltape as &lt in {
+                            buffer.drop(heap, built);
+                            built = report.build(heap, dr, arg(g, 2), buffer.bytes(t2), mode, buffer.bytes(lr), contents(lt));
+                        }
+                    }
+                    borrow built as &br in {
+                        status = emit_report(heap, io, buffer.bytes(br), as_text, flag_at(g, "--pretty") > 0, flag_at(g, "--strict") > 0);
+                    }
+                    buffer.drop(heap, built);
+                }
+                load.drop(heap, doc);
+            }
+        }
+        buffer.drop(heap, text);
+    }
+    unbox_slice(heap, ltape);
+    buffer.drop(heap, lanes);
+    return status;
+}
+
+// `chw report --validate DOC`: the refusals of `validate_report` on the report in DOC.
+fn report_validate[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args) -> [heap, err_write, fs_read(""), file_read, args] int {
+    if arg_count(g) < 4 {
+        return usage(io);
+    }
+    let (text, got) = chwio.read_file(heap, fs, arg(g, 3), buffer.empty(heap, 4096));
+    var status = 0;
+    if got < 0 {
+        console.error_all(io, "cannot read file\n");
+        status = 2;
+    } else {
+        borrow text as &t2 in {
+            let (tape, nodes) = tape_of(heap, buffer.bytes(t2));
+            if nodes < 0 {
+                console.error_all(io, "error[report-unreadable]: the report is not JSON\n");
+                status = 1;
+            } else {
+                borrow tape as &tr in {
+                    let refusals = report_check.validate(heap, buffer.empty(heap, 128), buffer.bytes(t2), contents(tr));
+                    borrow refusals as &rf in {
+                        if len(buffer.bytes(rf)) > 0 {
+                            console.error_all(io, buffer.bytes(rf));
+                            status = 1;
+                        }
+                    }
+                    buffer.drop(heap, refusals);
+                }
+            }
+            unbox_slice(heap, tape);
+        }
+    }
+    buffer.drop(heap, text);
+    return status;
+}
+
+fn run_report[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args) -> [heap, io_write, err_write, fs_read(""), file_read, args] int {
+    if bytes.equal(arg(g, 2), "--validate") {
+        return report_validate(heap, io, fs, g);
+    }
+    let out_at = flag_value(g, "--output");
+    if out_at > 0 && !bytes.equal(arg(g, out_at), "json") && !bytes.equal(arg(g, out_at), "text") {
+        return usage(io);
+    }
+    let (stext, sgot) = chwio.read_file(heap, fs, schema_path(g), buffer.empty(heap, 8192));
+    let sch = load.open_schema(heap, stext);
+    var status = 2;
+    var usable = false;
+    borrow sch as &sr in {
+        usable = load.schema_ok(sr);
+    }
+    if sgot < 0 || !usable {
+        console.error_all(io, "cannot read the schema, or it is not JSON\n");
+    } else {
+        borrow sch as &s in {
+            status = report_file(heap, io, fs, g, s);
+        }
     }
     load.drop_schema(heap, sch);
     return status;
@@ -763,6 +967,8 @@ fn main(world: World) -> [] int {
                         status = run_diff(h, i, f, g, false);
                     } else if bytes.equal(arg(g, 1), "impact") && arg_count(g) >= 4 {
                         status = run_diff(h, i, f, g, true);
+                    } else if bytes.equal(arg(g, 1), "report") && arg_count(g) >= 3 {
+                        status = run_report(h, i, f, g);
                     } else if bytes.equal(arg(g, 1), "catalog") {
                         status = run_catalog(h, i);
                     } else if bytes.equal(arg(g, 1), "conform") {

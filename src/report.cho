@@ -1,0 +1,713 @@
+module chw.report;
+
+// report.cho -- `chw report FILE`: the evidence report of tools/report/report.py (docs/cancho-port.md, 35).
+//
+// The document is written straight to a buffer in Python's key order and in the spellings of `json.dumps`. The three
+// readers of a finished document (`text`, `strict_ok`, and `chw.report_check.validate`) work on a tape of that text, as
+// Python's work on the dict, so none of them can be satisfied by a variable of the builder.
+//
+// The product runs no tool (section 1.2), so the Tested tier is read from the lane results of the oracle (`--lanes`),
+// or reported skipped. `mode` is 0 for no lanes (both skipped, with a reason that says so), 1 for lanes, 2 for
+// `--no-roundtrips`.
+
+import std.buffer;
+import std.bytes;
+import std.json;
+import chw.dg_json;
+import chw.diagnostic as dg;
+import chw.diff_util as du;
+import chw.json_out;
+import chw.load;
+import chw.report_data as rd;
+
+// ---- a list of names, one to a line ----------------------------------------------------------------------------
+
+fn name_add[&h, &n](heap: &!h Heap, list: buffer.Buffer, name: &n [byte]) -> [heap] buffer.Buffer {
+    return buffer.push(heap, buffer.append(heap, list, name), byte_of('\n'));
+}
+
+fn line_end[&t](text: &t [byte], at: int) -> [] int {
+    var e = at;
+    while e < len(text) && int_of(text[e]) != '\n' {
+        e = e + 1;
+    }
+    return e;
+}
+
+fn name_has[&t, &n](list: &t [byte], name: &n [byte]) -> [] bool {
+    var at = 0;
+    while at < len(list) {
+        let e = line_end(list, at);
+        if bytes.equal(list[at..e], name) {
+            return true;
+        }
+        at = e + 1;
+    }
+    return false;
+}
+
+// `list` without the line `name`.
+fn name_drop[&h, &t, &n](heap: &!h Heap, list: &t [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, len(list) + 1);
+    var at = 0;
+    while at < len(list) {
+        let e = line_end(list, at);
+        if !bytes.equal(list[at..e], name) {
+            out = name_add(heap, out, list[at..e]);
+        }
+        at = e + 1;
+    }
+    return out;
+}
+
+// `["a", "b"]`, the lines of `list`.
+fn names_json[&h, &t](heap: &!h Heap, out: buffer.Buffer, list: &t [byte], skip_runtime: bool) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('['));
+    var n = 0;
+    var at = 0;
+    while at < len(list) {
+        let e = line_end(list, at);
+        if !(skip_runtime && rd.is_runtime_text(list[at..e])) {
+            o = du.quote(heap, du.sep(heap, o, n), list[at..e]);
+            n = n + 1;
+        }
+        at = e + 1;
+    }
+    return buffer.push(heap, o, byte_of(']'));
+}
+
+// ---- the diagnostics -------------------------------------------------------------------------------------------
+
+fn is_static(r: dg.Rule) -> [] bool {
+    match dg.rule_tier(r) {
+        dg.Tier::Static => {
+            return true;
+        }
+        _ => {
+            return false;
+        }
+    }
+}
+
+// Is there a diagnostic with this code and the severity Error?
+fn fails[&q, &c](ds: &q dg.Diags, code: &c [byte]) -> [] bool {
+    var i = 0;
+    while i < dg.size(ds) {
+        let d = dg.get(ds, i);
+        if d.kids.nest == 0 && dg.is_error(d.rule) && bytes.equal(dg.rule_name(d.rule), code) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The least code of a top-level diagnostic that sorts after `after` (the empty string stands for none yet), or "".
+fn next_fired[&q, &a](ds: &q dg.Diags, after: &a [byte]) -> [] &static [byte] {
+    var best = "";
+    var i = 0;
+    while i < dg.size(ds) {
+        let d = dg.get(ds, i);
+        if d.kids.nest == 0 {
+            let name = dg.rule_name(d.rule);
+            if bytes.compare(name, after) > 0 && (len(best) == 0 || bytes.compare(name, best) < 0) {
+                best = name;
+            }
+        }
+        i = i + 1;
+    }
+    return best;
+}
+
+fn parse_tape[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] (Box[[int]], int) {
+    let tape = box_slice(heap, json.tape_len(text), 0);
+    var nodes = 0;
+    borrow mut tape as &!w in {
+        nodes = json.parse(text, contents(w));
+    }
+    return (tape, nodes);
+}
+
+// The diagnostics of Tier Static as `to_dict` gives them, each compact, in one list.
+fn diagnostics_json[&h, &q, &p](heap: &!h Heap, out: buffer.Buffer, ds: &q dg.Diags, path: &p [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('['));
+    var n = 0;
+    var i = 0;
+    while i < dg.size(ds) {
+        let d = dg.get(ds, i);
+        if d.kids.nest == 0 && is_static(d.rule) {
+            let one = dg_json.object(heap, buffer.empty(heap, 512), ds, i, 0, path, false);
+            borrow one as &or in {
+                let (tape, nodes) = parse_tape(heap, buffer.bytes(or));
+                borrow tape as &tr in {
+                    o = du.value(heap, du.sep(heap, o, n), buffer.bytes(or), contents(tr), 0);
+                }
+                unbox_slice(heap, tape);
+            }
+            buffer.drop(heap, one);
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return buffer.push(heap, o, byte_of(']'));
+}
+
+// ---- the lanes -------------------------------------------------------------------------------------------------
+
+// The entry of the lanes array whose `target` is `target`, or -1.
+fn lane_of[&s, &t](src: &s [byte], tape: &t [int], target: &static [byte]) -> [] int {
+    if !json.is_array(tape, 0) {
+        return 0 - 1;
+    }
+    var j = 1;
+    var left = json.count(tape, 0);
+    while left > 0 {
+        if json.string_equals(src, tape, json.get(src, tape, j, "target"), target) {
+            return j;
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return 0 - 1;
+}
+
+fn is_target[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] bool {
+    return json.string_equals(src, tape, node, "c-header") || json.string_equals(src, tape, node, "systemverilog");
+}
+
+// Why the lanes document is not acceptable, as a number for `lanes_reason`: 0 when it is.
+pub fn lanes_check[&s, &t](src: &s [byte], tape: &t [int]) -> [] int {
+    if !json.is_array(tape, 0) {
+        return 1;
+    }
+    var j = 1;
+    var left = json.count(tape, 0);
+    var seen_c = false;
+    var seen_s = false;
+    while left > 0 {
+        if !json.is_object(tape, j) {
+            return 2;
+        }
+        let target = json.get(src, tape, j, "target");
+        if !is_target(src, tape, target) {
+            return 3;
+        }
+        if json.string_equals(src, tape, target, "c-header") {
+            if seen_c {
+                return 4;
+            }
+            seen_c = true;
+        } else {
+            if seen_s {
+                return 4;
+            }
+            seen_s = true;
+        }
+        let outcome = json.get(src, tape, j, "outcome");
+        let ran = json.string_equals(src, tape, outcome, "passed") || json.string_equals(src, tape, outcome, "failed");
+        if !(ran || json.string_equals(src, tape, outcome, "skipped")) {
+            return 5;
+        }
+        if !json.is_string(tape, json.get(src, tape, j, "reason")) {
+            return 6;
+        }
+        let tool = json.get(src, tape, j, "tool");
+        if json.kind(tape, tool) >= 0 && !json.is_string(tape, tool) {
+            return 7;
+        }
+        if ran && !json.is_string(tape, tool) {
+            return 8;
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return 0;
+}
+
+pub fn lanes_reason(code: int) -> [] &static [byte] {
+    if code == 1 {
+        return "the lanes document is not a JSON array";
+    }
+    if code == 2 {
+        return "an entry of the lanes document is not an object";
+    }
+    if code == 3 {
+        return "a target is neither c-header nor systemverilog";
+    }
+    if code == 4 {
+        return "a target is given twice";
+    }
+    if code == 5 {
+        return "an outcome is not passed, failed or skipped";
+    }
+    if code == 6 {
+        return "a reason is missing or not a string";
+    }
+    if code == 7 {
+        return "a tool is not a string";
+    }
+    return "a passed or failed entry names no tool";
+}
+
+// The decoded string at `node`.
+fn decoded[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    if !json.is_string(tape, node) {
+        return buffer.empty(heap, 1);
+    }
+    let n = json.string_length(src, tape, node);
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(src, tape, node, contents(w));
+    }
+    var out = buffer.empty(heap, n + 1);
+    borrow tmp as &r in {
+        out = buffer.append(heap, out, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return out;
+}
+
+// ---- the Tested tier -------------------------------------------------------------------------------------------
+
+res struct Acc {
+    details: buffer.Buffer,
+    run: buffer.Buffer,
+    trust: buffer.Buffer,
+    tools: buffer.Buffer,
+    unknown: buffer.Buffer,
+    nd: int,
+    nr: int,
+    nt: int,
+    nu: int,
+    np: int,
+    nf: int,
+}
+
+fn acc_new[&h](heap: &!h Heap) -> [heap] Acc {
+    return Acc { details: buffer.empty(heap, 512), run: buffer.empty(heap, 64), trust: buffer.empty(heap, 64), tools: buffer.empty(heap, 64), unknown: buffer.empty(heap, 512), nd: 0, nr: 0, nt: 0, nu: 0, np: 0, nf: 0 };
+}
+
+fn is_strip(c: int) -> [] bool {
+    return c == ' ' || c >= 9 && c <= 13 || c >= 28 && c <= 31;
+}
+
+// `{target} roundtrip not run: {reason}`.strip(), as a JSON string.
+fn unknown_item[&h, &r](heap: &!h Heap, out: buffer.Buffer, target: &static [byte], reason: &r [byte]) -> [heap] buffer.Buffer {
+    var d = buffer.append(heap, buffer.empty(heap, 128), target);
+    d = buffer.append(heap, d, " roundtrip not run: ");
+    d = buffer.append(heap, d, reason);
+    var o = buffer.append(heap, out, "{\"description\": ");
+    borrow d as &dr in {
+        var e = len(buffer.bytes(dr));
+        while e > 0 && is_strip(int_of(buffer.bytes(dr)[e - 1])) {
+            e = e - 1;
+        }
+        o = json_out.quoted(heap, o, buffer.bytes(dr), 0, e);
+    }
+    buffer.drop(heap, d);
+    return buffer.append(heap, o, ", \"tier\": \"Unknown\"}");
+}
+
+// One roundtrip of the Tested tier: `outcome` 0 passed, 1 failed, 2 skipped; `tool` is meaningful when `has_tool`.
+fn step[&h, &p, &t, &r, &w](heap: &!h Heap, acc: Acc, path: &p [byte], target: &static [byte], has_tool: bool, tool: &t [byte], outcome: int, reason: &r [byte], why: &w [byte]) -> [heap] Acc {
+    let Acc { details, run, trust, tools, unknown, nd, nr, nt, nu, np, nf } = acc;
+    var d = details;
+    d = buffer.append(heap, du.sep(heap, d, nd), "{\"target\": ");
+    d = du.quote(heap, d, target);
+    d = buffer.append(heap, d, ", \"input\": ");
+    d = json_out.quoted(heap, d, path, 0, len(path));
+    if has_tool {
+        d = buffer.append(heap, d, ", \"tool\": ");
+        d = json_out.quoted(heap, d, tool, 0, len(tool));
+    }
+    d = buffer.append(heap, d, ", \"outcome\": ");
+    if outcome == 0 {
+        d = buffer.append(heap, d, "\"passed\"");
+    } else if outcome == 1 {
+        d = buffer.append(heap, d, "\"failed\"");
+    } else {
+        d = buffer.append(heap, d, "\"skipped\"");
+    }
+    d = buffer.append(heap, d, ", \"reason\": ");
+    d = json_out.quoted(heap, d, reason, 0, len(reason));
+    d = buffer.push(heap, d, byte_of('}'));
+    var rn = run;
+    var tr = trust;
+    var tl = tools;
+    var un = unknown;
+    var nrn = nr;
+    var ntr = nt;
+    var nun = nu;
+    var npp = np;
+    var nff = nf;
+    if outcome != 2 {
+        var handle = buffer.append(heap, buffer.empty(heap, 64), target);
+        handle = buffer.append(heap, handle, "::");
+        handle = buffer.append(heap, handle, bytes.field(tool, ' ', 1));
+        borrow handle as &hr in {
+            rn = json_out.quoted(heap, du.sep(heap, rn, nrn), buffer.bytes(hr), 0, len(buffer.bytes(hr)));
+        }
+        buffer.drop(heap, handle);
+        nrn = nrn + 1;
+    }
+    if outcome == 0 {
+        tr = buffer.append(heap, du.sep(heap, tr, ntr), "{\"tool\": ");
+        tr = json_out.quoted(heap, tr, tool, 0, len(tool));
+        tr = buffer.append(heap, tr, ", \"tier\": \"Trust\", \"why\": \"the roundtrip's verdict is this tool's output; not re-verified here\"}");
+        tl = json_out.quoted(heap, du.sep(heap, tl, ntr), tool, 0, len(tool));
+        ntr = ntr + 1;
+        npp = npp + 1;
+    } else if outcome == 1 {
+        nff = nff + 1;
+    } else {
+        un = unknown_item(heap, du.sep(heap, un, nun), target, why);
+        nun = nun + 1;
+    }
+    return Acc { details: d, run: rn, trust: tr, tools: tl, unknown: un, nd: nd + 1, nr: nrn, nt: ntr, nu: nun, np: npp, nf: nff };
+}
+
+// The roundtrip `target` of a contract the checker accepted: the lane's result, or skipped.
+fn lane_step[&h, &p, &s, &t](heap: &!h Heap, acc: Acc, path: &p [byte], target: &static [byte], mode: int, src: &s [byte], tape: &t [int]) -> [heap] Acc {
+    var at = 0 - 1;
+    if mode == 1 {
+        at = lane_of(src, tape, target);
+    }
+    if at < 0 {
+        return step(heap, acc, path, target, false, "", 2, "the cancho product runs no external tool; supply the oracle's results with --lanes", "the cancho product runs no external tool; supply the oracle's results with --lanes");
+    }
+    let outcome = json.get(src, tape, at, "outcome");
+    var code = 2;
+    if json.string_equals(src, tape, outcome, "passed") {
+        code = 0;
+    } else if json.string_equals(src, tape, outcome, "failed") {
+        code = 1;
+    }
+    let tool_node = json.get(src, tape, at, "tool");
+    let has_tool = json.is_string(tape, tool_node);
+    let tool = decoded(heap, src, tape, tool_node);
+    let reason = decoded(heap, src, tape, json.get(src, tape, at, "reason"));
+    var out = acc;
+    borrow tool as &tr in {
+        borrow reason as &rr in {
+            out = step(heap, out, path, target, has_tool, buffer.bytes(tr), code, buffer.bytes(rr), buffer.bytes(rr));
+        }
+    }
+    buffer.drop(heap, tool);
+    buffer.drop(heap, reason);
+    return out;
+}
+
+// The roundtrip `target` of a contract that was refused or did not parse.
+fn refused_step[&h, &p](heap: &!h Heap, acc: Acc, path: &p [byte], target: &static [byte], has_ir: bool) -> [heap] Acc {
+    if has_ir {
+        let a = step(heap, acc, path, target, false, "", 2, "contract was refused; generators do not run on an invalid IR", "contract was refused (generators do not run on an invalid IR).");
+        return a;
+    }
+    return step(heap, acc, path, target, false, "", 2, "contract did not parse; generators not run", "contract did not parse (generators not run).");
+}
+
+// ---- the document ----------------------------------------------------------------------------------------------
+
+// Python's `_sniff_textual`: the first non-blank byte of the first 64 is not `{`; a file with none there is not textual.
+fn textual[&s](src: &s [byte]) -> [] bool {
+    var i = 0;
+    while i < len(src) && i < 64 {
+        let c = int_of(src[i]);
+        if !(c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            return c != '{';
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn count_json[&h](heap: &!h Heap, out: buffer.Buffer, key: &static [byte], n: int) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, ", \"");
+    o = buffer.append(heap, o, key);
+    o = buffer.append(heap, o, "\": ");
+    return buffer.push_nat(heap, o, n);
+}
+
+// The report of the loaded `doc` of the file `path` whose bytes are `source`, as `json.dumps` writes it (no newline).
+pub fn build[&h, &d, &p, &s, &l, &t](heap: &!h Heap, doc: &d load.Doc, path: &p [byte], source: &s [byte], mode: int, lsrc: &l [byte], ltape: &t [int]) -> [heap] buffer.Buffer {
+    let ds = load.diags(doc);
+    let mask = load.ran(doc);
+    let has_ir = mask != 0;
+    var ran_names = buffer.empty(heap, 512);
+    var not_run = buffer.empty(heap, 512);
+    if textual(source) {
+        ran_names = name_add(heap, ran_names, rd.parse_pass_code());
+    }
+    if has_ir {
+        ran_names = name_add(heap, ran_names, rd.schema_pass_code());
+    }
+    var g = 0;
+    while g < rd.group_count() {
+        var i = 0;
+        while i < rd.group_size(g) {
+            if has_ir && mask / rd.group_bit(g) % 2 == 1 {
+                ran_names = name_add(heap, ran_names, rd.code_at(g, i));
+            } else {
+                not_run = name_add(heap, not_run, rd.code_at(g, i));
+            }
+            i = i + 1;
+        }
+        g = g + 1;
+    }
+    // A code that fired is never listed as not run.
+    var after = "";
+    var fired = next_fired(ds, after);
+    while len(fired) > 0 {
+        var listed = false;
+        borrow ran_names as &rr in {
+            listed = name_has(buffer.bytes(rr), fired);
+        }
+        if !listed && rd.in_catalog(fired) {
+            ran_names = name_add(heap, ran_names, fired);
+            var kept = buffer.empty(heap, 1);
+            borrow not_run as &nr in {
+                buffer.drop(heap, kept);
+                kept = name_drop(heap, buffer.bytes(nr), fired);
+            }
+            buffer.drop(heap, not_run);
+            not_run = kept;
+        }
+        after = fired;
+        fired = next_fired(ds, after);
+    }
+    var passed = 0;
+    var failed = 0;
+    var runtime_n = 0;
+    var runtime_failed = 0;
+    borrow ran_names as &rr in {
+        var at = 0;
+        while at < len(buffer.bytes(rr)) {
+            let e = line_end(buffer.bytes(rr), at);
+            let code = buffer.bytes(rr)[at..e];
+            if rd.is_runtime_text(code) {
+                runtime_n = runtime_n + 1;
+                if fails(ds, code) {
+                    runtime_failed = runtime_failed + 1;
+                }
+            } else if fails(ds, code) {
+                failed = failed + 1;
+            } else {
+                passed = passed + 1;
+            }
+            at = e + 1;
+        }
+    }
+    // Roundtrips run only over a contract the checker accepted.
+    let refused = !has_ir || dg.count_errors(ds) > 0;
+    var acc = acc_new(heap);
+    if mode != 2 {
+        if refused {
+            acc = refused_step(heap, acc, path, "c-header", has_ir);
+            acc = refused_step(heap, acc, path, "systemverilog", has_ir);
+        } else {
+            acc = lane_step(heap, acc, path, "c-header", mode, lsrc, ltape);
+            acc = lane_step(heap, acc, path, "systemverilog", mode, lsrc, ltape);
+        }
+    }
+    let Acc { details, run, trust, tools, unknown, nd, nr, nt, nu, np, nf } = acc;
+    var un = unknown;
+    var nun = nu;
+    if mode == 2 {
+        un = buffer.append(heap, du.sep(heap, un, nun), "{\"description\": \"roundtrips disabled for this run (--no-roundtrips).\", \"tier\": \"Unknown\"}");
+        nun = nun + 1;
+    }
+    un = buffer.append(heap, du.sep(heap, un, nun), "{\"description\": \"behavioral roundtrip (drive the generated C accessors and the SystemVerilog module through the reference-model scenarios) is not implemented; the Tested tier covers structure only.\", \"tier\": \"Unknown\"}");
+
+    var o = buffer.append(heap, buffer.empty(heap, 4096), "{\"schema\": \"cancho-hdl-report\", \"version\": \"0.1.0\", \"input\": ");
+    o = json_out.quoted(heap, o, path, 0, len(path));
+    o = buffer.append(heap, o, ", \"static\": {\"checks_run\": ");
+    borrow ran_names as &rr in {
+        o = names_json(heap, o, buffer.bytes(rr), true);
+    }
+    o = count_json(heap, o, "checks_passed", passed);
+    o = count_json(heap, o, "checks_failed", failed);
+    o = buffer.append(heap, o, ", \"diagnostics\": ");
+    o = diagnostics_json(heap, o, ds, path);
+    o = buffer.append(heap, o, "}, \"tested\": {\"roundtrips_run\": [");
+    borrow run as &ru in {
+        o = buffer.append(heap, o, buffer.bytes(ru));
+    }
+    o = buffer.append(heap, o, "]");
+    o = count_json(heap, o, "roundtrips_passed", np);
+    o = count_json(heap, o, "roundtrips_failed", nf);
+    o = buffer.append(heap, o, ", \"details\": [");
+    borrow details as &de in {
+        o = buffer.append(heap, o, buffer.bytes(de));
+    }
+    o = buffer.append(heap, o, "]}, \"runtime\": {\"checks_performed\": ");
+    if runtime_n > 0 {
+        o = buffer.append(heap, o, "[\"schema-version-unsupported\"]");
+    } else {
+        o = buffer.append(heap, o, "[]");
+    }
+    o = count_json(heap, o, "checks_passed", runtime_n - runtime_failed);
+    o = count_json(heap, o, "checks_failed", runtime_failed);
+    o = buffer.append(heap, o, ", \"details\": []}, \"trust\": {\"boundaries\": [");
+    borrow trust as &tr in {
+        o = buffer.append(heap, o, buffer.bytes(tr));
+    }
+    o = buffer.append(heap, o, "]");
+    o = count_json(heap, o, "count", nt);
+    o = buffer.append(heap, o, "}, \"unknown\": {\"items\": [");
+    borrow un as &ur in {
+        o = buffer.append(heap, o, buffer.bytes(ur));
+    }
+    o = buffer.append(heap, o, "], \"static_checks_not_run\": ");
+    borrow not_run as &nr2 in {
+        o = names_json(heap, o, buffer.bytes(nr2), false);
+    }
+    o = buffer.append(heap, o, "}, \"static_checks_run\": ");
+    borrow ran_names as &rr in {
+        o = names_json(heap, o, buffer.bytes(rr), true);
+    }
+    o = buffer.append(heap, o, ", \"tested_roundtrips_run\": [");
+    borrow run as &ru in {
+        o = buffer.append(heap, o, buffer.bytes(ru));
+    }
+    o = buffer.append(heap, o, "], \"trust_boundaries\": [");
+    borrow tools as &tl in {
+        o = buffer.append(heap, o, buffer.bytes(tl));
+    }
+    o = buffer.append(heap, o, "], \"unknown_items\": [");
+    borrow un as &ur in {
+        o = buffer.append(heap, o, buffer.bytes(ur));
+    }
+    o = buffer.append(heap, o, "], \"non_guarantees\": [");
+    var k = 0;
+    while k < rd.ng_count() {
+        o = du.quote(heap, du.sep(heap, o, k), rd.ng_at(k));
+        k = k + 1;
+    }
+    o = buffer.append(heap, o, "]}");
+    buffer.drop(heap, ran_names);
+    buffer.drop(heap, not_run);
+    buffer.drop(heap, details);
+    buffer.drop(heap, run);
+    buffer.drop(heap, trust);
+    buffer.drop(heap, tools);
+    buffer.drop(heap, un);
+    return o;
+}
+
+// ---- readers of a finished document ----------------------------------------------------------------------------
+
+fn section[&s, &t](src: &s [byte], tape: &t [int], name: &static [byte]) -> [] int {
+    return json.get(src, tape, 0, name);
+}
+
+fn count_of[&s, &t](src: &s [byte], tape: &t [int], sec: &static [byte], key: &static [byte]) -> [] int {
+    return json.count(tape, json.get(src, tape, section(src, tape, sec), key));
+}
+
+fn number_of[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], sec: &static [byte], key: &static [byte]) -> [heap] buffer.Buffer {
+    return buffer.append(heap, out, du.digits(src, tape, json.get(src, tape, section(src, tape, sec), key)));
+}
+
+// `format_text` of report.py, over the document `src`/`tape` (a successful parse of what `build` wrote).
+pub fn text[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, "== cancho-hdl report: ");
+    let input = decoded(heap, src, tape, json.get(src, tape, 0, "input"));
+    borrow input as &ir in {
+        o = buffer.append(heap, o, buffer.bytes(ir));
+    }
+    buffer.drop(heap, input);
+    o = buffer.append(heap, o, " ==\nstatic   : ");
+    o = buffer.push_nat(heap, o, count_of(src, tape, "static", "checks_run"));
+    o = buffer.append(heap, o, " checks run, ");
+    o = number_of(heap, o, src, tape, "static", "checks_passed");
+    o = buffer.append(heap, o, " passed, ");
+    o = number_of(heap, o, src, tape, "static", "checks_failed");
+    o = buffer.append(heap, o, " failed\ntested   : ");
+    o = buffer.push_nat(heap, o, count_of(src, tape, "tested", "roundtrips_run"));
+    o = buffer.append(heap, o, " roundtrip(s) run, ");
+    o = number_of(heap, o, src, tape, "tested", "roundtrips_passed");
+    o = buffer.append(heap, o, " passed, ");
+    o = number_of(heap, o, src, tape, "tested", "roundtrips_failed");
+    o = buffer.append(heap, o, " failed");
+    let details = json.get(src, tape, section(src, tape, "tested"), "details");
+    var first = true;
+    var j = details + 1;
+    var left = json.count(tape, details);
+    while left > 0 {
+        if json.string_equals(src, tape, json.get(src, tape, j, "outcome"), "skipped") {
+            if first {
+                o = buffer.append(heap, o, " (skipped: ");
+            } else {
+                o = buffer.append(heap, o, ", ");
+            }
+            first = false;
+            o = buffer.append(heap, o, du.body(src, tape, json.get(src, tape, j, "target")));
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    if !first {
+        o = buffer.push(heap, o, byte_of(')'));
+    }
+    o = buffer.append(heap, o, "\nruntime  : ");
+    o = buffer.push_nat(heap, o, count_of(src, tape, "runtime", "checks_performed"));
+    o = buffer.append(heap, o, " check(s) performed, ");
+    o = number_of(heap, o, src, tape, "runtime", "checks_passed");
+    o = buffer.append(heap, o, " passed, ");
+    o = number_of(heap, o, src, tape, "runtime", "checks_failed");
+    o = buffer.append(heap, o, " failed\ntrust    : ");
+    o = number_of(heap, o, src, tape, "trust", "count");
+    o = buffer.append(heap, o, " boundary/boundaries — ");
+    let tools = json.get(src, tape, 0, "trust_boundaries");
+    var n = 0;
+    j = tools + 1;
+    left = json.count(tape, tools);
+    while left > 0 {
+        let tool = decoded(heap, src, tape, j);
+        borrow tool as &tr in {
+            var cut = bytes.find(buffer.bytes(tr), " (");
+            if cut < 0 {
+                cut = len(buffer.bytes(tr));
+            }
+            if n > 0 {
+                o = buffer.append(heap, o, "; ");
+            }
+            o = buffer.append(heap, o, buffer.bytes(tr)[0..cut]);
+        }
+        buffer.drop(heap, tool);
+        n = n + 1;
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    o = buffer.append(heap, o, "\nunknown  : ");
+    o = buffer.push_nat(heap, o, count_of(src, tape, "unknown", "items"));
+    o = buffer.append(heap, o, " item(s); ");
+    o = buffer.push_nat(heap, o, count_of(src, tape, "unknown", "static_checks_not_run"));
+    o = buffer.append(heap, o, " static check(s) not run — see the JSON for both lists\nnon_guarantees: ");
+    o = buffer.push_nat(heap, o, json.count(tape, json.get(src, tape, 0, "non_guarantees")));
+    return buffer.append(heap, o, " rows restated verbatim (docs/guarantees.md §2) — see the JSON\n");
+}
+
+// Is the document one in which every tier passed (`--strict`)?
+pub fn strict_ok[&s, &t](src: &s [byte], tape: &t [int]) -> [] bool {
+    let st = section(src, tape, "static");
+    let te = section(src, tape, "tested");
+    let rt = section(src, tape, "runtime");
+    if !bytes.equal(du.digits(src, tape, json.get(src, tape, st, "checks_failed")), "0") {
+        return false;
+    }
+    if !bytes.equal(du.digits(src, tape, json.get(src, tape, te, "roundtrips_failed")), "0") {
+        return false;
+    }
+    let details = json.get(src, tape, te, "details");
+    var j = details + 1;
+    var left = json.count(tape, details);
+    while left > 0 {
+        if !json.string_equals(src, tape, json.get(src, tape, j, "outcome"), "passed") {
+            return false;
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return bytes.equal(du.digits(src, tape, json.get(src, tape, rt, "checks_failed")), "0");
+}
