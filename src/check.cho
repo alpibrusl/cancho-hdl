@@ -29,6 +29,33 @@ fn bus_width[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] int {
     return 32;
 }
 
+// The rule groups that `check()` runs (`ran` of tools/check/checker.py, docs/cancho-port.md 14.8, 32): a group
+// that is only run when its list is non-empty is the same test in `run` and in `ran`, so they cannot drift.
+fn has_items[&t](tape: &t [int], node: int) -> [] bool {
+    return json.is_array(tape, node) && json.count(tape, node) > 0;
+}
+
+// The groups as bits: schema-version 1, block 2, registers 4, interrupts 8, dma 16. The schema version always runs; the
+// block group runs when `block` is an object; the others when their list has an element.
+pub fn ran[&s, &t](src: &s [byte], tape: &t [int]) -> [] int {
+    let root = 0;
+    let block = json.get(src, tape, root, "block");
+    if !json.is_object(tape, block) {
+        return 1;
+    }
+    var mask = 3;
+    if has_items(tape, json.get(src, tape, block, "registers")) {
+        mask = mask + 4;
+    }
+    if has_items(tape, json.get(src, tape, block, "interrupts")) {
+        mask = mask + 8;
+    }
+    if has_items(tape, json.get(src, tape, root, "dma_buffers")) {
+        mask = mask + 16;
+    }
+    return mask;
+}
+
 // Append the diagnostics of the document `src`/`tape` (a successful
 // `json.parse`) to `into`.
 pub fn run[&h, &s, &t](heap: &!h Heap, into: dg.Diags, src: &s [byte], tape: &t [int]) -> [heap] dg.Diags {
@@ -42,15 +69,15 @@ pub fn run[&h, &s, &t](heap: &!h Heap, into: dg.Diags, src: &s [byte], tape: &t 
     ds = blk.block(heap, d1, src, tape, block, bn);
     let width = bus_width(src, tape, json.get(src, tape, block, "bus_width"));
     let regs_node = json.get(src, tape, block, "registers");
-    if json.is_array(tape, regs_node) && json.count(tape, regs_node) > 0 {
+    if has_items(tape, regs_node) {
         ds = regs.registers(heap, ds, src, tape, regs_node, bn, width);
     }
     let intrs = json.get(src, tape, block, "interrupts");
-    if json.is_array(tape, intrs) && json.count(tape, intrs) > 0 {
+    if has_items(tape, intrs) {
         ds = intr.interrupts(heap, ds, src, tape, intrs, regs_node, bn, json.get(src, tape, block, "name"));
     }
     let bufs = json.get(src, tape, root, "dma_buffers");
-    if json.is_array(tape, bufs) && json.count(tape, bufs) > 0 {
+    if has_items(tape, bufs) {
         ds = dmac.dma(heap, ds, src, tape, bufs, bn);
     }
     return ds;

@@ -30,6 +30,7 @@
 #                                    bytes on every fixture and mutant (no compiler for the output: the Python bytes are the oracle)
 #  8g the SystemVerilog generator   `chw generate --target systemverilog` against tools/generate/generate.py:
 #                                    bytes on every fixture and mutant (no RTL tool on the runner: the Python bytes are the oracle)
+#  8h the rule groups that ran      `chw check --ran` against `checker.check(ir, ran=...)`, the fixtures and the mutants
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -142,6 +143,11 @@ python3 tests/differential/generate_binding.py "$OUT"
 echo "== 8g the SystemVerilog generator against generate.py"
 # No RTL tool is installed, so the Python tool's bytes are the only oracle (docs/cancho-port.md 29.1).
 python3 tests/differential/generate_sv.py "$OUT"
+
+echo "== 8h the rule groups the checker ran against checker.py"
+# `chw check --ran` against `checker.check(ir, ran=...)`: the fixtures, then the mutants of the checker's differential
+# (docs/cancho-port.md, 32).
+python3 tests/differential/check_ran.py "$OUT"
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"

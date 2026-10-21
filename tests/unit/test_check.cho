@@ -380,3 +380,63 @@ fn test_a_diagnostic_prints_as_the_python_checker_prints_it[&h](heap: &!h Heap) 
     buffer.drop(heap, doc);
     return test.assert(same);
 }
+
+// -------------------------------------------------------------------- ran ---
+
+// The rule groups `check()` ran on `doc`, as the bits of `check.ran`.
+fn ran_of[&h, &d](heap: &!h Heap, doc: &d [byte]) -> [heap] int {
+    let tape = box_slice(heap, json.tape_len(doc), 0);
+    borrow mut tape as &!w in {
+        json.parse(doc, contents(w));
+    }
+    var mask = 0 - 1;
+    borrow tape as &t in {
+        mask = check.ran(doc, contents(t));
+    }
+    unbox_slice(heap, tape);
+    return mask;
+}
+
+fn expect_ran[&h, &a, &b, &c](heap: &!h Heap, regs: &a [byte], intrs: &b [byte], dma: &c [byte], want: int) -> [heap] int {
+    let doc = wrap(heap, "32", regs, intrs, dma);
+    var got = 0 - 1;
+    borrow doc as &dr in {
+        got = ran_of(heap, buffer.bytes(dr));
+    }
+    buffer.drop(heap, doc);
+    return test.assert(got == want);
+}
+
+fn test_the_version_and_block_groups_run_on_every_object_block[&h](heap: &!h Heap) -> [heap] int {
+    return expect_ran(heap, "", "", "", 3);
+}
+
+fn test_a_list_with_an_element_runs_its_group[&h](heap: &!h Heap) -> [heap] int {
+    var s = expect_ran(heap, "{}", "", "", 7);
+    s = s + expect_ran(heap, "", "{}", "", 11);
+    s = s + expect_ran(heap, "", "", "{}", 19);
+    s = s + expect_ran(heap, "{}", "{}", "{}", 31);
+    return s;
+}
+
+fn test_a_block_that_is_not_an_object_runs_only_the_version_group[&h](heap: &!h Heap) -> [heap] int {
+    var s = 0;
+    let a = "{\"version\":\"0.1.0\",\"block\":3}";
+    let b = "{\"version\":\"0.1.0\",\"block\":[1]}";
+    let c = "{\"version\":\"0.1.0\"}";
+    s = s + test.assert(ran_of(heap, a) == 1);
+    s = s + test.assert(ran_of(heap, b) == 1);
+    s = s + test.assert(ran_of(heap, c) == 1);
+    return s;
+}
+
+fn test_a_list_that_is_not_a_list_or_is_empty_runs_nothing[&h](heap: &!h Heap) -> [heap] int {
+    var s = 0;
+    s = s + test.assert(ran_of(heap, "{\"block\":{\"registers\":5,\"interrupts\":\"x\"},\"dma_buffers\":{\"a\":1}}") == 3);
+    s = s + test.assert(ran_of(heap, "{\"block\":{\"registers\":[],\"interrupts\":null},\"dma_buffers\":[]}") == 3);
+    return s;
+}
+
+fn test_dma_buffers_are_read_at_the_top_level_and_not_in_the_block[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(ran_of(heap, "{\"block\":{\"dma_buffers\":[{}]}}") == 3);
+}

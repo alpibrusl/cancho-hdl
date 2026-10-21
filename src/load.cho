@@ -75,10 +75,12 @@ pub res struct Doc {
     // above converted (chw.dg_report), then the semantic rules of chw.check
     // when the file was loaded against a schema. This is `check_file`'s list.
     diags: dg.Diags,
+    // The rule groups `check()` ran, as bits (chw.check.ran): 0 when it did not run.
+    ran: int,
 }
 
 pub fn drop[&h](heap: &!h Heap, doc: Doc) -> [heap] int {
-    let Doc { ir, text, report, diags } = doc;
+    let Doc { ir, text, report, diags, ran } = doc;
     model.drop(heap, ir);
     buffer.drop(heap, text);
     dg.drop(heap, diags);
@@ -88,6 +90,11 @@ pub fn drop[&h](heap: &!h Heap, doc: Doc) -> [heap] int {
 // The diagnostics of a loaded document.
 pub fn diags[&d](doc: &d Doc) -> [] &d dg.Diags {
     return doc.diags;
+}
+
+// The rule groups the checker ran on a loaded document (`ran` of checker.py), as the bits of `chw.check.ran`.
+pub fn ran[&d](doc: &d Doc) -> [] int {
+    return doc.ran;
 }
 
 // The IR of a loaded document, and the bytes its spans index (a generator reads both).
@@ -161,13 +168,14 @@ fn syntax_report[&h, &t](heap: &!h Heap, bytes: &t [byte], code: int) -> [heap] 
 }
 
 fn blank_doc[&h](heap: &!h Heap) -> [heap] Doc {
-    return Doc { ir: model.empty(heap), text: buffer.empty(heap, 1), report: buffer.empty(heap, 1), diags: dg.empty(heap) };
+    return Doc { ir: model.empty(heap), text: buffer.empty(heap, 1), report: buffer.empty(heap, 1), diags: dg.empty(heap), ran: 0 };
 }
 
 // Validate, then load, a document `std.json` accepted.
 fn check_and_load[&h, &t, &r, &s](heap: &!h Heap, bytes: &t [byte], tape: &r [int], sch: &s Schema) -> [heap] Doc {
     var report = buffer.empty(heap, 16);
     var diags = dg.empty(heap);
+    var ran = 0;
     if sch.nodes > 0 {
         buffer.drop(heap, report);
         report = schema.validate(heap, bytes, tape, buffer.bytes(sch.text), contents(sch.tape), true);
@@ -175,9 +183,10 @@ fn check_and_load[&h, &t, &r, &s](heap: &!h Heap, bytes: &t [byte], tape: &r [in
         borrow report as &rr in {
             diags = check.run(heap, report_diags(heap, buffer.bytes(rr)), bytes, tape);
         }
+        ran = check.ran(bytes, tape);
     }
     let json_in.Loaded { ir, text } = json_in.load(heap, bytes, tape);
-    return Doc { ir: ir, text: text, report: report, diags: diags };
+    return Doc { ir: ir, text: text, report: report, diags: diags, ran: ran };
 }
 
 fn load_json[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [heap] Doc {
@@ -195,7 +204,7 @@ fn load_json[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [h
             dg.drop(heap, found);
             found = report_diags(heap, buffer.bytes(rr));
         }
-        doc = Doc { ir: model.empty(heap), text: buffer.append(heap, buffer.empty(heap, len(bytes)), bytes), report: rep, diags: found };
+        doc = Doc { ir: model.empty(heap), text: buffer.append(heap, buffer.empty(heap, len(bytes)), bytes), report: rep, diags: found, ran: 0 };
     } else {
         borrow tape as &r in {
             drop(heap, doc);
@@ -209,7 +218,7 @@ fn load_json[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [h
 // The report of validating `rendered`, the JSON the text parser's IR prints
 // as, and its diagnostics: the report converted, then the semantic rules. No
 // spans: the offsets mean nothing in generated JSON.
-fn validate_rendered[&h, &t, &s](heap: &!h Heap, rendered: &t [byte], sch: &s Schema) -> [heap] (buffer.Buffer, dg.Diags) {
+fn validate_rendered[&h, &t, &s](heap: &!h Heap, rendered: &t [byte], sch: &s Schema) -> [heap] (buffer.Buffer, dg.Diags, int) {
     let tape = box_slice(heap, json.tape_len(rendered), 0);
     var nodes = 0;
     borrow mut tape as &!w in {
@@ -217,6 +226,7 @@ fn validate_rendered[&h, &t, &s](heap: &!h Heap, rendered: &t [byte], sch: &s Sc
     }
     var report = buffer.empty(heap, 16);
     var diags = dg.empty(heap);
+    var ran = 0;
     if nodes < 0 {
         report = diag.add(heap, report, "internal", 0, 0, "-", "", "the text parser's IR printed as invalid JSON");
         dg.drop(heap, diags);
@@ -231,10 +241,11 @@ fn validate_rendered[&h, &t, &s](heap: &!h Heap, rendered: &t [byte], sch: &s Sc
             borrow report as &rr in {
                 diags = check.run(heap, report_diags(heap, buffer.bytes(rr)), rendered, contents(r));
             }
+            ran = check.ran(rendered, contents(r));
         }
     }
     unbox_slice(heap, tape);
-    return (report, diags);
+    return (report, diags, ran);
 }
 
 fn load_text[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [heap] Doc {
@@ -242,6 +253,7 @@ fn load_text[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [h
     var report = parsed;
     var diags = dg.empty(heap);
     var refused = 0;
+    var ran = 0;
     borrow report as &r in {
         refused = diag.count(buffer.bytes(r));
         dg.drop(heap, diags);
@@ -256,13 +268,14 @@ fn load_text[&h, &t, &s](heap: &!h Heap, bytes: &t [byte], sch: &s Schema) -> [h
         borrow rendered as &r in {
             buffer.drop(heap, report);
             dg.drop(heap, diags);
-            let (rep, found) = validate_rendered(heap, buffer.bytes(r), sch);
+            let (rep, found, groups) = validate_rendered(heap, buffer.bytes(r), sch);
             report = rep;
             diags = found;
+            ran = groups;
         }
         buffer.drop(heap, rendered);
     }
-    return Doc { ir: ir, text: buffer.append(heap, buffer.empty(heap, len(bytes)), bytes), report: report, diags: diags };
+    return Doc { ir: ir, text: buffer.append(heap, buffer.empty(heap, len(bytes)), bytes), report: report, diags: diags, ran: ran };
 }
 
 // Load `bytes` in whichever form they are in. With a schema that is not
