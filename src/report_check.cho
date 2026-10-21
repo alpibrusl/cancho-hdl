@@ -1,0 +1,519 @@
+module chw.report_check;
+
+// report_check.cho -- `validate_report` of tools/report/report.py: the refusals a finished report is held to
+// (spec/diagnostics/README.md 6.2), over the document as a tape (docs/cancho-port.md, 35).
+//
+// Each refusal is one line, `internal[CODE]: MESSAGE`, the way report.py's CLI prints them. The two codes are
+// `report-schema-truncated` and `evidence-over-claim`. A value of a type Python would raise on is read as absent here
+// (35.4, 4): the port never traps.
+
+import std.buffer;
+import std.bytes;
+import std.json;
+import chw.pyrepr;
+import chw.report_data as rd;
+
+fn refuse[&h, &m](heap: &!h Heap, out: buffer.Buffer, code: &static [byte], message: &m [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.append(heap, out, "internal[");
+    o = buffer.append(heap, o, code);
+    o = buffer.append(heap, o, "]: ");
+    o = buffer.append(heap, o, message);
+    return buffer.push(heap, o, byte_of('\n'));
+}
+
+fn refuse_buf[&h](heap: &!h Heap, out: buffer.Buffer, code: &static [byte], message: buffer.Buffer) -> [heap] buffer.Buffer {
+    var o = out;
+    borrow message as &mr in {
+        o = refuse(heap, o, code, buffer.bytes(mr));
+    }
+    buffer.drop(heap, message);
+    return o;
+}
+
+// The decoded string at `node`.
+fn decoded[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    if !json.is_string(tape, node) {
+        return buffer.empty(heap, 1);
+    }
+    let n = json.string_length(src, tape, node);
+    let tmp = box_slice(heap, n, byte_of(0));
+    borrow mut tmp as &!w in {
+        json.string_into(src, tape, node, contents(w));
+    }
+    var out = buffer.empty(heap, n + 1);
+    borrow tmp as &r in {
+        out = buffer.append(heap, out, contents(r));
+    }
+    unbox_slice(heap, tmp);
+    return out;
+}
+
+// Does the string at `node` equal `text`? (False for anything that is not a string.)
+fn is_text[&s, &t](src: &s [byte], tape: &t [int], node: int, text: &static [byte]) -> [] bool {
+    return json.string_equals(src, tape, node, text);
+}
+
+// `repr` of the value at `node`; `None` for an absent one.
+fn repr_of[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    if json.kind(tape, node) < 0 {
+        return buffer.append(heap, out, "None");
+    }
+    return pyrepr.repr(heap, out, src, tape, node);
+}
+
+// `str` of the value at `node`: a string as it is, anything else as its repr.
+fn str_of[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int) -> [heap] buffer.Buffer {
+    if json.is_string(tape, node) {
+        let text = decoded(heap, src, tape, node);
+        var o = out;
+        borrow text as &tr in {
+            o = buffer.append(heap, o, buffer.bytes(tr));
+        }
+        buffer.drop(heap, text);
+        return o;
+    }
+    return repr_of(heap, out, src, tape, node);
+}
+
+// An int in Python's sense: an integer that fits, or a bool (which is 1 or 0). (ok, value, is_bool)
+fn int_of_node[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] (bool, int, bool) {
+    if json.is_int(tape, node) && json.fits_int(src, tape, node) {
+        return (true, json.to_int(src, tape, node), false);
+    }
+    if json.kind(tape, node) == json.kind_true() {
+        return (true, 1, true);
+    }
+    if json.kind(tape, node) == json.kind_false() {
+        return (true, 0, true);
+    }
+    return (false, 0, false);
+}
+
+// A count as `{}` formats it: digits, or True/False.
+fn show_count[&h](heap: &!h Heap, out: buffer.Buffer, n: int, is_bool: bool) -> [heap] buffer.Buffer {
+    if is_bool {
+        if n == 1 {
+            return buffer.append(heap, out, "True");
+        }
+        return buffer.append(heap, out, "False");
+    }
+    if n < 0 {
+        return buffer.push_nat(heap, buffer.push(heap, out, byte_of('-')), 0 - n);
+    }
+    return buffer.push_nat(heap, out, n);
+}
+
+// `doc.get(key, default)` where the default is an int: absent gives (true, 0, false).
+fn count_or_zero[&s, &t](src: &s [byte], tape: &t [int], obj: int, key: &static [byte]) -> [] (bool, int, bool) {
+    let node = json.get(src, tape, obj, key);
+    if json.kind(tape, node) < 0 {
+        return (true, 0, false);
+    }
+    return int_of_node(src, tape, node);
+}
+
+// Is a string element of the array `arr` equal to the decoded `text`?
+fn list_has[&h, &s, &t, &x](heap: &!h Heap, src: &s [byte], tape: &t [int], arr: int, text: &x [byte]) -> [heap] bool {
+    if !json.is_array(tape, arr) {
+        return false;
+    }
+    var j = arr + 1;
+    var left = json.count(tape, arr);
+    while left > 0 {
+        if json.is_string(tape, j) {
+            let e = decoded(heap, src, tape, j);
+            var same = false;
+            borrow e as &er in {
+                same = bytes.equal(buffer.bytes(er), text);
+            }
+            buffer.drop(heap, e);
+            if same {
+                return true;
+            }
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return false;
+}
+
+fn list_has_null[&t](tape: &t [int], arr: int) -> [] bool {
+    if !json.is_array(tape, arr) {
+        return false;
+    }
+    var j = arr + 1;
+    var left = json.count(tape, arr);
+    while left > 0 {
+        if json.is_null(tape, j) {
+            return true;
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return false;
+}
+
+fn line_end[&t](text: &t [byte], at: int) -> [] int {
+    var e = at;
+    while e < len(text) && int_of(text[e]) != '\n' {
+        e = e + 1;
+    }
+    return e;
+}
+
+// Does `lines` hold the line `one` (which carries its newline)?
+fn lines_have_all[&t, &n](lines: &t [byte], one: &n [byte]) -> [] bool {
+    return lines_have(lines, one[0..len(one) - 1]);
+}
+
+fn lines_have[&t, &n](lines: &t [byte], name: &n [byte]) -> [] bool {
+    var at = 0;
+    while at < len(lines) {
+        let e = line_end(lines, at);
+        if bytes.equal(lines[at..e], name) {
+            return true;
+        }
+        at = e + 1;
+    }
+    return false;
+}
+
+// Repr of the lines of `lines` that sort after `after`, in order, as a list: `['a', 'b']`.
+fn lines_repr[&h, &t, &x](heap: &!h Heap, out: buffer.Buffer, first: bool, lines: &t [byte], others: &x [byte]) -> [heap] buffer.Buffer {
+    var o = buffer.push(heap, out, byte_of('['));
+    var n = 0;
+    if first {
+        o = buffer.append(heap, o, "None");
+        n = 1;
+    }
+    var after = lines[0..0];
+    var started = false;
+    var more = true;
+    while more {
+        more = false;
+        var best = lines[0..0];
+        var found = false;
+        var at = 0;
+        while at < len(lines) {
+            let e = line_end(lines, at);
+            let line = lines[at..e];
+            if (!started || bytes.compare(line, after) > 0) && (!found || bytes.compare(line, best) < 0) {
+                best = line;
+                found = true;
+            }
+            at = e + 1;
+        }
+        if found {
+            if n > 0 {
+                o = buffer.append(heap, o, ", ");
+            }
+            o = pyrepr.str_repr(heap, o, best);
+            n = n + 1;
+            after = best;
+            started = true;
+            more = true;
+        }
+    }
+    var at2 = 0;
+    while at2 < len(others) {
+        let e = line_end(others, at2);
+        if n > 0 {
+            o = buffer.append(heap, o, ", ");
+        }
+        o = buffer.append(heap, o, others[at2..e]);
+        n = n + 1;
+        at2 = e + 1;
+    }
+    return buffer.push(heap, o, byte_of(']'));
+}
+
+fn static_pass[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], st: int) -> [heap] buffer.Buffer {
+    var o = out;
+    let run = json.get(src, tape, st, "checks_run");
+    let run_list = json.is_array(tape, run);
+    // An absent list is Python's default `[]`; a value that is neither is not read (35.4, 4).
+    let run_ok = run_list || json.kind(tape, run) < 0;
+    // Codes claimed outside the catalog.
+    var outside = buffer.push(heap, buffer.empty(heap, 64), byte_of('['));
+    var n_out = 0;
+    if run_list {
+        var j = run + 1;
+        var left = json.count(tape, run);
+        while left > 0 {
+            var inside = false;
+            if json.is_string(tape, j) {
+                let c = decoded(heap, src, tape, j);
+                borrow c as &cr in {
+                    inside = rd.in_catalog(buffer.bytes(cr));
+                }
+                buffer.drop(heap, c);
+            }
+            if !inside {
+                outside = repr_of(heap, du_sep(heap, outside, n_out), src, tape, j);
+                n_out = n_out + 1;
+            }
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+    }
+    outside = buffer.push(heap, outside, byte_of(']'));
+    if n_out > 0 {
+        var m = buffer.append(heap, buffer.empty(heap, 64), "static checks claimed outside the catalog: ");
+        borrow outside as &or in {
+            m = buffer.append(heap, m, buffer.bytes(or));
+        }
+        o = refuse_buf(heap, o, "evidence-over-claim", m);
+    }
+    buffer.drop(heap, outside);
+    // passed + failed == len(checks_run)
+    let (pok, pv, pb) = count_or_zero(src, tape, st, "checks_passed");
+    let (fok, fv, fb) = count_or_zero(src, tape, st, "checks_failed");
+    if run_ok && pok && fok {
+        if pv + fv != list_count(tape, run) {
+            var m = buffer.append(heap, buffer.empty(heap, 96), "static passed+failed counts must sum to len(checks_run); ");
+            m = show_count(heap, m, pv, pb);
+            m = buffer.push(heap, m, byte_of('+'));
+            m = show_count(heap, m, fv, fb);
+            m = buffer.append(heap, m, " != ");
+            m = buffer.push_nat(heap, m, list_count(tape, run));
+            o = refuse_buf(heap, o, "evidence-over-claim", m);
+        }
+    }
+    // An Error for a code that is not in checks_run.
+    let diags = json.get(src, tape, st, "diagnostics");
+    if json.is_array(tape, diags) {
+        var found = buffer.empty(heap, 64);
+        var none_found = false;
+        var others = buffer.empty(heap, 16);
+        var j = diags + 1;
+        var left = json.count(tape, diags);
+        while left > 0 {
+            if json.is_object(tape, j) && is_text(src, tape, json.get(src, tape, j, "severity"), "Error") {
+                let code = json.get(src, tape, j, "code");
+                if json.is_string(tape, code) {
+                    let c = decoded(heap, src, tape, code);
+                    borrow c as &cr in {
+                        // A code met twice is listed once: `lines_repr` visits each distinct line once.
+                        if !list_has(heap, src, tape, run, buffer.bytes(cr)) {
+                            found = buffer.push(heap, buffer.append(heap, found, buffer.bytes(cr)), byte_of('\n'));
+                        }
+                    }
+                    buffer.drop(heap, c);
+                } else if json.kind(tape, code) <= 0 {
+                    if !list_has_null(tape, run) {
+                        none_found = true;
+                    }
+                } else {
+                    // Another type: kept in the order met, after the strings (35.4, 4).
+                    let (iok, iv, ib) = int_of_node(src, tape, code);
+                    var present = false;
+                    if iok {
+                        present = list_has_int(src, tape, run, iv);
+                    }
+                    if !present {
+                        var r = repr_of(heap, buffer.empty(heap, 16), src, tape, code);
+                        r = buffer.push(heap, r, byte_of('\n'));
+                        borrow r as &rr in {
+                            borrow others as &orr in {
+                                if !lines_have_all(buffer.bytes(orr), buffer.bytes(rr)) {
+                                    present = false;
+                                } else {
+                                    present = true;
+                                }
+                            }
+                            if !present {
+                                others = buffer.append(heap, others, buffer.bytes(rr));
+                            }
+                        }
+                        buffer.drop(heap, r);
+                    }
+                }
+            }
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+        borrow found as &fr in {
+            borrow others as &orr in {
+                if none_found || len(buffer.bytes(fr)) > 0 || len(buffer.bytes(orr)) > 0 {
+                    var m = buffer.append(heap, buffer.empty(heap, 96), "static reports Errors for codes not in checks_run: ");
+                    m = lines_repr(heap, m, none_found, buffer.bytes(fr), buffer.bytes(orr));
+                    o = refuse_buf(heap, o, "evidence-over-claim", m);
+                }
+            }
+        }
+        buffer.drop(heap, others);
+        buffer.drop(heap, found);
+    }
+    return o;
+}
+
+fn list_count[&t](tape: &t [int], arr: int) -> [] int {
+    if json.is_array(tape, arr) {
+        return json.count(tape, arr);
+    }
+    return 0;
+}
+
+// Is an int or bool element of the array `arr` equal to `n`? (Python: `True == 1`.)
+fn list_has_int[&s, &t](src: &s [byte], tape: &t [int], arr: int, n: int) -> [] bool {
+    if !json.is_array(tape, arr) {
+        return false;
+    }
+    var j = arr + 1;
+    var left = json.count(tape, arr);
+    while left > 0 {
+        let (ok, v, b) = int_of_node(src, tape, j);
+        if ok && v == n {
+            return true;
+        }
+        j = json.skip(tape, j);
+        left = left - 1;
+    }
+    return false;
+}
+
+fn du_sep[&h](heap: &!h Heap, out: buffer.Buffer, k: int) -> [heap] buffer.Buffer {
+    if k > 0 {
+        return buffer.append(heap, out, ", ");
+    }
+    return out;
+}
+
+fn tested_pass[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], te: int) -> [heap] buffer.Buffer {
+    var o = out;
+    let run = json.get(src, tape, te, "roundtrips_run");
+    let (pok, pv, pb) = count_or_zero(src, tape, te, "roundtrips_passed");
+    let (fok, fv, fb) = count_or_zero(src, tape, te, "roundtrips_failed");
+    if (json.is_array(tape, run) || json.kind(tape, run) < 0) && pok && fok && pv + fv != list_count(tape, run) {
+        o = refuse(heap, o, "evidence-over-claim", "tested passed+failed counts must sum to len(roundtrips_run)");
+    }
+    let details = json.get(src, tape, te, "details");
+    if json.is_array(tape, details) {
+        var j = details + 1;
+        var left = json.count(tape, details);
+        while left > 0 {
+            if json.is_object(tape, j) && is_text(src, tape, json.get(src, tape, j, "outcome"), "skipped") {
+                var handle = str_of(heap, buffer.empty(heap, 64), src, tape, json.get(src, tape, j, "target"));
+                handle = buffer.append(heap, handle, "::");
+                var m = buffer.append(heap, buffer.empty(heap, 96), "skipped roundtrip counted as run: [");
+                var n = 0;
+                if json.is_array(tape, run) {
+                    var k = run + 1;
+                    var kleft = json.count(tape, run);
+                    while kleft > 0 {
+                        if json.is_string(tape, k) {
+                            let r = decoded(heap, src, tape, k);
+                            borrow r as &rr in {
+                                borrow handle as &hr in {
+                                    if bytes.starts_with(buffer.bytes(rr), buffer.bytes(hr)) {
+                                        m = pyrepr.str_repr(heap, du_sep(heap, m, n), buffer.bytes(rr));
+                                        n = n + 1;
+                                    }
+                                }
+                            }
+                            buffer.drop(heap, r);
+                        }
+                        k = json.skip(tape, k);
+                        kleft = kleft - 1;
+                    }
+                }
+                m = buffer.push(heap, m, byte_of(']'));
+                if n > 0 {
+                    o = refuse_buf(heap, o, "evidence-over-claim", m);
+                } else {
+                    buffer.drop(heap, m);
+                }
+                buffer.drop(heap, handle);
+            }
+            j = json.skip(tape, j);
+            left = left - 1;
+        }
+    }
+    return o;
+}
+
+fn field_key(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "non_guarantees";
+    }
+    if i == 1 {
+        return "trust_boundaries";
+    }
+    if i == 2 {
+        return "static_checks_run";
+    }
+    if i == 3 {
+        return "tested_roundtrips_run";
+    }
+    return "unknown_items";
+}
+
+// The refusals of the report `src`/`tape` (a successful parse), one `internal[CODE]: MESSAGE` line each; nothing when
+// the report is acceptable.
+pub fn validate[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int]) -> [heap] buffer.Buffer {
+    if !json.is_object(tape, 0) {
+        return refuse(heap, out, "report-schema-truncated", "report is not a JSON object");
+    }
+    var o = out;
+    if !is_text(src, tape, json.get(src, tape, 0, "schema"), "cancho-hdl-report") {
+        o = refuse(heap, o, "report-schema-truncated", "schema field is not cancho-hdl-report");
+    }
+    var k = 0;
+    while k < 5 {
+        if json.kind(tape, json.get(src, tape, 0, field_key(k))) <= 0 {
+            var m = buffer.append(heap, buffer.empty(heap, 64), "mandatory field '");
+            m = buffer.append(heap, m, field_key(k));
+            m = buffer.append(heap, m, "' missing");
+            o = refuse_buf(heap, o, "report-schema-truncated", m);
+        }
+        k = k + 1;
+    }
+    let stated = json.get(src, tape, 0, "non_guarantees");
+    if json.is_array(tape, stated) {
+        var i = 0;
+        while i < rd.ng_count() {
+            if !list_has(heap, src, tape, stated, rd.ng_at(i)) {
+                var m = buffer.append(heap, buffer.empty(heap, 96), "non_guarantees is not the verbatim §2 restatement (missing: ");
+                m = buffer.append(heap, m, rd.ng_at(i));
+                m = buffer.push(heap, m, byte_of(')'));
+                o = refuse_buf(heap, o, "report-schema-truncated", m);
+            }
+            i = i + 1;
+        }
+    }
+    let trust = json.get(src, tape, 0, "trust");
+    if json.is_object(tape, trust) {
+        let boundaries = json.get(src, tape, trust, "boundaries");
+        if json.is_array(tape, boundaries) {
+            var j = boundaries + 1;
+            var left = json.count(tape, boundaries);
+            while left > 0 {
+                var tool = json.get(src, tape, j, "tool");
+                var tier = json.get(src, tape, j, "tier");
+                if !json.is_object(tape, j) {
+                    tool = 0 - 1;
+                    tier = 0 - 1;
+                }
+                if !is_text(src, tape, tier, "Trust") {
+                    var m = buffer.append(heap, buffer.empty(heap, 96), "trust boundary ");
+                    m = repr_of(heap, m, src, tape, tool);
+                    m = buffer.append(heap, m, " labeled ");
+                    m = repr_of(heap, m, src, tape, tier);
+                    m = buffer.append(heap, m, "; trust boundaries are Trust");
+                    o = refuse_buf(heap, o, "evidence-over-claim", m);
+                }
+                j = json.skip(tape, j);
+                left = left - 1;
+            }
+        }
+    }
+    let st = json.get(src, tape, 0, "static");
+    if json.is_object(tape, st) {
+        o = static_pass(heap, o, src, tape, st);
+    }
+    let te = json.get(src, tape, 0, "tested");
+    if json.is_object(tape, te) {
+        o = tested_pass(heap, o, src, tape, te);
+    }
+    return o;
+}

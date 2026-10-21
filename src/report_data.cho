@@ -1,0 +1,228 @@
+module chw.report_data;
+
+// report_data.cho -- the constants of tools/report/report.py: the nine rows of docs/guarantees.md section 2, restated
+// verbatim, and the rule groups of `check()` with the catalog codes whose evaluation runs with each (docs/cancho-port.md,
+// 35). Nothing here has behaviour; `tests/unit/test_report.cho` pins the rows against the document and the groups
+// against `chw.diagnostic`'s rule table, and the differential pins both against report.py's own tables.
+
+import std.bytes;
+
+pub fn ng_count() -> [] int {
+    return 9;
+}
+
+pub fn ng_at(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "Functional correctness of generated RTL beyond the register map itself.";
+    }
+    if i == 1 {
+        return "Timing closure.";
+    }
+    if i == 2 {
+        return "Area, power, fanout.";
+    }
+    if i == 3 {
+        return "Functional correctness of third-party IP.";
+    }
+    if i == 4 {
+        return "Driver logic that uses a generated binding.";
+    }
+    if i == 5 {
+        return "That every real datasheet quirk has a structured encoding.";
+    }
+    if i == 6 {
+        return "That a passing `cancho-hdl check` proves the system works.";
+    }
+    if i == 7 {
+        return "That `cancho-hdl diff` flags semantic regressions a human would catch.";
+    }
+    return "That generated output for one vendor toolchain works under another.";
+}
+
+// The rule groups, in the order `GROUP_CODES` has them: schema-version 0, block 1, registers 2, interrupts 3, dma 4.
+pub fn group_count() -> [] int {
+    return 5;
+}
+
+// The bit of `chw.check.ran` for group `g`.
+pub fn group_bit(g: int) -> [] int {
+    if g == 0 {
+        return 1;
+    }
+    if g == 1 {
+        return 2;
+    }
+    if g == 2 {
+        return 4;
+    }
+    if g == 3 {
+        return 8;
+    }
+    return 16;
+}
+
+pub fn group_size(g: int) -> [] int {
+    if g == 0 {
+        return 1;
+    }
+    if g == 1 {
+        return 4;
+    }
+    if g == 2 {
+        return 15;
+    }
+    if g == 3 {
+        return 7;
+    }
+    return 6;
+}
+
+fn block_code(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "block-name-missing";
+    }
+    if i == 1 {
+        return "block-base-address-missing";
+    }
+    if i == 2 {
+        return "block-bus-width-invalid";
+    }
+    return "block-endianness-unknown";
+}
+
+fn register_code(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "register-name-missing";
+    }
+    if i == 1 {
+        return "register-offset-missing";
+    }
+    if i == 2 {
+        return "register-offset-non-aligned";
+    }
+    if i == 3 {
+        return "register-offset-overflow";
+    }
+    if i == 4 {
+        return "register-offset-duplicate";
+    }
+    if i == 5 {
+        return "register-kind-unknown";
+    }
+    if i == 6 {
+        return "reset-overflow";
+    }
+    if i == 7 {
+        return "reset-wo-nonzero";
+    }
+    if i == 8 {
+        return "field-name-missing";
+    }
+    if i == 9 {
+        return "field-bounds-missing";
+    }
+    if i == 10 {
+        return "field-bounds-inverted";
+    }
+    if i == 11 {
+        return "field-bounds-overflow";
+    }
+    if i == 12 {
+        return "field-overlap";
+    }
+    if i == 13 {
+        return "field-enum-overflow";
+    }
+    return "field-constraint-ignored";
+}
+
+fn interrupt_code(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "interrupt-name-missing";
+    }
+    if i == 1 {
+        return "interrupt-duplicate-name";
+    }
+    if i == 2 {
+        return "interrupt-source-unresolved";
+    }
+    if i == 3 {
+        return "interrupt-enable-unresolved";
+    }
+    if i == 4 {
+        return "interrupt-status-unresolved";
+    }
+    if i == 5 {
+        return "interrupt-clear-unresolved";
+    }
+    return "interrupt-clear-kind-invalid";
+}
+
+fn dma_code(i: int) -> [] &static [byte] {
+    if i == 0 {
+        return "dma-name-missing";
+    }
+    if i == 1 {
+        return "dma-field-name-missing";
+    }
+    if i == 2 {
+        return "dma-overlap";
+    }
+    if i == 3 {
+        return "dma-align-illegal";
+    }
+    if i == 4 {
+        return "dma-align-unsatisfied";
+    }
+    return "dma-owner-unknown";
+}
+
+// The `i`th code of group `g`.
+pub fn code_at(g: int, i: int) -> [] &static [byte] {
+    if g == 0 {
+        return "schema-version-unsupported";
+    }
+    if g == 1 {
+        return block_code(i);
+    }
+    if g == 2 {
+        return register_code(i);
+    }
+    if g == 3 {
+        return interrupt_code(i);
+    }
+    return dma_code(i);
+}
+
+pub fn parse_pass_code() -> [] &static [byte] {
+    return "parse-error";
+}
+
+pub fn schema_pass_code() -> [] &static [byte] {
+    return "schema-invalid";
+}
+
+// RUNTIME_CODES: the codes counted in the report's runtime tier, not the static one.
+
+pub fn is_runtime_text[&c](code: &c [byte]) -> [] bool {
+    return bytes.equal(code, "schema-version-unsupported");
+}
+
+// CATALOG_CODES: the codes of every group, the two passes, and the two the checker may report about itself.
+pub fn in_catalog[&c](code: &c [byte]) -> [] bool {
+    if bytes.equal(code, "parse-error") || bytes.equal(code, "schema-invalid") || bytes.equal(code, "internal") || bytes.equal(code, "ir-version-unsupported") {
+        return true;
+    }
+    var g = 0;
+    while g < group_count() {
+        var i = 0;
+        while i < group_size(g) {
+            if bytes.equal(code, code_at(g, i)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        g = g + 1;
+    }
+    return false;
+}
