@@ -1,0 +1,411 @@
+// test_diff.cho -- `chw diff` and `chw impact` (src/diff*.cho, src/impact.cho), one change at a time.
+//
+// A base contract and a candidate with ONE change are run through `diff.document`, and the lists the change should
+// have made are looked for in the text, byte for byte. Every expected string was taken from `compute_diff` of
+// tools/diff/diff.py on the same two contracts (docs/cancho-port.md, 33.5); the changes are named by the test.
+//
+//     cancho test tests/unit/test_diff.cho src/*.cho --std
+//     (all of src/ except main.cho and conform.cho)
+
+import std.buffer;
+import std.bytes;
+import std.json;
+import std.test;
+import chw.diff;
+import chw.diff_fmt;
+import chw.diff_util as du;
+import chw.impact;
+
+// The base contract of every test: two registers (one with a reset, two fields, an enum), an interrupt with a source
+// and a clear, a DMA buffer of two fields.
+fn base() -> [] &static [byte] {
+    return "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}";
+}
+
+// The text of `diff.document` for two contracts in the JSON wire form.
+fn document[&h, &b, &c](heap: &!h Heap, base: &b [byte], cand: &c [byte]) -> [heap] buffer.Buffer {
+    let bt = box_slice(heap, json.tape_len(base), 0);
+    let ct = box_slice(heap, json.tape_len(cand), 0);
+    borrow mut bt as &!bw in {
+        json.parse(base, contents(bw));
+    }
+    borrow mut ct as &!cw in {
+        json.parse(cand, contents(cw));
+    }
+    var out = buffer.empty(heap, 16);
+    borrow bt as &br in {
+        borrow ct as &cr in {
+            buffer.drop(heap, out);
+            out = diff.document(heap, buffer.empty(heap, 1024), base, contents(br), cand, contents(cr));
+        }
+    }
+    unbox_slice(heap, bt);
+    unbox_slice(heap, ct);
+    return out;
+}
+
+// Does the diff of `base` and `cand` contain `fragment`?
+fn has[&h, &b, &c](heap: &!h Heap, base: &b [byte], cand: &c [byte], fragment: &static [byte]) -> [heap] bool {
+    let out = document(heap, base, cand);
+    var found = false;
+    borrow out as &or in {
+        found = bytes.find(buffer.bytes(or), fragment) >= 0;
+    }
+    buffer.drop(heap, out);
+    return found;
+}
+
+// Is the diff of `base` and `cand` exactly `whole`?
+fn is[&h, &b, &c](heap: &!h Heap, base: &b [byte], cand: &c [byte], whole: &static [byte]) -> [heap] bool {
+    let out = document(heap, base, cand);
+    var same = false;
+    borrow out as &or in {
+        same = bytes.equal(buffer.bytes(or), whole);
+    }
+    buffer.drop(heap, out);
+    return same;
+}
+
+fn test_identical[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(is(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "{\"schema\": \"cancho-hdl-diff\", \"version\": \"0.1.0\", \"base_id\": \"chw:B.register\", \"candidate_id\": \"chw:B.register\", \"added_registers\": [], \"removed_registers\": [], \"moved_registers\": [], \"widened_fields\": [], \"narrowed_fields\": [], \"repositioned_fields\": [], \"added_fields\": [], \"removed_fields\": [], \"changed_enum_values\": [], \"changed_interrupts\": [], \"added_interrupts\": [], \"removed_interrupts\": [], \"changed_dma_layouts\": [], \"changed_reset_values\": [], \"changed_block_properties\": []}"));
+}
+
+fn test_a_field_widened[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":5,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"widened_fields\": [{\"id\": \"chw:B.register.R.field.F\", \"from\": {\"lsb\": 0, \"msb\": 3}, \"to\": {\"lsb\": 0, \"msb\": 5}}]"));
+}
+
+fn test_a_field_narrowed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":1,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"narrowed_fields\": [{\"id\": \"chw:B.register.R.field.F\", \"from\": {\"lsb\": 0, \"msb\": 3}, \"to\": {\"lsb\": 0, \"msb\": 1}}]"));
+}
+
+fn test_a_field_repositioned[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":4,\"msb\":7,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"repositioned_fields\": [{\"id\": \"chw:B.register.R.field.F\", \"from\": {\"lsb\": 0, \"msb\": 3}, \"to\": {\"lsb\": 4, \"msb\": 7}}]"));
+}
+
+fn test_a_field_neither_contained_nor_containing_is_repositioned[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":2,\"msb\":5,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"repositioned_fields\": [{\"id\": \"chw:B.register.R.field.F\", \"from\": {\"lsb\": 0, \"msb\": 3}, \"to\": {\"lsb\": 2, \"msb\": 5}}]") && has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":2,\"msb\":5,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"widened_fields\": []") && has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":2,\"msb\":5,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"narrowed_fields\": []"));
+}
+
+fn test_a_register_added[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"},{\"name\":\"T\",\"offset\":\"0x08\",\"kind\":\"WO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"added_registers\": [{\"id\": \"chw:B.register.T\", \"offset\": \"0x08\", \"kind\": \"WO\"}]"));
+}
+
+fn test_a_register_removed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"removed_registers\": [{\"id\": \"chw:B.register.S\", \"offset\": \"0x04\", \"kind\": \"RO\"}]"));
+}
+
+fn test_a_register_moved_and_the_same_offset_in_another_spelling_is_not_a_move[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x08\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"moved_registers\": [{\"id\": \"chw:B.register.R\", \"from_offset\": \"0x00\", \"to_offset\": \"0x08\"}]"));
+}
+
+fn test_an_offset_spelled_in_another_case_or_with_leading_zeros_is_the_same[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0000\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"moved_registers\": []"));
+}
+
+fn test_reset_removed_then_added[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_reset_values\": [{\"id\": \"chw:B.register.R\", \"from\": \"0x0\", \"to\": null}]"));
+}
+
+fn test_reset_added[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\",\"reset\":\"0x1\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_reset_values\": [{\"id\": \"chw:B.register.S\", \"from\": null, \"to\": \"0x1\"}]"));
+}
+
+fn test_reset_changed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x1F\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_reset_values\": [{\"id\": \"chw:B.register.R\", \"from\": \"0x0\", \"to\": \"0x1F\"}]"));
+}
+
+fn test_reset_spelled_differently_is_the_same[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x00\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_reset_values\": []"));
+}
+
+fn test_a_field_added[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\",\"fields\":[{\"name\":\"Z\",\"lsb\":0,\"msb\":0}]}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"added_fields\": [{\"id\": \"chw:B.register.S.field.Z\", \"lsb\": 0, \"msb\": 0}]"));
+}
+
+fn test_a_field_removed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"removed_fields\": [{\"id\": \"chw:B.register.R.field.G\", \"lsb\": 8, \"msb\": 9}]"));
+}
+
+fn test_enum_labels_changed_dropped_and_added[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":7,\"C\":2}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_enum_values\": [{\"id\": \"chw:B.register.R.field.F\", \"label\": \"A\", \"from\": 0, \"to\": 7}, {\"id\": \"chw:B.register.R.field.F\", \"label\": \"C\", \"from\": null, \"to\": 2}, {\"id\": \"chw:B.register.R.field.F\", \"label\": \"B\", \"from\": 1, \"to\": null}]"));
+}
+
+fn test_an_enum_added_to_a_field_that_had_none[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9,\"enum\":{\"ON\":1}}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_enum_values\": [{\"id\": \"chw:B.register.R.field.G\", \"label\": \"ON\", \"from\": null, \"to\": 1}]"));
+}
+
+fn test_an_interrupt_changed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":2,\"source\":{\"register\":\"S\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_interrupts\": [{\"id\": \"chw:B.interrupt.I\", \"changes\": [{\"role\": \"number\", \"from\": 1, \"to\": 2}, {\"role\": \"source\", \"from\": {\"register\": \"R\", \"field\": \"F\"}, \"to\": {\"register\": \"S\", \"field\": \"F\"}}]}]"));
+}
+
+fn test_an_interrupt_role_removed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_interrupts\": [{\"id\": \"chw:B.interrupt.I\", \"changes\": [{\"role\": \"clear\", \"from\": {\"register\": \"R\", \"field\": \"G\", \"kind\": \"W1C\"}, \"to\": null}]}]"));
+}
+
+fn test_an_interrupt_role_added[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"},\"enable\":{\"register\":\"R\",\"field\":\"F\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_interrupts\": [{\"id\": \"chw:B.interrupt.I\", \"changes\": [{\"role\": \"enable\", \"from\": null, \"to\": {\"register\": \"R\", \"field\": \"F\"}}]}]"));
+}
+
+fn test_a_ref_with_its_keys_in_another_order_is_the_same[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"field\":\"F\",\"register\":\"R\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_interrupts\": []"));
+}
+
+fn test_an_interrupt_added[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}},{\"name\":\"J\"}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"added_interrupts\": [{\"id\": \"chw:B.interrupt.J\"}]"));
+}
+
+fn test_an_interrupt_removed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"removed_interrupts\": [{\"id\": \"chw:B.interrupt.I\"}]"));
+}
+
+fn test_a_dma_owner_flipped[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"DEVICE\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.D\", \"added_field_ids\": [], \"removed_field_ids\": [], \"moved_fields\": [], \"owner_changes\": [{\"id\": \"chw:B.dma.D.field.X\", \"from\": \"CPU\", \"to\": \"DEVICE\"}]}]"));
+}
+
+fn test_a_dma_field_moved[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x8\",\"owner\":\"DEVICE\"}]}]}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.D\", \"added_field_ids\": [], \"removed_field_ids\": [], \"moved_fields\": [{\"id\": \"chw:B.dma.D.field.Y\", \"from_offset\": \"0x4\", \"to_offset\": \"0x8\"}]}]"));
+}
+
+fn test_a_dma_offset_spelled_differently_is_moved_a_string_compare[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x04\",\"owner\":\"DEVICE\"}]}]}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.D\", \"added_field_ids\": [], \"removed_field_ids\": [], \"moved_fields\": [{\"id\": \"chw:B.dma.D.field.Y\", \"from_offset\": \"0x4\", \"to_offset\": \"0x04\"}]}]"));
+}
+
+fn test_a_dma_field_added_and_one_removed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"W\",\"offset\":\"0x10\",\"owner\":\"CPU\"}]}]}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.D\", \"added_field_ids\": [\"chw:B.dma.D.field.W\"], \"removed_field_ids\": [\"chw:B.dma.D.field.Y\"], \"moved_fields\": []}]"));
+}
+
+fn test_a_dma_coherence_changed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"coherent\":true},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.D\", \"added_field_ids\": [], \"removed_field_ids\": [], \"moved_fields\": [], \"coherence_changes\": [{\"id\": \"chw:B.dma.D.field.X\", \"from\": null, \"to\": true}]}]"));
+}
+
+fn test_a_dma_buffer_added[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]},{\"name\":\"E\",\"fields\":[{\"name\":\"P\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Q\",\"offset\":\"0x4\",\"owner\":\"CPU\"}]}]}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.E\", \"added_field_ids\": [\"chw:B.dma.E.field.P\", \"chw:B.dma.E.field.Q\"], \"removed_field_ids\": [], \"moved_fields\": [], \"owner_changes\": []}]"));
+}
+
+fn test_a_dma_buffer_removed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]}}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.D\", \"added_field_ids\": [], \"removed_field_ids\": [\"chw:B.dma.D.field.X\", \"chw:B.dma.D.field.Y\"], \"moved_fields\": []}]"));
+}
+
+fn test_the_base_address_changed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x50\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_block_properties\": [{\"property\": \"base_address\", \"from\": \"0x40\", \"to\": \"0x50\"}]"));
+}
+
+fn test_the_base_address_spelled_in_another_case_is_the_same[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x0040\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_block_properties\": []"));
+}
+
+fn test_the_bus_width_and_the_endianness_changed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":16,\"endianness\":\"big\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"changed_block_properties\": [{\"property\": \"bus_width\", \"from\": 32, \"to\": 16}, {\"property\": \"endianness\", \"from\": \"little\", \"to\": \"big\"}]"));
+}
+
+fn test_the_block_renamed_everything_is_added_and_removed[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(is(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"C\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "{\"schema\": \"cancho-hdl-diff\", \"version\": \"0.1.0\", \"base_id\": \"chw:B.register\", \"candidate_id\": \"chw:C.register\", \"added_registers\": [{\"id\": \"chw:C.register.R\", \"offset\": \"0x00\", \"kind\": \"RW\"}, {\"id\": \"chw:C.register.S\", \"offset\": \"0x04\", \"kind\": \"RO\"}], \"removed_registers\": [{\"id\": \"chw:B.register.R\", \"offset\": \"0x00\", \"kind\": \"RW\"}, {\"id\": \"chw:B.register.S\", \"offset\": \"0x04\", \"kind\": \"RO\"}], \"moved_registers\": [], \"widened_fields\": [], \"narrowed_fields\": [], \"repositioned_fields\": [], \"added_fields\": [], \"removed_fields\": [], \"changed_enum_values\": [], \"changed_interrupts\": [], \"added_interrupts\": [{\"id\": \"chw:C.interrupt.I\"}], \"removed_interrupts\": [{\"id\": \"chw:B.interrupt.I\"}], \"changed_dma_layouts\": [{\"id\": \"chw:C.dma.D\", \"added_field_ids\": [\"chw:C.dma.D.field.X\", \"chw:C.dma.D.field.Y\"], \"removed_field_ids\": [], \"moved_fields\": [], \"owner_changes\": []}, {\"id\": \"chw:B.dma.D\", \"added_field_ids\": [], \"removed_field_ids\": [\"chw:B.dma.D.field.X\", \"chw:B.dma.D.field.Y\"], \"moved_fields\": []}], \"changed_reset_values\": [], \"changed_block_properties\": [{\"property\": \"name\", \"from\": \"B\", \"to\": \"C\"}]}"));
+}
+
+fn test_two_registers_with_one_name_the_last_is_the_register[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(is(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"},{\"name\":\"R\",\"offset\":\"0x10\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "{\"schema\": \"cancho-hdl-diff\", \"version\": \"0.1.0\", \"base_id\": \"chw:B.register\", \"candidate_id\": \"chw:B.register\", \"added_registers\": [], \"removed_registers\": [], \"moved_registers\": [{\"id\": \"chw:B.register.R\", \"from_offset\": \"0x00\", \"to_offset\": \"0x10\"}], \"widened_fields\": [], \"narrowed_fields\": [], \"repositioned_fields\": [], \"added_fields\": [], \"removed_fields\": [{\"id\": \"chw:B.register.R.field.F\", \"lsb\": 0, \"msb\": 3}, {\"id\": \"chw:B.register.R.field.G\", \"lsb\": 8, \"msb\": 9}], \"changed_enum_values\": [], \"changed_interrupts\": [], \"added_interrupts\": [], \"removed_interrupts\": [], \"changed_dma_layouts\": [], \"changed_reset_values\": [{\"id\": \"chw:B.register.R\", \"from\": \"0x0\", \"to\": null}], \"changed_block_properties\": []}"));
+}
+
+fn test_hex_numbers_compare_by_value_in_either_case() -> [] int {
+    var s = 0;
+    s = s + test.assert(du.hex_equal("0x0A", "0x0a"));
+    s = s + test.assert(du.hex_equal("0x00", "0x0"));
+    s = s + test.assert(du.hex_equal("0x0000FF", "0xff"));
+    s = s + test.assert(du.hex_equal("0x0F", "0x0f"));
+    s = s + test.assert(!du.hex_equal("0x0F", "0x0e"));
+    s = s + test.assert(!du.hex_equal("0x10", "0x1"));
+    s = s + test.assert(!du.hex_equal("0x1", "0x2"));
+    s = s + test.assert(du.hex_equal("0x00000000000000000000000000000001", "0x1"));
+    return s;
+}
+
+fn plain[&h, &x](heap: &!h Heap, doc: &x [byte]) -> [heap] bool {
+    let tape = box_slice(heap, json.tape_len(doc), 0);
+    var nodes = 0;
+    borrow mut tape as &!w in {
+        nodes = json.parse(doc, contents(w));
+    }
+    var ok = false;
+    borrow tape as &t in {
+        ok = du.plain_json(doc, contents(t), nodes);
+    }
+    unbox_slice(heap, tape);
+    return ok;
+}
+
+fn test_a_file_is_copied_only_if_its_strings_and_numbers_are_in_the_form_json_dumps_writes[&h](heap: &!h Heap) -> [heap] int {
+    var s = 0;
+    s = s + test.assert(plain(heap, "{\"a\": [1, -2, 30, \"x y\"]}"));
+    s = s + test.assert(!plain(heap, "{\"a\": \"\\u0041\"}"));
+    s = s + test.assert(!plain(heap, "{\"a\": \"\\n\"}"));
+    s = s + test.assert(!plain(heap, "{\"a\": \"é\"}"));
+    s = s + test.assert(!plain(heap, "{\"a\": 1.5}"));
+    s = s + test.assert(!plain(heap, "{\"a\": 1e2}"));
+    s = s + test.assert(!plain(heap, "{\"a\": -0}"));
+    s = s + test.assert(!plain(heap, "{\"\\u0041\": 1}"));
+    return s;
+}
+
+fn pretty_of[&h, &x](heap: &!h Heap, doc: &x [byte]) -> [heap] buffer.Buffer {
+    let tape = box_slice(heap, json.tape_len(doc), 0);
+    borrow mut tape as &!w in {
+        json.parse(doc, contents(w));
+    }
+    var out = buffer.empty(heap, 16);
+    borrow tape as &t in {
+        buffer.drop(heap, out);
+        out = diff_fmt.pretty(heap, buffer.empty(heap, 64), doc, contents(t), 0, 0);
+    }
+    unbox_slice(heap, tape);
+    return out;
+}
+
+// json.dumps(x, indent=2) of {"a": [], "b": [1, {"c": "d"}], "e": {}, "f": null, "g": [true, false]}.
+fn test_indent_two_puts_an_element_a_line_and_leaves_empty_containers_closed[&h](heap: &!h Heap) -> [heap] int {
+    let out = pretty_of(heap, "{\"a\": [], \"b\": [1, {\"c\": \"d\"}], \"e\": {}, \"f\": null, \"g\": [true, false]}");
+    var same = false;
+    borrow out as &or in {
+        same = bytes.equal(buffer.bytes(or), "{\n  \"a\": [],\n  \"b\": [\n    1,\n    {\n      \"c\": \"d\"\n    }\n  ],\n  \"e\": {},\n  \"f\": null,\n  \"g\": [\n    true,\n    false\n  ]\n}");
+    }
+    buffer.drop(heap, out);
+    return test.assert(same);
+}
+
+fn reason_of[&h, &x](heap: &!h Heap, doc: &x [byte]) -> [heap] buffer.Buffer {
+    let tape = box_slice(heap, json.tape_len(doc), 0);
+    borrow mut tape as &!w in {
+        json.parse(doc, contents(w));
+    }
+    var out = buffer.empty(heap, 16);
+    borrow tape as &t in {
+        buffer.drop(heap, out);
+        out = impact.reason(heap, doc, contents(t));
+    }
+    unbox_slice(heap, tape);
+    return out;
+}
+
+fn expect_reason[&h, &x](heap: &!h Heap, doc: &x [byte], want: &static [byte]) -> [heap] int {
+    let out = reason_of(heap, doc);
+    var same = false;
+    borrow out as &or in {
+        same = bytes.equal(buffer.bytes(or), want);
+    }
+    buffer.drop(heap, out);
+    return test.assert(same);
+}
+
+// `_short_reason`: the block line first, then each non-empty list as `name=count` in the fixed order, joined by "; ".
+fn test_the_reason_of_a_stale_artifact_counts_the_lists_that_changed[&h](heap: &!h Heap) -> [heap] int {
+    var s = 0;
+    s = s + expect_reason(heap, "{\"added_registers\": [1, 2], \"changed_dma_layouts\": [1], \"changed_block_properties\": [1]}", "block properties changed; added_registers=2; changed_dma_layouts=1");
+    s = s + expect_reason(heap, "{\"widened_fields\": [1], \"changed_reset_values\": [1, 2, 3], \"moved_registers\": [1]}", "moved_registers=1; widened_fields=1; changed_reset_values=3");
+    s = s + expect_reason(heap, "{\"added_registers\": []}", "");
+    return s;
+}
+
+fn eq[&h, &x, &y](heap: &!h Heap, a: &x [byte], b: &y [byte]) -> [heap] bool {
+    let ta = box_slice(heap, json.tape_len(a), 0);
+    let tb = box_slice(heap, json.tape_len(b), 0);
+    borrow mut ta as &!aw in {
+        json.parse(a, contents(aw));
+    }
+    borrow mut tb as &!bw in {
+        json.parse(b, contents(bw));
+    }
+    var same = false;
+    borrow ta as &ar in {
+        borrow tb as &br in {
+            same = du.equal(a, contents(ar), 0, b, contents(br), 0);
+        }
+    }
+    unbox_slice(heap, ta);
+    unbox_slice(heap, tb);
+    return same;
+}
+
+// Python's `==` on two JSON values: an object as a dict (any key order, a repeated key keeping its last value), a list
+// element by element, True is not False, 1 is not "1".
+fn test_two_json_values_are_equal_as_python_compares_them[&h](heap: &!h Heap) -> [heap] int {
+    var s = 0;
+    s = s + test.assert(eq(heap, "[1, 2]", "[1, 2]"));
+    s = s + test.assert(!eq(heap, "[1, 2]", "[1, 2, 3]"));
+    s = s + test.assert(!eq(heap, "[1, 2, 3]", "[1, 2]"));
+    s = s + test.assert(!eq(heap, "[1, 2]", "[1, 3]"));
+    s = s + test.assert(eq(heap, "[1, [2, {\"a\": 3}]]", "[1, [2, {\"a\": 3}]]"));
+    s = s + test.assert(!eq(heap, "[1, [2, {\"a\": 3}]]", "[1, [2, {\"a\": 4}]]"));
+    s = s + test.assert(eq(heap, "{\"a\": 1, \"b\": 2}", "{\"b\": 2, \"a\": 1}"));
+    s = s + test.assert(!eq(heap, "{\"a\": 1, \"b\": 2}", "{\"a\": 1}"));
+    s = s + test.assert(!eq(heap, "{\"a\": 1}", "{\"a\": 1, \"b\": 2}"));
+    s = s + test.assert(!eq(heap, "{\"a\": 1}", "{\"b\": 1}"));
+    s = s + test.assert(!eq(heap, "{\"a\": 1}", "{\"a\": 2}"));
+    s = s + test.assert(eq(heap, "{\"a\": 1, \"a\": 2}", "{\"a\": 2}"));
+    s = s + test.assert(!eq(heap, "{\"a\": 1, \"a\": 2}", "{\"a\": 1}"));
+    s = s + test.assert(!eq(heap, "{\"a\": 1, \"b\": 1}", "{\"a\": 1, \"a\": 1}"));
+    s = s + test.assert(!eq(heap, "true", "false"));
+    s = s + test.assert(eq(heap, "true", "true"));
+    s = s + test.assert(!eq(heap, "1", "\"1\""));
+    s = s + test.assert(!eq(heap, "\"\"", "0"));
+    s = s + test.assert(!eq(heap, "null", "0"));
+    s = s + test.assert(eq(heap, "\"abc\"", "\"abc\""));
+    s = s + test.assert(!eq(heap, "\"abc\"", "\"abd\""));
+    return s;
+}
+
+fn value_of[&h, &x](heap: &!h Heap, doc: &x [byte]) -> [heap] buffer.Buffer {
+    let tape = box_slice(heap, json.tape_len(doc), 0);
+    borrow mut tape as &!w in {
+        json.parse(doc, contents(w));
+    }
+    var out = buffer.empty(heap, 16);
+    borrow tape as &t in {
+        buffer.drop(heap, out);
+        out = du.value(heap, buffer.empty(heap, 64), doc, contents(t), 0);
+    }
+    unbox_slice(heap, tape);
+    return out;
+}
+
+// json.dumps writes `, ` and `: ` and walks a container's children whatever they hold.
+fn test_a_nested_value_is_written_as_json_dumps_writes_it[&h](heap: &!h Heap) -> [heap] int {
+    let out = value_of(heap, "{\"a\":[1,{\"b\":2},[]],\"c\":{\"d\":{\"e\":3}},\"f\":null,\"g\":true}");
+    var same = false;
+    borrow out as &or in {
+        same = bytes.equal(buffer.bytes(or), "{\"a\": [1, {\"b\": 2}, []], \"c\": {\"d\": {\"e\": 3}}, \"f\": null, \"g\": true}");
+    }
+    buffer.drop(heap, out);
+    return test.assert(same);
+}
+
+// A repeated key of an enum is one label with the last value (Python's dict): the first position, the last value.
+fn test_a_repeated_enum_label_is_one_label_with_its_last_value[&h](heap: &!h Heap) -> [heap] int {
+    let twice = "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":1,\"enum\":{\"A\":0,\"B\":1,\"A\":5}}]}]}}";
+    let once = "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x0\",\"kind\":\"RW\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":1,\"enum\":{\"A\":5,\"B\":1}}]}]}}";
+    var s = 0;
+    s = s + test.assert(has(heap, twice, once, "\"changed_enum_values\": []"));
+    s = s + test.assert(has(heap, once, twice, "\"changed_enum_values\": []"));
+    return s;
+}
+
+fn test_a_changed_lsb_alone_is_a_change_of_the_bit_range[&h](heap: &!h Heap) -> [heap] int {
+    var s = 0;
+    s = s + test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":1,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"narrowed_fields\": [{\"id\": \"chw:B.register.R.field.F\", \"from\": {\"lsb\": 0, \"msb\": 3}, \"to\": {\"lsb\": 1, \"msb\": 3}}]"));
+    s = s + test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":1,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"widened_fields\": []"));
+    s = s + test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":1,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"repositioned_fields\": []"));
+    return s;
+}
+
+fn test_a_coherence_flag_changed_from_true_to_false_and_to_absent_is_a_change[&h](heap: &!h Heap) -> [heap] int {
+    var s = 0;
+    s = s + test.assert(has(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"coherent\":true},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"coherent\":false},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", "\"coherence_changes\": [{\"id\": \"chw:B.dma.D.field.X\", \"from\": true, \"to\": false}]"));
+    s = s + test.assert(has(heap, "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\",\"coherent\":true},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"}]}]}", base(), "\"coherence_changes\": [{\"id\": \"chw:B.dma.D.field.X\", \"from\": true, \"to\": null}]"));
+    return s;
+}
+
+fn test_a_dma_field_added_alone_changes_the_layout[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"},{\"name\":\"Y\",\"offset\":\"0x4\",\"owner\":\"DEVICE\"},{\"name\":\"W\",\"offset\":\"0x10\",\"owner\":\"CPU\"}]}]}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.D\", \"added_field_ids\": [\"chw:B.dma.D.field.W\"], \"removed_field_ids\": [], \"moved_fields\": []}]"));
+}
+
+fn test_a_dma_field_removed_alone_changes_the_layout[&h](heap: &!h Heap) -> [heap] int {
+    return test.assert(has(heap, base(), "{\"version\":\"0.1.0\",\"block\":{\"name\":\"B\",\"base_address\":\"0x40\",\"bus_width\":32,\"endianness\":\"little\",\"registers\":[{\"name\":\"R\",\"offset\":\"0x00\",\"kind\":\"RW\",\"reset\":\"0x0\",\"fields\":[{\"name\":\"F\",\"lsb\":0,\"msb\":3,\"enum\":{\"A\":0,\"B\":1}},{\"name\":\"G\",\"lsb\":8,\"msb\":9}]},{\"name\":\"S\",\"offset\":\"0x04\",\"kind\":\"RO\"}],\"interrupts\":[{\"name\":\"I\",\"number\":1,\"source\":{\"register\":\"R\",\"field\":\"F\"},\"clear\":{\"register\":\"R\",\"field\":\"G\",\"kind\":\"W1C\"}}]},\"dma_buffers\":[{\"name\":\"D\",\"fields\":[{\"name\":\"X\",\"offset\":\"0x0\",\"owner\":\"CPU\"}]}]}", "\"changed_dma_layouts\": [{\"id\": \"chw:B.dma.D\", \"added_field_ids\": [], \"removed_field_ids\": [\"chw:B.dma.D.field.Y\"], \"moved_fields\": []}]"));
+}

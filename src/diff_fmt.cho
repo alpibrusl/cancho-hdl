@@ -1,0 +1,62 @@
+module chw.diff_fmt;
+
+// diff_fmt.cho -- `json.dumps(doc, indent=2)` of a document that is already `json.dumps(doc)` (docs/cancho-port.md, 33):
+// the same nodes, one element or pair a line, two spaces a level, `[]` and `{}` for the empty ones.
+
+import std.buffer;
+import std.json;
+import chw.diff_util as du;
+
+fn indent[&h](heap: &!h Heap, out: buffer.Buffer, level: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var k = 0;
+    while k < level {
+        o = buffer.append(heap, o, "  ");
+        k = k + 1;
+    }
+    return o;
+}
+
+pub fn pretty[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], tape: &t [int], node: int, level: int) -> [heap] buffer.Buffer {
+    let k = json.kind(tape, node);
+    if k != 6 && k != 7 {
+        return du.value(heap, out, src, tape, node);
+    }
+    var o = out;
+    var left = json.count(tape, node);
+    if left == 0 {
+        if k == 6 {
+            return buffer.append(heap, o, "[]");
+        }
+        return buffer.append(heap, o, "{}");
+    }
+    var j = node + 1;
+    var n = 0;
+    if k == 6 {
+        o = buffer.append(heap, o, "[\n");
+    } else {
+        o = buffer.append(heap, o, "{\n");
+    }
+    while left > 0 {
+        if n > 0 {
+            o = buffer.append(heap, o, ",\n");
+        }
+        o = indent(heap, o, level + 1);
+        if k == 6 {
+            o = pretty(heap, o, src, tape, j, level + 1);
+            j = json.skip(tape, j);
+        } else {
+            o = du.quote(heap, o, du.body(src, tape, j));
+            o = buffer.append(heap, o, ": ");
+            o = pretty(heap, o, src, tape, j + 1, level + 1);
+            j = json.skip(tape, j + 1);
+        }
+        left = left - 1;
+        n = n + 1;
+    }
+    o = indent(heap, buffer.push(heap, o, byte_of('\n')), level);
+    if k == 6 {
+        return buffer.push(heap, o, byte_of(']'));
+    }
+    return buffer.push(heap, o, byte_of('}'));
+}

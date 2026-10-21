@@ -143,7 +143,7 @@ pub fn render_ir[&h, &d](heap: &!h Heap, doc: &d Doc) -> [heap] buffer.Buffer {
     return buffer.push(heap, out, byte_of('\n'));
 }
 
-fn is_json_form[&t](bytes: &t [byte]) -> [] bool {
+pub fn is_json_form[&t](bytes: &t [byte]) -> [] bool {
     var i = 0;
     while i < len(bytes) && (int_of(bytes[i]) == ' ' || int_of(bytes[i]) == '\t' || int_of(bytes[i]) == '\n' || int_of(bytes[i]) == '\r') {
         i = i + 1;

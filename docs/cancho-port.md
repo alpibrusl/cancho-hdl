@@ -58,7 +58,7 @@ removed.
 | 2 | **Diagnostics + checker** | `tools/check/` (838 + 170 + 114 + 136) | 1 | `conform` passes: every sidecar matched, zero errors on the valid examples; `--output json` identical to Python's, key order included (`spec/diagnostics/README.md` §4.1). **First slice built and measured: §13 and §14. All 34 rules of `checker.py` are ported; `chw conform .` decides 19 of 19 sidecar entries; `--output json` is byte-identical on 16 of 16 valid examples and refusals; 0 unexplained differences over the mutants. What is not done is listed in §14.8.** |
 | 3 | **c-header generator** | `gen/c-header/c_header.py` (340) | 2 | Output byte-identical to Python's for both examples; gcc and clang roundtrip (oracle lane) still green; behavioral roundtrip still green against `scenarios.json` |
 | 4 | **Remaining generators**: devicetree, cancho-binding, svd, systemverilog | `gen/*` (138 + 211 + 254 + 330) | 3, and the shared emit helpers | Same, per target. SVD additionally validates against `spec/generators/CMSIS-SVD.xsd` (oracle lane) |
-| 5 | **diff / impact** | `tools/diff/diff.py` (470) | 2, 3, 4 (staleness is decided by byte-comparing generator output) | `tests/diff/` goldens, including the seeded Phase 2 change across all five targets |
+| 5 | **diff / impact** | `tools/diff/diff.py` (470) | 2, 3, 4 (staleness is decided by byte-comparing generator output) | **Built: section 33.** `tests/diff/` goldens, including the seeded Phase 2 change across all five targets |
 | 6 | **report** | `tools/report/report.py` (617) | 2, 3, 4 | `tests/report/` goldens, the verbatim `docs/guarantees.md` §2 restatement, both self-refusals (`report-schema-truncated`, `evidence-over-claim`) |
 | 7 | **CLI and deletion** | `tools/generate/generate.py` (144), `scripts/run_gate.py` (85) | all | `scripts/gate.sh` (§4) green with no Python product file left |
 
@@ -2379,3 +2379,85 @@ the list (`block.registers`, `block.interrupts`, the top-level `dma_buffers`) is
   and `schema` to its set itself; those are the report's, not the checker's, and are stage 6's.
 * `ran` on an input the Python checker raises on is not compared (5,814 above): there is no Python answer.
 * The `--ran` form prints names, not the set as data (`chw check --output json` still prints diagnostics only).
+
+---
+
+## 33. Stage 5: `chw diff` and `chw impact`
+
+> **Status: design, now built; measured in 33.5 to 33.7.** Written after reading `tools/diff/diff.py` (470 lines),
+> `tests/diff/diff_golden.py` and the generators' differentials of sections 18 to 30.
+
+### 33.1 What Python does
+
+`diff BASE CANDIDATE` loads both files (`load_contract`), refuses either if the checker finds an Error (`error[CODE]: MESSAGE`
+on standard error, exit 1), and prints `json.dumps(compute_diff(base, candidate))`: a document of sixteen keys in a fixed order
+(`schema`, `version`, `base_id`, `candidate_id`, then fifteen lists). A register is matched by name within the block, a field by
+name within its register, an interrupt by name, a DMA buffer and its fields by name; each list is filled by a loop whose order
+the output keeps. `impact` adds, for each of the five targets, `stale` decided by generating both contracts under the label
+`<diff>` and comparing the bytes, and a `reason` made by `_short_reason`.
+
+Four things in it are easy to get wrong and are kept as they are: `base_id` is `chw:NAME.register` (the id of the register `""`,
+stripped of its trailing dot); a list of objects keyed by name is a Python dict, so a repeated name is one entry at its first
+position with its last value; an offset or a reset is compared as a hex *number* (`0x0A` is `0x0a`, `0x00` is `0x0`) but a DMA
+offset as a *string*; and a DMA buffer that is new has an `owner_changes` key, one that is removed has not.
+
+### 33.2 The port
+
+* **Input.** Both contracts are read as JSON text parsed to a tape. A file in the JSON wire form is read *as written* (Python's
+  dict is the file, in its key order and spelling: `chw parse` lowercases `0x0C`, the file says `0x0C`); a file in the text form
+  is read as the JSON its IR prints as (`json_out.render`, which is `json.dumps(ir)`, already checked byte for byte against the
+  Python parser). A string is then copied as bytes, never decoded.
+* **Lists.** `src/diff.cho` has one pass per list (`registers_only_in` serves `added_registers` with the candidate first and
+  `removed_registers` with the base first); the name-keyed dict is `chw.diff_util`'s `is_first` / `last_named` /
+  `key_is_first` / `last_key`, a scan for each lookup, no allocation.
+* **Equality.** `diff_util.equal` is Python's `==` on JSON values (an object as a dict in any key order, True is not False, `1` is
+  not `"1"`); `hex_equal` compares hex numbers of any length in either case. The interrupt roles and the DMA `owner` and
+  `coherent` are compared with `equal`.
+* **`--pretty`** is a second function (`src/diff_fmt.cho`) that reads the compact document and writes it as `indent=2`.
+* **`impact`** (`src/impact.cho`) takes the reason from the document it just wrote (it parses the text and counts the lists, as
+  `_short_reason` counts them) and generates each target for each side with the ported generators.
+* **Refusal** is `chw`'s own: either side not loaded or with an Error prints `error[CODE]: MESSAGE` for the base then the
+  candidate and exits 1, nothing on standard output.
+
+### 33.3 Where the port refuses and Python writes
+
+* **`diff-text-unsupported`** (exit 1): a file in the JSON wire form with a string that has a backslash or a byte outside printable
+  ASCII, or a number that is not a plain integer (`1.0`, `1E1`, `-0`). Python decodes and re-encodes; the port copies bytes, and
+  copying an escape would write another spelling than `json.dumps`. A text-form file is never refused for this, because its
+  strings are written by the printer. The same class as the generators' "names are ASCII only".
+* **A generator that does not write** (`error[generator-unimplemented]`, exit 1, or `error[internal]`, exit 3) for `impact`: the
+  ported generators refuse the names and the numbers they cannot spell (sections 18 to 30), so `impact` refuses with them where
+  Python writes. Python raises on some contracts the checker accepts (an interrupt with no `number` for the device tree):
+  cancho answers `error[internal]` and exit 3 for those, never a trap.
+* **The loaders' known differences** (13.5): a duplicate key, a decimal of more than 18 digits, a trailing newline in a pattern, the
+  wording of a JSON syntax error. They change what is *refused*, not what is written.
+
+### 33.4 The label
+
+Python generates under the label `<diff>`. `impact` only reports whether the two outputs are equal, the label is the same on both
+sides, and the SVD generator refuses a `<` in the path (it goes into a description unescaped, 24), so the port uses the label `diff`.
+The one place it could differ is a generator whose output depends on the label in a way that changes between the two sides: none
+does (the label is the same string on both).
+
+### 33.5 Measured
+
+* `tests/differential/diff_cmp.py` (gate step 8i) runs `chw diff` and `chw impact` against `diff.py` in process, comparing bytes of
+  standard output, standard error and the exit status. **Whole-file pairs:** every valid example, refusal fixture and `tests/stage1`
+  and `tests/stage2` file against every valid example in both directions, the seeded Phase 2 change, a kind-only change (the case in
+  which the diff is empty and the artifacts are stale), and the cross-form pair: **808 runs: 96 identical, 608 refused with the same standard error and status, 80 explained by a known class (16 JSON syntax wording, 16 duplicate key, 16 integer range, 32 the port's own narrowing), 24 on which Python raises, 0 unexplained**; and the two refusals of the port's own are reached on purpose (an escaped name, `diff` and `impact`). **Mutant pairs:** every mutant of the checker's
+  differential against its seed and the seed against it, `diff` and `impact`, every seventh with `--pretty`: **227,444 runs in all (the 808 above and 226,636 of mutants): 12,916 identical, 180,040 refused identically, 6,030 explained (4,756 integer range, 1,018 the port's narrowing, 124 pattern trailing newline, 16 duplicate key, 16 JSON syntax wording), 28,558 on which Python itself raises (cancho answered with 0, 1 or 3 on every one, never a trap), 0 unexplained**. The first full run had 88 unexplained, all one shape: the text parser's 18-digit rule (known class of 13.5) on a mutant whose number follows a `.`, which the class test did not see; the test was widened, the code was not touched.
+* **The goldens of `tests/diff/diff_golden.py`** test the Python tool (`compute_diff` and `compute_impact` in process) and are not changed; the seeded Phase 2 change they use (`examples/uart-contract/uart.chw` against `tests/diff/fixtures/uart_rebase.chw`) is a pair of the differential above, in both directions, for `diff`, `impact` and `--pretty`.
+* **Time.** The port is about as fast as Python on a small contract and quadratic in the number of registers (a lookup is a scan,
+  as in the checker): 500 registers 0.18 s (Python 0.49 s), 2,000 registers 2.3 s (Python 1.1 s), byte-identical output.
+
+### 33.6 The checks can fail
+
+`tests/mutation/run_diff.py`: 89 deliberate breaks of `diff_util`, `diff`, `impact` and `diff_fmt`. The first run killed **74 of 89** (about 25 minutes). Of the 15 survivors: nine were real gaps and got tests (an object with a repeated key, an array or object compared with another of another length, `true` against `false`, a changed `lsb` alone, `F` against `f`, a nested value, a stale artifact with no listed change, which needed a pair of files in which only a register's `kind` differs: `tests/diff/fixtures/uart_kind.chw`); three are equivalent, each with its reason in the script (a control byte cannot be inside a JSON string; the two range tests for widened and narrowed hold together only for equal ranges; a node index is never below 1); one (`equal-object-other`) was a redundant guard, which was removed from the code instead of tested; two (the length test of a DMA field list) needed a buffer with only an added or only a removed field and got two tests. Final: **85 killed, 3 equivalent, of 88**. Unit tests are `tests/unit/test_diff.cho` (46); the expected text in them was taken from `compute_diff` of `diff.py` on the same two contracts, not typed.
+
+### 33.7 What this does not show
+
+* **No generator is checked here beyond bytes**: `impact` is as good as the generators of sections 18 to 30 are, which are byte-compared
+  with Python, not run on hardware.
+* **A hostile contract costs n squared**: a very large register list is slow (33.5), as the checker is (14.8). Not bounded here.
+* **Names with an escape or a non-ASCII byte in a JSON file are refused** (33.3); the text form's names are ASCII identifiers.
+* **`report`** (stage 6) is still Python; it reads `ran` (32) and will call this stage's staleness check.
