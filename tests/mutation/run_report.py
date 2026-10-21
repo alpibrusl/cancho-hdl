@@ -176,7 +176,6 @@ M = [
     ("check-errors", "report_check", "            if json.is_object(tape, j) && is_text(src, tape, json.get(src, tape, j, \"severity\"), \"Error\") {", "            if json.is_object(tape, j) {", "a warning outside checks_run is refused"),
     ("check-errors-object", "report_check", "            if json.is_object(tape, j) && is_text(src, tape, json.get(src, tape, j, \"severity\"), \"Error\") {", "            if is_text(src, tape, json.get(src, tape, j, \"severity\"), \"Error\") {", "a diagnostic that is not an object is read"),
     ("check-errors-listed", "report_check", "                        var fresh = !list_has(heap, src, tape, run, buffer.bytes(cr));", "                        var fresh = true;", "an Error for a code that ran is refused"),
-    ("check-errors-dedupe", "report_check", "                            if lines_have(buffer.bytes(fr), buffer.bytes(cr)) {\n                                fresh = false;", "                            if false {\n                                fresh = false;", "a code is listed twice"),
     ("check-errors-none", "report_check", "                } else if json.kind(tape, code) <= 0 {\n                    if !list_has_null(tape, run) {", "                } else if json.kind(tape, code) <= 0 {\n                    if true {", "a null code held by checks_run is refused"),
     ("check-errors-none-kind", "report_check", "                } else if json.kind(tape, code) <= 0 {", "                } else if json.kind(tape, code) < 0 {", "a null code is another type"),
     ("check-errors-int", "report_check", "                    if iok {\n                        present = list_has_int(src, tape, run, iv);", "                    if false {\n                        present = list_has_int(src, tape, run, iv);", "an integer code held by checks_run is refused"),
@@ -204,6 +203,18 @@ M = [
 
 # name -> reason
 EQUIVALENT = {
+    "names-has": "no catalog code is a prefix of another, and only catalog codes are looked up, so `starts_with` and `equal` answer alike",
+    "fails-nest": "a related entry carries the rule of its parent (or a Warning's), so an Error among the related entries of a top-level diagnostic that is not itself one does not occur in the checker's output",
+    "fired-order": "the fired codes that are not already listed are `schema-invalid` of a JSON syntax error alone: the order of two of them has no input",
+    "fired-catalog": "`Rule` is a closed set and every rule name is in the catalog (a unit test walks all of them), so the test is always true for an emitted code",
+    "group-ran": "`ran` is 0 when there is no IR, so the bit test is false anyway",
+    "refused-ir": "no IR means the loader gave a diagnostic that is an Error, so `count_errors` is above 0 on that path too; the wording that differs between the two cases is chosen by `has_ir`, which this break leaves alone",
+    "lane-of-array": "`lane_of` runs only on a lanes document `lanes_check` accepted, which is an array; `json.count` of anything else is 0 and the walk is empty",
+    "strict-tested": "a failed roundtrip is not `passed`, so the loop over the details refuses it too (report.py has the same overlap)",
+    "check-trust-object": "`json.get` on a node that is not an object answers absent, which is what the branch sets by hand",
+    "check-outside-string": "`decoded` of a number is empty, and the empty string is outside the catalog, as the number is",
+    "check-list-has-string": "`decoded` of a number is empty, and no restated row or claimed code is the empty string",
+    "check-errors-none-first": "None met with a code of another type is a sort of mixed types, on which report.py raises: there is no oracle text, and None alone needs no separator",
     "fired-not-run": "a code that fired is never in `not_run` as `check` emits it only from a group that ran; the removal is Python's defence in depth (35.1) and has no input here that reaches it",
     "fired-nest": "a related entry carries the code of its parent or another top-level rule; the codes a related entry holds alone do not occur in the checker's output",
     "check-skipped-object": "`json.get` of a key on a node that is not an object answers absent, so a detail that is not an object has no `outcome` and never equals `skipped`",
@@ -214,8 +225,12 @@ EQUIVALENT = {
 }
 
 
-def sh(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, **kw)
+def sh(cmd, timeout=1200, **kw):
+    """A break may loop for ever: a run that does not end in `timeout` seconds has failed, as a test that fails does."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, timeout=timeout, **kw)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
 def one(m):

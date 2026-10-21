@@ -61,6 +61,10 @@ SCENARIOS = [
     ("a_first_character_at_the_65th_byte_is_not_seen", BLANKS_64, ["--no-roundtrips"], "F", 2, None),
     ("a_first_character_at_the_64th_byte_is_seen", BLANKS_63, ["--no-roundtrips"], "F", 2, None),
     ("a_tab_a_carriage_return_and_a_newline_are_blanks", MIXED_BLANKS, ["--no-roundtrips"], "F", 2, None),
+    ("a_json_file_after_a_tab_is_not_textual", "\t" + NO_REGS, ["--no-roundtrips"], "F", 2, None),
+    ("a_json_file_after_a_newline_is_not_textual", "\n" + NO_REGS, ["--no-roundtrips"], "F", 2, None),
+    ("a_json_file_after_a_carriage_return_is_not_textual", "\r" + NO_REGS, ["--no-roundtrips"], "F", 2, None),
+    ("clean_lanes_skipped_with_every_blank_to_strip", NO_DMA, [], "G", 1, "G"),
 ]
 
 
@@ -120,10 +124,12 @@ import std.buffer;
 import std.bytes;
 import std.json;
 import std.test;
+import chw.diagnostic as dg;
 import chw.diff_fmt;
 import chw.load;
 import chw.report;
 import chw.report_check;
+import chw.report_data as rd;
 import tsup;
 
 fn tape_of[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] (Box[[int]], int) {
@@ -239,7 +245,7 @@ fn refused_as[&h, &d, &w](heap: &!h Heap, doc: &d [byte], want: &w [byte]) -> [h
         w(f"fn test_{name}_as_{label}[&h](heap: &!h Heap) -> [heap] int {{\n    let doc = {cho(texts[name])};\n    let out = {'as_text' if label == 'text' else 'pretty_of'}(heap, doc);\n"
           f"    var ok = false;\n    borrow out as &or in {{\n        ok = bytes.equal(buffer.bytes(or), {cho(doc)});\n    }}\n    buffer.drop(heap, out);\n    return test.assert(ok);\n}}\n")
     # text of the others: a skipped lane lists its target, a refusal, a parse error
-    for name, contract, flags, combo, mode, lanes in (SCENARIOS[7], SCENARIOS[9], SCENARIOS[4], SCENARIOS[0]):
+    for name, contract, flags, combo, mode, lanes in (SCENARIOS[7], SCENARIOS[9], SCENARIOS[4], SCENARIOS[0], SCENARIOS[3], SCENARIOS[5]):
         rcode, doc, err = oracle(contract, flags, combo, ["--output", "text"])
         w(f"fn test_{name}_as_text[&h](heap: &!h Heap) -> [heap] int {{\n    let doc = {cho(texts[name])};\n    let out = as_text(heap, doc);\n"
           f"    var ok = false;\n    borrow out as &or in {{\n        ok = bytes.equal(buffer.bytes(or), {cho(doc)});\n    }}\n    buffer.drop(heap, out);\n    return test.assert(ok);\n}}\n")
@@ -344,6 +350,14 @@ fn refused_as[&h, &d, &w](heap: &!h Heap, doc: &d [byte], want: &w [byte]) -> [h
         ("an_error_with_an_int_code_that_checks_run_holds", lambda d: (d["static"]["diagnostics"].append({"code": 7, "severity": "Error"}), d["static"]["checks_run"].append(7))),
         ("a_diagnostic_that_is_not_an_object", lambda d: d["static"]["diagnostics"].append("Error")),
         ("diagnostics_is_not_a_list", set_in(["static", "diagnostics"], {"code": "x"})),
+        ("internal_is_in_the_catalog", lambda d: (d["static"]["checks_run"].append("internal"), d["static"].__setitem__("checks_passed", d["static"]["checks_passed"] + 1))),
+        ("ir_version_unsupported_is_in_the_catalog", lambda d: (d["static"]["checks_run"].append("ir-version-unsupported"), d["static"].__setitem__("checks_passed", d["static"]["checks_passed"] + 1))),
+        ("a_count_that_is_false", set_in(["static", "checks_failed"], False)),
+        ("an_int_code_met_twice_is_listed_once", lambda d: d["static"]["diagnostics"].extend([{"code": 7, "severity": "Error"}, {"code": 7, "severity": "Error"}])),
+        ("two_int_codes_in_the_order_met", lambda d: d["static"]["diagnostics"].extend([{"code": 3, "severity": "Error"}, {"code": 7, "severity": "Error"}])),
+        ("a_handle_with_one_colon_is_not_claimed", lambda d: (d["tested"]["details"][0].__setitem__("outcome", "skipped"), d["tested"].__setitem__("roundtrips_run", ["c-header:clang"]), d["tested"].__setitem__("roundtrips_passed", 0), d["tested"].__setitem__("roundtrips_failed", 1))),
+        ("a_handle_inside_a_name_is_not_claimed", lambda d: (d["tested"]["details"][0].__setitem__("outcome", "skipped"), d["tested"].__setitem__("roundtrips_run", ["x-c-header::clang"]), d["tested"].__setitem__("roundtrips_passed", 0), d["tested"].__setitem__("roundtrips_failed", 1))),
+        ("two_claimed_handles_are_both_listed", lambda d: (d["tested"]["details"][0].__setitem__("outcome", "skipped"), d["tested"].__setitem__("roundtrips_run", ["c-header::a", "c-header::b"]), d["tested"].__setitem__("roundtrips_passed", 0), d["tested"].__setitem__("roundtrips_failed", 2))),
         ("a_code_with_non_ascii", lambda d: d["static"]["diagnostics"].append({"code": "café \"x\"", "severity": "Error"})),
         ("tested_counts_too_high", set_in(["tested", "roundtrips_passed"], 2)),
         ("tested_counts_too_low", set_in(["tested", "roundtrips_failed"], 0)),
@@ -372,6 +386,11 @@ fn refused_as[&h, &d, &w](heap: &!h Heap, doc: &d [byte], want: &w [byte]) -> [h
         if crash:
             continue  # Python raises (35.4, 4): no oracle text to hold the port to
         w(f"fn test_validate_{name}[&h](heap: &!h Heap) -> [heap] int {{\n    return refused_as(heap, {cho(text)}, {cho(py)});\n}}\n")
+    # Hand-written: no oracle text (35.4, 4): Python reads a count that does not fit an int as an int; the port does not.
+    huge = copy.deepcopy(good)
+    huge["static"]["checks_passed"] = 10 ** 30
+    w(f"fn test_validate_a_count_that_does_not_fit_is_not_read[&h](heap: &!h Heap) -> [heap] int {{\n    return refused_as(heap, {cho(json.dumps(huge))}, \"\");\n}}\n")
+    w("fn test_every_rule_name_is_in_the_catalog() -> [] int {\n    var i = 0;\n    var ok = true;\n    while i < dg.rule_count() {\n        if !rd.in_catalog(dg.rule_name(dg.rule_at(i))) {\n            ok = false;\n        }\n        i = i + 1;\n    }\n    return test.assert(ok && !rd.in_catalog(\"made-up\") && !rd.in_catalog(\"\"));\n}\n")
     sys.stdout.write("\n".join(out))
 
 

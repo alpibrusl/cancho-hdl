@@ -59,7 +59,7 @@ removed.
 | 3 | **c-header generator** | `gen/c-header/c_header.py` (340) | 2 | Output byte-identical to Python's for both examples; gcc and clang roundtrip (oracle lane) still green; behavioral roundtrip still green against `scenarios.json` |
 | 4 | **Remaining generators**: devicetree, cancho-binding, svd, systemverilog | `gen/*` (138 + 211 + 254 + 330) | 3, and the shared emit helpers | Same, per target. SVD additionally validates against `spec/generators/CMSIS-SVD.xsd` (oracle lane) |
 | 5 | **diff / impact** | `tools/diff/diff.py` (470) | 2, 3, 4 (staleness is decided by byte-comparing generator output) | **Built: section 33.** `tests/diff/` goldens, including the seeded Phase 2 change across all five targets |
-| 6 | **report** | `tools/report/report.py` (617) | 2, 3, 4 | `tests/report/` goldens, the verbatim `docs/guarantees.md` §2 restatement, both self-refusals (`report-schema-truncated`, `evidence-over-claim`) |
+| 6 | **report** | `tools/report/report.py` (617) | 2, 3, 4 | `tests/report/` goldens, the verbatim `docs/guarantees.md` §2 restatement, both self-refusals (`report-schema-truncated`, `evidence-over-claim`). **Built: section 35** (the roundtrips come from the oracle's results; the product runs no tool) |
 | 7 | **CLI and deletion** | `tools/generate/generate.py` (144), `scripts/run_gate.py` (85) | all | `scripts/gate.sh` (§4) green with no Python product file left |
 
 Why this order. The parser and checker first because every other stage
@@ -2460,7 +2460,7 @@ does (the label is the same string on both).
   with Python, not run on hardware.
 * **A hostile contract costs n squared**: a very large register list is slow (33.5), as the checker is (14.8). Not bounded here.
 * **Names with an escape or a non-ASCII byte in a JSON file are refused** (33.3); the text form's names are ASCII identifiers.
-* **`report`** (stage 6) is still Python; it reads `ran` (32) and will call this stage's staleness check.
+* **`report`** (stage 6) was still Python when this was written; it is built in section 35.
 
 ---
 
@@ -2521,7 +2521,7 @@ defects of 34.1), the port in lock-step, the goldens that assume no parser, and 
 
 ## 35. Stage 6: `chw report`
 
-> **Status: design, written before the code.** Written after reading `tools/report/report.py` (617 lines),
+> **Status: built; measured in 35.5 to 35.7.** Written (as design) before the code, after reading `tools/report/report.py` (617 lines),
 > `tests/report/report_golden.py`, `tools/report/README.md` and `src/main.cho`. Every number in 35.5 and later is filled in
 > from a run, in this section, in place.
 
@@ -2593,6 +2593,62 @@ entry, a string with a byte outside printable ASCII (the port copies a lane's te
    is not; an integer outside the range of `int` is read as not an int. These are counted, not hidden, in 35.5.
 5. **Floats in a repr** are written as the source text.
 
-### 35.5 to 35.8
+### 35.5 Measured
 
-Filled in after the run: what was measured, the checks that can fail, what is not shown.
+* `tests/differential/report_cmp.py` (gate step 8k; the gate runs every third mutant, the full run below was made once by hand).
+  Python side: `report.py`'s own `main()` in process, with the two roundtrip functions replaced by six stubs (passed, failed, skipped,
+  tool names with brackets, reasons with quotes, newlines, non-ASCII, trailing blanks and the separators 28 to 31) and, on the fixtures,
+  by the real `clang` and `iverilog` results taken once and handed to both sides. Cancho side: `chw report`, with the same results
+  in a file for `--lanes`. Bytes of standard output, standard error and the exit status; `--no-roundtrips`, `--pretty`,
+  `--output text` and `--strict` rotated. **Fixtures (50 files, 220 comparisons): 211 identical, 9 in a known class (4 duplicate key,
+  4 integer range, 1 JSON syntax wording), 0 unexplained. Mutants (55,182 distinct inputs, 165,546 comparisons): 145,301 identical,
+  2,803 in a known class (2,742 integer range, 58 pattern trailing newline, 3 duplicate key), 17,442 on which Python itself raises
+  (inside the checker, on a shape the schema refuses; cancho answered 0 or 1 every time), 0 unexplained.** The default mode (no
+  lanes) is compared with the Python stub that returns what the product returns by default, so its derivation is checked too.
+* **`validate_report`**: 8,254 corrupted copies of five reports (every key deleted, every scalar changed to each of seven other
+  values, every element dropped or repeated, every string altered, and combinations) through `report.validate_report` and
+  `chw report --validate`: **7,953 identical, 20 in the known class "a list that is a string" (Python iterates its characters), 281 on
+  which Python raises, 0 unexplained.**
+* **Found by the differential, fixed in the code** (the first runs): the description of a skipped roundtrip over a refused contract
+  has parentheses where the detail's reason has a semicolon (written from memory, wrong); the message "mandatory field 'k'
+  missing" had lost its last word; an absent `checks_run` is Python's default `[]`, not "not a list" (the counts of an empty
+  list are still checked); an Error with a code of another type (int, bool) is a refusal in Python and was ignored. **Found by the
+  unit tests**: a lane without a `tool` decoded a node that is not there, a trap (`json.string_length` of -1); `decoded` now
+  answers empty for anything that is not a string, in both modules.
+* `tests/report/report_cancho_golden.py` (8k) holds the claims of `tests/report/report_golden.py` against the cancho binary,
+  including the pin of the nine rows to `docs/guarantees.md` section 2 (in order), determinism, the refused and parse-error
+  reports, `--strict`, `lanes-invalid` and the eight corruptions. Unit tests: `tests/unit/test_report.cho`, 145 tests whose expected
+  text is taken from `report.py` by `tests/differential/report_expected.py` (the file is generated; the hand-written ones are
+  the catalog walk and a count that does not fit).
+
+### 35.6 The checks can fail
+
+`tests/mutation/run_report.py`: 162 deliberate breaks of `report_data`, `report` and `report_check`, unit tests first and the
+differential for what they let through. The first full run killed **128 of 163**; it also showed that a break can loop for ever (one
+did, and was killed by hand; the harness now times a run out and counts it as a failure). Of the 30 survivors: 17 needed tests and
+got them (a JSON file after a tab, a newline, a carriage return; a reason ending in each stripped separator; the text of a report
+with two trusted tools and with a tool with no version; `internal` and `ir-version-unsupported` held by `checks_run`; a count that
+is `False`; a count that does not fit; an integer code met twice and two in order; a handle with one colon, one inside a longer
+name, two claimed handles); one (`check-errors-dedupe`) was code that did nothing, the listing visits each distinct line once, and
+was removed from the code. The rest are equivalent, each with its reason in the script. Final: **145 killed, 17 equivalent, 0
+survivors, of 162.**
+
+### 35.7 What this does not show
+
+* **The Tested tier is not produced by the product.** `--lanes` is the oracle's word; a lanes file that says `passed` is believed
+  (the report labels the tool `Trust`, as Python does). What is shown is that the report derives from the lanes exactly what
+  Python derives from its own runs, not that any compiler ran.
+* **Known differences** (35.4) all stand: no `jsonschema`-absent item; Unicode blanks and the 64-byte window of the sniff; values
+  of a wrong type in `validate` (Python raises: 281 corrupted reports; a list that is a string; a count that does not fit); floats.
+  Python's reasons in a lanes file of another producer are copied as decoded text; invalid UTF-8 from a lone surrogate escape is
+  not examined.
+* **The self-check on the way out cannot fail from the command line**, only from a defect of the builder, as in Python; the two
+  refusals are reached by `chw report --validate` (unit tests, the 8,254 documents, the golden).
+* `--validate` and `lanes-invalid` (and `report-unreadable`, for a report that is not JSON) are the port's own; Python has no
+  such options.
+* Not run here: the Python reference gate (`scripts/run_gate.py`) is unchanged and still runs `tools/report/`; deleting it is stage 7.
+
+### 35.8 Stage 6 row
+
+The row of section 2 reads "built"; `report` is no longer Python-only. The status line of 33.7 ("`report` is still Python") is
+superseded by this section.

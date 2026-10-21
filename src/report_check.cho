@@ -293,13 +293,8 @@ fn static_pass[&h, &s, &t](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], t
                 if json.is_string(tape, code) {
                     let c = decoded(heap, src, tape, code);
                     borrow c as &cr in {
-                        var fresh = !list_has(heap, src, tape, run, buffer.bytes(cr));
-                        borrow found as &fr in {
-                            if lines_have(buffer.bytes(fr), buffer.bytes(cr)) {
-                                fresh = false;
-                            }
-                        }
-                        if fresh {
+                        // A code met twice is listed once: `lines_repr` visits each distinct line once.
+                        if !list_has(heap, src, tape, run, buffer.bytes(cr)) {
                             found = buffer.push(heap, buffer.append(heap, found, buffer.bytes(cr)), byte_of('\n'));
                         }
                     }

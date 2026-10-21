@@ -71,8 +71,9 @@ COMBOS = {
                     detail("systemverilog", p, "skipped", "no SystemVerilog parser on $PATH; not checked", "iverilog (not on $PATH)")),
     "D": lambda p: (detail("c-header", p, "failed", "error: unused \\ variable 'x'\n  ", "cc"), detail("systemverilog", p, "passed", "", "iverilog")),
     "E": lambda p: (detail("c-header", p, "skipped", "reason with trailing blanks \t\n ", "clang"), detail("systemverilog", p, "skipped", "é tail  ")),
+    "G": lambda p: (detail("c-header", p, "skipped", "separators \x1c\x1d\x1e\x1f \x0b\x0c\r\t\n ", "clang"), detail("systemverilog", p, "skipped", "x\r")),
 }
-LANE_COMBOS = ["A", "B", "C", "D", "E"]
+LANE_COMBOS = ["A", "B", "C", "D", "E", "G"]
 
 
 def py_run(path, flags, combo, pair=None):
