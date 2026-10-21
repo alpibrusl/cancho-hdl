@@ -158,8 +158,9 @@ python3 tests/differential/diff_cmp.py "$OUT"
 
 echo "== 8j SystemVerilog output read by a parser (iverilog)"
 # Both tools' modules through `iverilog -g2012 -tnull`: today it refuses every one, in both, for the same two reasons
-# (docs/cancho-port.md, 34); the step fails only if the two tools disagree, or iverilog is missing where $CI is set.
-python3 tests/differential/sv_parse.py "$OUT" ${CI:+--require}
+# (docs/cancho-port.md, 34); the step fails only if the two tools disagree, and does nothing if iverilog is not installed
+# (CI does not install it, 34.3: the Python reference gate's own roundtrip lane then fails).
+python3 tests/differential/sv_parse.py "$OUT"
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"

@@ -8,7 +8,7 @@ diagnostic of the parser.
 
 The step fails only if
 
-  * `--require` is given and `iverilog` is not on the PATH (CI installs it), or
+  * `--require` is given and `iverilog` is not on the PATH, or
   * the two tools' outputs for one contract get different verdicts (accepted by one, refused by the other) or different
     first diagnostics, which equal bytes cannot do; so it is a guard for the day the generators are changed on one side.
 

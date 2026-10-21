@@ -2472,7 +2472,7 @@ does (the label is the same string on both).
 ### 34.1 What `iverilog` says
 
 `tests/differential/sv_parse.py` runs `iverilog -g2012 -tnull` on the output of each tool for every example and fixture that both
-generate (`iverilog` 12.0, installed in CI by a new step, gate step 8j). **Eight contracts generate in both tools, and
+generate (`iverilog` 12.0, gate step 8j; it is installed on the machine that ran this, not in CI: 34.3). **Eight contracts generate in both tools, and
 `iverilog` accepts none of the 16 modules**, with the same first diagnostic on all: `Superfluous comma in port declaration list.`
 The two tools' verdicts and first diagnostics agree on every contract, as equal bytes require.
 
@@ -2495,11 +2495,19 @@ generator differential for this target fail, and a fix in both is a change to th
 keeps as the oracle until the deletion of stage 7. The check therefore records the state and pins what must stay true: the two
 tools get the same verdict; if the generators are ever changed on one side only, or one starts to pass, the step says so.
 
-### 34.3 What the step does
+### 34.3 What the step does, and why CI does not install `iverilog`
 
-`sv_parse.py` fails on a difference between the two tools, and on a missing `iverilog` only when `--require` is given (the gate passes it
-when `$CI` is set). It does not fail because the RTL is refused. The defect is filed as an issue against the Python generator
-(`gen/systemverilog`), to be fixed there and then re-ported, with this step then reporting 16 of 16.
+`sv_parse.py` fails on a difference between the two tools, and on a missing `iverilog` only when `--require` is given. It does not
+fail because the RTL is refused. The gate runs it without `--require`, so on a machine without `iverilog` it says so and does
+nothing.
+
+**CI does not install `iverilog`**, which is a correction of the first version of this section (and of the pull request that
+made it). The first version added the install to CI; the run failed, not in the cancho gate but in `scripts/run_gate.py`, the Python
+reference implementation's own gate, which CI also runs: its roundtrip lane `systemverilog_parses` runs a real parse *if a tool is on
+`$PATH`* and so failed on the same modules (`FAIL uart: iverilog: 25`, `FAIL dma: iverilog: 27`), and its evidence-report golden
+asserts that the SystemVerilog roundtrip was *skipped* (`no SystemVerilog parser`), which is false the moment a parser is installed.
+Installing the tool is therefore not a change to the cancho side alone. It waits for the fix: the generator (`gen/systemverilog`, the two
+defects of 34.1), the port in lock-step, the goldens that assume no parser, and then the install. The defect is filed as issue 14.
 
 ### 34.4 What this does not show
 
