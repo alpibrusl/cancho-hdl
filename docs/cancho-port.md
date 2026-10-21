@@ -2314,7 +2314,7 @@ double-escaping mistake of §27.4 in mind. It is stated here so a clean first ru
 * **No SystemVerilog tool read the module** (29.1). Byte equality with the Python tool shows the port is faithful;
   it shows nothing about whether either tool writes RTL a simulator accepts. The Python roundtrip
   `systemverilog_parses` runs a parse only if `iverilog`, `slang` or `yosys` is on `$PATH`, and none is in CI. Installing
-  `iverilog` in CI and parsing both tools' output is the next check and is not done.
+  `iverilog` in CI and parsing both tools' output is the next check and is not done. *(Done after this was written: section 34. `iverilog` refuses every module of both tools, for two reasons that are the Python tool's.)*
 * The module is the Python tool's: its AXI4-Lite handshake is "simplified" by its own words, `wstrb` is ignored,
   and the `W0S` expression is wrong (30.3, 2). The port does not improve it.
 * Names are ASCII only; a name with an escape or a non-ASCII byte is refused where Python writes it.
@@ -2325,7 +2325,7 @@ double-escaping mistake of §27.4 in mind. It is stated here so a clean first ru
 ## 31. Corrections (stage 7)
 
 * 29.4 estimated about 550 lines; it is 480, the first overestimate (30.1).
-* 29.1 said the CI image "could" install `iverilog`; that remains not done, and 30.6 says what is not shown for it.
+* 29.1 said the CI image "could" install `iverilog`; that remains not done, and 30.6 says what is not shown for it. *(Corrected in 34: it is installed and the result is in 34.1.)*
 * §26 and §27.6 said SystemVerilog was not ported; it is. **Every generator of the Python tool is now ported.**
 
 ---
@@ -2461,3 +2461,58 @@ does (the label is the same string on both).
 * **A hostile contract costs n squared**: a very large register list is slow (33.5), as the checker is (14.8). Not bounded here.
 * **Names with an escape or a non-ASCII byte in a JSON file are refused** (33.3); the text form's names are ASCII identifiers.
 * **`report`** (stage 6) is still Python; it reads `ran` (32) and will call this stage's staleness check.
+
+---
+
+## 34. A parser reads the SystemVerilog
+
+> **Status: measured; the result is a defect of the Python tool, which the port reproduces on purpose.** 30.6 said no RTL tool had
+> read the module and that installing `iverilog` in CI and parsing both tools' output was the next check.
+
+### 34.1 What `iverilog` says
+
+`tests/differential/sv_parse.py` runs `iverilog -g2012 -tnull` on the output of each tool for every example and fixture that both
+generate (`iverilog` 12.0, gate step 8j; it is installed on the machine that ran this, not in CI: 34.3). **Eight contracts generate in both tools, and
+`iverilog` accepts none of the 16 modules**, with the same first diagnostic on all: `Superfluous comma in port declaration list.`
+The two tools' verdicts and first diagnostics agree on every contract, as equal bytes require.
+
+Working the first example by hand (a scratch copy, not committed), the modules are refused for two reasons, and for these two only:
+
+1. **A comma after the last port.** The port list ends `reg_icr_out,  // chw:..` followed by `);`.
+2. **A sized literal whose width is a parameter name.** `ADDR_WIDTH'h00000000` and `DATA_WIDTH'h0` (the address constants and the
+   reset values) are not SystemVerilog: a size must be a constant number, and the cast is `ADDR_WIDTH'(..)`. `iverilog` reports
+   it as `Invalid module item` / `Malformed statement` on every such line.
+
+With the comma taken out and both width names replaced by `32` in a scratch copy of `tools/generate/generate.py`'s output for
+`examples/uart-contract/uart.chw`, `iverilog -g2012 -tnull` accepts the module. That is one example, by hand: no claim is made for
+the others, and the module's behaviour (the AXI4-Lite handshake the Python tool calls "simplified", `wstrb` ignored, the `W0S`
+expression, 30.6) is still not read by anything.
+
+### 34.2 Why the port does not change it
+
+The port's oracle is the Python tool's bytes (sections 18 to 30). Writing valid SystemVerilog in the port alone would make every
+generator differential for this target fail, and a fix in both is a change to the reference implementation, which this repository
+keeps as the oracle until the deletion of stage 7. The check therefore records the state and pins what must stay true: the two
+tools get the same verdict; if the generators are ever changed on one side only, or one starts to pass, the step says so.
+
+### 34.3 What the step does, and why CI does not install `iverilog`
+
+`sv_parse.py` fails on a difference between the two tools, and on a missing `iverilog` only when `--require` is given. It does not
+fail because the RTL is refused. The gate runs it without `--require`, so on a machine without `iverilog` it says so and does
+nothing.
+
+**CI does not install `iverilog`**, which is a correction of the first version of this section (and of the pull request that
+made it). The first version added the install to CI; the run failed, not in the cancho gate but in `scripts/run_gate.py`, the Python
+reference implementation's own gate, which CI also runs: its roundtrip lane `systemverilog_parses` runs a real parse *if a tool is on
+`$PATH`* and so failed on the same modules (`FAIL uart: iverilog: 25`, `FAIL dma: iverilog: 27`), and its evidence-report golden
+asserts that the SystemVerilog roundtrip was *skipped* (`no SystemVerilog parser`), which is false the moment a parser is installed.
+Installing the tool is therefore not a change to the cancho side alone. It waits for the fix: the generator (`gen/systemverilog`, the two
+defects of 34.1), the port in lock-step, the goldens that assume no parser, and then the install. The defect is filed as issue 14.
+
+### 34.4 What this does not show
+
+* That the other seven modules would parse after the same two repairs; only the first example was repaired and read.
+* Anything about the other four targets: C compiles with `cc`, the device tree with `dtc` and the SVD validates with `xmllint`
+  (gate steps 8c to 8e); the binding generator's output has no tool (26).
+* Only `iverilog` was run; `slang`, `verilator` and `yosys` are not installed.
+
