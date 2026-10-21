@@ -42,7 +42,7 @@ import chw.load;
 import chw.pyrepr;
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] [--output json] [--located] | chw check FILE [--schema S] [--output text|json] [--located] | chw generate FILE --target T [--schema S] | chw catalog | chw conform [ROOT] [--fixtures DIR[,DIR...]]\n");
+    console.error_all(io, "usage: chw parse FILE | chw validate FILE [--schema S] [--machine] [--output json] [--located] | chw check FILE [--schema S] [--output text|json] [--located] [--ran] | chw generate FILE --target T [--schema S] | chw catalog | chw conform [ROOT] [--fixtures DIR[,DIR...]]\n");
     return 2;
 }
 
@@ -85,6 +85,11 @@ fn show_diags[&h, &i, &q, &p, &s](heap: &!h Heap, io: &!i Io, ds: &q dg.Diags, p
         buffer.write(io, o);
     }
     buffer.drop(heap, out);
+    return diag_status(ds);
+}
+
+// The exit status the diagnostics `ds` give: 1 if any is an error, 2 if one is internal.
+fn diag_status[&q](ds: &q dg.Diags) -> [] int {
     var status = 0;
     if dg.count_errors(ds) > 0 {
         status = 1;
@@ -97,6 +102,32 @@ fn show_diags[&h, &i, &q, &p, &s](heap: &!h Heap, io: &!i Io, ds: &q dg.Diags, p
         k = k + 1;
     }
     return status;
+}
+
+// `chw check FILE --ran`: the names of the rule groups the checker ran, one per line, in the order Python's
+// `sorted(ran)` gives (docs/cancho-port.md, 32). The bits are those of `chw.check.ran`.
+fn show_ran[&h, &i](heap: &!h Heap, io: &!i Io, mask: int) -> [heap, io_write] int {
+    var out = buffer.empty(heap, 64);
+    if mask / 2 % 2 == 1 {
+        out = buffer.append(heap, out, "block\n");
+    }
+    if mask / 16 % 2 == 1 {
+        out = buffer.append(heap, out, "dma\n");
+    }
+    if mask / 8 % 2 == 1 {
+        out = buffer.append(heap, out, "interrupts\n");
+    }
+    if mask / 4 % 2 == 1 {
+        out = buffer.append(heap, out, "registers\n");
+    }
+    if mask % 2 == 1 {
+        out = buffer.append(heap, out, "schema-version\n");
+    }
+    borrow out as &o in {
+        buffer.write(io, o);
+    }
+    buffer.drop(heap, out);
+    return 0;
 }
 
 // Print the refusals of `doc`; the answer is the exit status.
@@ -219,7 +250,12 @@ fn run_check[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Ar
                 borrow sch as &s in {
                     let doc = load.load(heap, buffer.bytes(t), s);
                     borrow doc as &dr in {
-                        status = show_diags(heap, io, load.diags(dr), arg(g, 2), buffer.bytes(t), output_is_json(g), flag_at(g, "--located") > 0);
+                        if flag_at(g, "--ran") > 0 {
+                            show_ran(heap, io, load.ran(dr));
+                            status = diag_status(load.diags(dr));
+                        } else {
+                            status = show_diags(heap, io, load.diags(dr), arg(g, 2), buffer.bytes(t), output_is_json(g), flag_at(g, "--located") > 0);
+                        }
                     }
                     load.drop(heap, doc);
                 }

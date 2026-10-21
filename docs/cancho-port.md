@@ -1335,7 +1335,7 @@ Not done:
 * **Located spans for the semantic rules.** Every semantic diagnostic carries the
   whole-file span 1:1, as Python's do. The tape has the offsets (stage 1 already
   uses them), so a located span is additive.
-* **`ran`**, the argument by which `check()` tells `tools/report/report.py` which
+* *(Built after stage 7, section 32.)* **`ran`**, the argument by which `check()` tells `tools/report/report.py` which
   rule groups executed. The report is still Python and reads the Python checker;
   the cancho checker does not yet expose it.
 * **Several files in one invocation** (`checker.py FILE...`), and `chw check -`
@@ -2327,3 +2327,55 @@ double-escaping mistake of §27.4 in mind. It is stated here so a clean first ru
 * 29.4 estimated about 550 lines; it is 480, the first overestimate (30.1).
 * 29.1 said the CI image "could" install `iverilog`; that remains not done, and 30.6 says what is not shown for it.
 * §26 and §27.6 said SystemVerilog was not ported; it is. **Every generator of the Python tool is now ported.**
+
+---
+
+## 32. `ran`: which rule groups the checker ran
+
+> **Status: built; measured below.** The first of the two things `report` (stage 6) needs from the checker, and the
+> smaller (14.8 listed it as not done). Written after reading `check()` of `tools/check/checker.py` and
+> `build_report` of `tools/report/report.py`.
+
+### 32.1 What Python does
+
+`check(ir, source_path, ran=None)` adds the name of each rule group to the set `ran` as the group runs, and
+`build_report` turns the groups that did not run into `unknown.static_checks_not_run` (a group that never ran must not
+read as a check that found nothing, `docs/guarantees.md` section 3). Five names: `schema-version` always; `block` when
+`block` is an object (otherwise `check` returns after the schema version); `registers`, `interrupts` and `dma` when
+the list (`block.registers`, `block.interrupts`, the top-level `dma_buffers`) is non-empty.
+
+### 32.2 What was built
+
+* `check.ran(src, tape)` answers the groups as bits (1 schema-version, 2 block, 4 registers, 8 interrupts, 16 dma). The
+  test of "a list with an element" is one function, `has_items`, which `check.run` itself uses to decide whether to call
+  a group, so the answer and the run cannot drift.
+* `load.Doc` carries `ran` (0 when the checker did not run: the file is not JSON, the text form did not parse, or
+  there is no schema). The text form is read from the JSON its IR prints as, as the rest of the checker is.
+* `chw check FILE --ran` prints the names of the groups that ran, one per line, in the order `sorted(ran)` gives
+  (`block`, `dma`, `interrupts`, `registers`, `schema-version`), and exits as `chw check` does.
+
+### 32.3 Measured
+
+* **Differential** (`tests/differential/check_ran.py`, in the gate as step 8h): `chw check --ran` against
+  `checker.load_contract` + `checker.check(ir, ran=...)` in process, on the same inputs as the checker's differential
+  (13.6): the 50 fixtures, and 55,182 distinct mutants. Identical on all 50 fixtures; on the mutants **49,325
+  identical, 43 explained** (the text parser's 18-digit rule, the class of 13.5, which makes the two loaders disagree
+  on the IR), **5,814 on which `checker.py` itself raises** (it assumes a schema-valid shape; cancho answered without a
+  trap on every one), **0 unexplained**. It also checks that `--ran` exits as the diagnostics' command does.
+* **Unit tests** (`tests/unit/test_check.cho`, 5 new): an object block with empty lists; each list with an element; a
+  block that is not an object, an array, or absent; a list that is a number, a string, an object, null or empty;
+  `dma_buffers` inside the block (not read).
+* **The checks can fail** (`tests/mutation/run_ran.py`): 22 deliberate breaks, **21 killed, 1 equivalent**. The first
+  run killed 15 and showed two real gaps and four breaks the harness had spelled wrong. The gaps: the differential
+  compared the output and not the exit status (a `--ran` that hid the status survived; it now compares it), and
+  one break's text occurred twice. The four were `cancho fmt` having removed the parentheses the harness searched
+  for. The equivalent break: `check.run` testing a list for being an array only, not for having an element, because the
+  rules of an empty list produce no diagnostic; the shared `has_items` is what keeps the two together, and the break
+  that changes `has_items` is killed.
+
+### 32.4 What this does not show
+
+* `report` is not ported: nothing reads `ran` yet except the command. `build_report` also adds `parse`, `json-wire-load`
+  and `schema` to its set itself; those are the report's, not the checker's, and are stage 6's.
+* `ran` on an input the Python checker raises on is not compared (5,814 above): there is no Python answer.
+* The `--ran` form prints names, not the set as data (`chw check --output json` still prints diagnostics only).
