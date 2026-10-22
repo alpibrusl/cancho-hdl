@@ -28,8 +28,8 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "generate"))
-sys.path.insert(0, str(ROOT / "tools" / "parse"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "generate"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "parse"))
 
 from generate import _load_generator  # noqa: E402
 from parser import load_contract  # noqa: E402

@@ -26,7 +26,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-for p in (ROOT / "tools" / "parse", ROOT / "tools" / "check"):
+for p in (ROOT / "oracle" / "legacy" / "tools" / "parse", ROOT / "oracle" / "legacy" / "tools" / "check"):
     sys.path.insert(0, str(ROOT / p))
 
 from parser import parse_source_text  # noqa: E402

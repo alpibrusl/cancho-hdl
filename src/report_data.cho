@@ -1,6 +1,6 @@
 module chw.report_data;
 
-// report_data.cho -- the constants of tools/report/report.py: the nine rows of docs/guarantees.md section 2, restated
+// report_data.cho -- the constants of oracle/legacy/tools/report/report.py: the nine rows of docs/guarantees.md section 2, restated
 // verbatim, and the rule groups of `check()` with the catalog codes whose evaluation runs with each (docs/cancho-port.md,
 // 35). Nothing here has behaviour; `tests/unit/test_report.cho` pins the rows against the document and the groups
 // against `chw.diagnostic`'s rule table, and the differential pins both against report.py's own tables.

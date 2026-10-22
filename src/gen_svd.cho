@@ -1,6 +1,6 @@
 module chw.gen_svd;
 
-// gen_svd.cho -- `gen/svd/svd.py`: the CMSIS-SVD document of a checked contract (docs/cancho-port.md, 23). A
+// gen_svd.cho -- `oracle/legacy/gen/svd/svd.py`: the CMSIS-SVD document of a checked contract (docs/cancho-port.md, 23). A
 // pure function of the IR and the bytes its spans index; it prints nothing and opens nothing. The line order, the
 // spaces and the comments are the Python generator's, because the oracle is its bytes.
 //

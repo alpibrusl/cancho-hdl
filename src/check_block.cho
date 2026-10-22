@@ -1,7 +1,7 @@
 module chw.check_block;
 
 // check_block.cho -- the schema-version and block rules of
-// tools/check/checker.py (`_check_schema_version`, `_check_block`), and the
+// oracle/legacy/tools/check/checker.py (`_check_schema_version`, `_check_block`), and the
 // rules for a document with no `block` at all. Each function is the Python
 // one, statement for statement; the message is the f-string, piece by piece.
 

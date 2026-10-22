@@ -9,7 +9,7 @@
   syntax refusals), or validate but reference a semantic rule
   whose enforcement the checker demonstrates in conformance.
 - This script prints what each example does; the rule-by-rule
-  enforcement is `tools/check/conformance.py`.
+  enforcement is `oracle/legacy/tools/check/conformance.py`.
 """
 
 import json
@@ -22,7 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCHEMA = ROOT / "spec" / "contract-schema" / "cancho-hdl-contract.schema.json"
 EXAMPLES = ROOT / "examples"
 
-sys.path.insert(0, str(ROOT / "tools" / "parse"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "parse"))
 from parser import load_contract  # noqa: E402
 
 

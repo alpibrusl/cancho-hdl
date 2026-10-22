@@ -4,7 +4,7 @@
 > every tool in this repo. There are two source forms for it: the
 > **textual `.chw` syntax** (§10, frozen as of Phase 1) and the
 > **JSON wire format** this document describes. The parser
-> (`tools/parse/`) turns the textual form into the JSON form;
+> (`oracle/legacy/tools/parse/`) turns the textual form into the JSON form;
 > every downstream tool reads the JSON form directly. Both forms
 > are accepted by every tool that loads a `.chw` file.
 
@@ -266,7 +266,7 @@ can change. Until then, the schema is frozen.
   matching this README byte for byte on every example in
   `examples/`.
 - [x] A parser from `.chw` text (§10) to canonical JSON
-  (`tools/parse/`), with roundtrip tests for every valid example
+  (`oracle/legacy/tools/parse/`), with roundtrip tests for every valid example
   and refusal tests for syntax errors (`tests/parser/parser_roundtrip.py`).
 - A serializer from JSON to canonical JSON (idempotence is a
   tested guarantee).

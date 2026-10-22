@@ -17,7 +17,7 @@ step for step):
    (`-Wall -Wextra -Werror -std=c11`), the same discipline the
    c-header roundtrip uses.
 4. Run the harness with the scenario's op lines on stdin; run the
-   same ops through the reference model (`tools/sim/op_runner.py`);
+   same ops through the reference model (`oracle/legacy/tools/sim/op_runner.py`);
    the traces must be identical line by line — refusals included.
 
 What this pins (and what it does not): the generated header's
@@ -42,18 +42,18 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-for _p in (ROOT / "gen", ROOT / "tools" / "parse", ROOT / "tools" / "sim"):
+for _p in (ROOT / "oracle" / "legacy" / "gen", ROOT / "oracle" / "legacy" / "tools" / "parse", ROOT / "oracle" / "legacy" / "tools" / "sim"):
     sys.path.insert(0, str(_p))
 
 from parser import load_contract  # noqa: E402
 from reference_model import ReferenceModel  # noqa: E402
 from op_runner import run_script  # noqa: E402
 
-# gen/c-header/c_header.py loads by spec (its directory has a dash,
+# oracle/legacy/gen/c-header/c_header.py loads by spec (its directory has a dash,
 # so a plain sys.path import cannot name it) — the same discipline
 # as the roundtrip suites.
 _ch_spec = importlib.util.spec_from_file_location(
-    "cancho_hdl_beh_c_header", ROOT / "gen" / "c-header" / "c_header.py")
+    "cancho_hdl_beh_c_header", ROOT / "oracle" / "legacy" / "gen" / "c-header" / "c_header.py")
 _ch_mod = importlib.util.module_from_spec(_ch_spec)
 _ch_spec.loader.exec_module(_ch_mod)
 _to_lower_snake = _ch_mod._to_lower_snake
@@ -299,7 +299,7 @@ def main() -> int:
     expect(bool(scenarios), "corpus non-empty")
 
     spec = importlib.util.spec_from_file_location(
-        "cancho_hdl_gen_c_header", ROOT / "gen" / "c-header" / "c_header.py")
+        "cancho_hdl_gen_c_header", ROOT / "oracle" / "legacy" / "gen" / "c-header" / "c_header.py")
     gen_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen_mod)
     generate_header = gen_mod.generate

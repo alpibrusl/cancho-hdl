@@ -29,7 +29,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "check"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "check"))
 
 from checker import check_file  # noqa: E402
 from diagnostic import Diagnostic, Position, Span, Subject  # noqa: E402

@@ -1,5 +1,5 @@
 """Test-only oracle driver for stage 6 (docs/cancho-port.md, 26.5): compare the cancho cancho-binding generator
-(`chw generate FILE --target cancho-binding`) with the Python tool (`tools/generate/generate.py --target cancho-binding FILE`).
+(`chw generate FILE --target cancho-binding`) with the Python tool (`oracle/legacy/tools/generate/generate.py --target cancho-binding FILE`).
 
 The same three parts as generate_svd.py (which this file copies the shape of; that file runs on import, so it cannot
 be imported), with one difference that matters: **there is no compiler for the output**. The declarations are a sketch
@@ -42,7 +42,7 @@ spec = importlib.util.spec_from_file_location("check_json", HERE / "check_json.p
 check_json = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check_json)
 
-sys.path.insert(0, str(ROOT / "tools" / "generate"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "generate"))
 import generate as pygen  # noqa: E402  (the oracle)
 
 EXE = sys.argv[1]

@@ -24,7 +24,7 @@ Follow `docs/agent-prompt.md` in the cancho-hdl repository: clone `cancho-hdl` a
 ```
 chw validate FILE.chw          # structure, with a line:column; exit 0 ok, 1 refused
 chw parse FILE.chw             # the textual syntax to the IR as JSON
-python3 tools/check/checker.py FILE.chw --output json    # the semantic rules (reference implementation)
+python3 oracle/legacy/tools/check/checker.py FILE.chw --output json    # the semantic rules (reference implementation)
 ```
 
 On a refusal read the `code` (`schema-invalid`, `field-overlap`, `dma-bad-align`, ...), the position and the remediation. Fix that and check again.
@@ -32,7 +32,7 @@ On a refusal read the `code` (`schema-invalid`, `field-overlap`, `dma-bad-align`
 ## 3. What does my change invalidate?
 
 ```
-python3 tools/diff/diff.py impact BASE.chw CANDIDATE.chw --pretty
+python3 oracle/legacy/tools/diff/diff.py impact BASE.chw CANDIDATE.chw --pretty
 ```
 
 It lists, per target (`c-header`, `cancho-binding`, `devicetree`, `systemverilog`, `svd`), whether the generated artifact is stale and why, decided by byte-comparing generator output.
@@ -40,7 +40,7 @@ It lists, per target (`c-header`, `cancho-binding`, `devicetree`, `systemverilog
 ## 4. Generate
 
 ```
-python3 tools/generate/generate.py --target c-header FILE.chw > out.h
+python3 oracle/legacy/tools/generate/generate.py --target c-header FILE.chw > out.h
 ```
 
 Targets: `c-header`, `systemverilog`, `devicetree`, `cancho-binding`, `svd`. Generated output is deterministic: do not hand-edit it.

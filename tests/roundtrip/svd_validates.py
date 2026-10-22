@@ -1,4 +1,4 @@
-"""Roundtrip checks for the svd generator (gen/svd).
+"""Roundtrip checks for the svd generator (oracle/legacy/gen/svd).
 
 For every valid example in `examples/MANIFEST.json#valid`:
 
@@ -57,17 +57,17 @@ except ImportError:  # pragma: no cover - stdlib environments
     etree = None
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "gen"))
-sys.path.insert(0, str(ROOT / "tools" / "parse"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "gen"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "parse"))
 
 from common import GeneratorUnimplemented  # noqa: E402
 from parser import load_contract  # noqa: E402
 
-# gen/svd is a directory that would shadow the module name under a
+# oracle/legacy/gen/svd is a directory that would shadow the module name under a
 # plain sys.path import, so the generator loads by spec — exactly
 # as the manifest dispatcher does.
 _spec = importlib.util.spec_from_file_location(
-    "cancho_hdl_gen_svd", ROOT / "gen" / "svd" / "svd.py")
+    "cancho_hdl_gen_svd", ROOT / "oracle" / "legacy" / "gen" / "svd" / "svd.py")
 _svd_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_svd_mod)
 generate = _svd_mod.generate
@@ -257,13 +257,13 @@ def main() -> int:
     # the refusal is the same object as tests import (sys.modules
     # caching on `common`), so dispatcher-side catches cannot miss.
     proc = subprocess.run(
-        [sys.executable, "tools/generate/generate.py", "--target", "svd",
+        [sys.executable, "oracle/legacy/tools/generate/generate.py", "--target", "svd",
          "examples/refusal/field-overlap.chw"], capture_output=True,
         text=True, cwd=str(ROOT))
     expect(proc.returncode == 1 and "field-overlap" in proc.stderr,
            "dispatcher refuses a checker-refused contract (exit 1)")
     proc = subprocess.run(
-        [sys.executable, "tools/generate/generate.py", "--target", "svd",
+        [sys.executable, "oracle/legacy/tools/generate/generate.py", "--target", "svd",
          "examples/uart-contract/uart.chw"], capture_output=True,
         text=True, cwd=str(ROOT))
     expect(proc.returncode == 0 and proc.stdout.startswith("<?xml"),

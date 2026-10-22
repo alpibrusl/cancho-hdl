@@ -396,7 +396,7 @@ def sniff_differences(exe, tmp):
     `json.loads` refuses it (JSON blanks are four). cancho skips the four, sees
     something that is not `{`, and reads the text form. Same refusal of the file,
     different code. Returns (events, unexplained)."""
-    sys.path.insert(0, str(ROOT / "tools" / "parse"))
+    sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "parse"))
     from parser import load_contract  # the legacy loader, the oracle
 
     events, bad = [], []

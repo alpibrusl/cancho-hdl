@@ -1,6 +1,6 @@
 module chw.impact;
 
-// impact.cho -- `compute_impact` of tools/diff/diff.py: the §7 diff plus, for each generator target, whether its
+// impact.cho -- `compute_impact` of oracle/legacy/tools/diff/diff.py: the §7 diff plus, for each generator target, whether its
 // artifact is stale, decided by generating both contracts under one neutral label and comparing the bytes. The label
 // is `diff` where Python writes `<diff>`: only the equality of the two outputs is reported, the label is the same on both
 // sides, and the SVD generator refuses a `<` in the path (33.4)

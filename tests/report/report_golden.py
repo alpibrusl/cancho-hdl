@@ -1,4 +1,4 @@
-"""Golden tests for the evidence report (tools/report/report.py).
+"""Golden tests for the evidence report (oracle/legacy/tools/report/report.py).
 
 Covers the §6 contract end to end:
 
@@ -40,7 +40,7 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "report"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "report"))
 
 from report import (  # noqa: E402
     NON_GUARANTEES, build_report, validate_report, format_text,
@@ -141,7 +141,7 @@ def main() -> int:
     expect(all(skipped[t]["outcome"] == "skipped" for t in ("c-header", "systemverilog")),
            "roundtrips skipped over a refused contract (never 'attempted')")
     proc = subprocess.run(
-        [sys.executable, "tools/report/report.py", "examples/refusal/field-overlap.chw", "--strict"],
+        [sys.executable, "oracle/legacy/tools/report/report.py", "examples/refusal/field-overlap.chw", "--strict"],
         capture_output=True, text=True, cwd=str(ROOT))
     expect(proc.returncode == 1, "--strict exits 1 on a refused contract", str(proc.returncode))
 

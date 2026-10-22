@@ -1,6 +1,6 @@
 module chw.check;
 
-// check.cho -- `check()` of tools/check/checker.py: every static rule, run on
+// check.cho -- `check()` of oracle/legacy/tools/check/checker.py: every static rule, run on
 // the JSON tape of a contract (docs/cancho-port.md, 13).
 //
 // The order is the Python function's, and it is the order of the output:
@@ -29,7 +29,7 @@ fn bus_width[&s, &t](src: &s [byte], tape: &t [int], node: int) -> [] int {
     return 32;
 }
 
-// The rule groups that `check()` runs (`ran` of tools/check/checker.py, docs/cancho-port.md 14.8, 32): a group
+// The rule groups that `check()` runs (`ran` of oracle/legacy/tools/check/checker.py, docs/cancho-port.md 14.8, 32): a group
 // that is only run when its list is non-empty is the same test in `run` and in `ran`, so they cannot drift.
 fn has_items[&t](tape: &t [int], node: int) -> [] bool {
     return json.is_array(tape, node) && json.count(tape, node) > 0;

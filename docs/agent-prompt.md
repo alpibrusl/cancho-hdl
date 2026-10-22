@@ -23,7 +23,7 @@ Install cancho-hdl and check it on this machine. Work in a new empty directory, 
    /tmp/chw parse examples/refusal/parse-error.chw ; echo "exit $?"              # expect parse-error at 2:26, exit 1
    /tmp/chw check examples/refusal/field-overlap.chw ; echo "exit $?"           # expect error[field-overlap] with a related line and a help line, exit 1
    /tmp/chw conform .                                                            # the refusal fixtures, a table
-   python3 tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
+   python3 oracle/legacy/tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
    The last command is the Python reference implementation (being replaced). It lists which generated artifacts a register-map change makes stale.
 
 6. Tell me, briefly:

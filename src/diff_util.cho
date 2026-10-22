@@ -1,7 +1,7 @@
 module chw.diff_util;
 
 // diff_util.cho -- what `chw diff` and `chw impact` share: reading the JSON the IR prints as, and writing the
-// documents of tools/diff/diff.py as `json.dumps(doc)` writes them (docs/cancho-port.md, 33).
+// documents of oracle/legacy/tools/diff/diff.py as `json.dumps(doc)` writes them (docs/cancho-port.md, 33).
 //
 // Both inputs are the text `chw.json_out.render` gives (`json.dumps(ir)`, ensure_ascii, keys in the order the Python
 // parser keeps), parsed to a tape. A string's body is therefore already in the form `json.dumps` writes it, so a

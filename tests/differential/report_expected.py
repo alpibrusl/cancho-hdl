@@ -1,5 +1,5 @@
 """Test-only generator of tests/unit/test_report.cho (docs/cancho-port.md, 35.6): every expected text in that file is what
-`tools/report/report.py` writes (its `main()` in this process, the roundtrip lanes replaced by the stubs of report_cmp.py)
+`oracle/legacy/tools/report/report.py` writes (its `main()` in this process, the roundtrip lanes replaced by the stubs of report_cmp.py)
 for the scenario, never typed by hand. Run it to regenerate the file after a change of a scenario; the unit tests are
 then compared with the oracle again:
 
@@ -112,7 +112,7 @@ def main():
     w = out.append
     w('''// test_report.cho -- `chw report` (src/report*.cho), one scenario at a time (docs/cancho-port.md, 35.6).
 //
-// Every expected text below is what `tools/report/report.py` writes for the same contract, taken from the tool by
+// Every expected text below is what `oracle/legacy/tools/report/report.py` writes for the same contract, taken from the tool by
 // tests/differential/report_expected.py, which also writes this file; none is typed. The contract is loaded against the
 // empty schema `{}` (a test borrows only the heap), so the schema pass has nothing to refuse and the scenarios are the
 // ones the checker's rules decide.

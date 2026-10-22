@@ -55,7 +55,7 @@ The tier taxonomy (`Static` / `Tested` / `Runtime` / `Trust` /
 In every `cancho-hdl report` JSON, the following are mandatory
 fields. A report that omits any of them is refused with
 `report-schema-truncated` (the report's own refusal codes;
-`tools/report/report.py` §6.3):
+`oracle/legacy/tools/report/report.py` §6.3):
 
 - `non_guarantees`: an array containing every row of §2 above,
   as a structured list (not prose). The report must literally

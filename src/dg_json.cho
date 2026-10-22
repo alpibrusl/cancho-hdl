@@ -1,7 +1,7 @@
 module chw.dg_json;
 
 // dg_json.cho -- `--output json`: a diagnostic table as the JSON that
-// `Diagnostic.to_json()` of tools/check/diagnostic.py prints,
+// `Diagnostic.to_json()` of oracle/legacy/tools/check/diagnostic.py prints,
 // `json.dumps(d.to_dict(), indent=2)`, one object after another, byte for byte
 // (spec/diagnostics/README.md, 4; docs/cancho-port.md, 13.3).
 //

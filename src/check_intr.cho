@@ -1,6 +1,6 @@
 module chw.check_intr;
 
-// check_intr.cho -- the interrupt rules of tools/check/checker.py
+// check_intr.cho -- the interrupt rules of oracle/legacy/tools/check/checker.py
 // (`_check_interrupts`, `_check_ref`).
 //
 // The Python code builds `registers_by_name`, a dict in which a later register

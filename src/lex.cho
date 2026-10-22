@@ -1,7 +1,7 @@
 module chw.lex;
 
 // lex.cho -- the `.chw` tokeniser, a port of `tokenize` in
-// tools/parse/parser.py (docs/cancho-port.md, section 7).
+// oracle/legacy/tools/parse/parser.py (docs/cancho-port.md, section 7).
 //
 // Same token kinds, same maximal-munch order as the Python regex (comment,
 // hex, dec, ident, punct, whitespace, else a one-byte error token), and the

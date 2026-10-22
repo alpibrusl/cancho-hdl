@@ -1,7 +1,7 @@
 module chw.parse;
 
 // parse.cho -- recursive descent over the token tape, a port of `Parser` in
-// tools/parse/parser.py. Same grammar, same first-error-wins, same message
+// oracle/legacy/tools/parse/parser.py. Same grammar, same first-error-wins, same message
 // text, same error position (docs/cancho-port.md, section 7).
 //
 // Two conventions carry the whole file, both forced by the language:

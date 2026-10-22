@@ -5,9 +5,9 @@ Thirteen checks, in order:
 1. Schema validates the valid examples in both source forms and
    reports the schema-level refusals (`scripts/verify_examples.py`).
 2. The static checker passes every example and refuses every refusal
-   case per the sidecar (`tools/check/conformance.py`).
+   case per the sidecar (`oracle/legacy/tools/check/conformance.py`).
 3. The reference-model simulator passes every scenario
-   (`tools/sim/run_scenarios.py`).
+   (`oracle/legacy/tools/sim/run_scenarios.py`).
 4. The c-header roundtrip compiles and runs
    (`tests/roundtrip/c_header_compiles.py`).
 5. The systemverilog roundtrip passes structural checking, plus a
@@ -62,8 +62,8 @@ def run(label: str, args: list[str]) -> int:
 def main() -> int:
     rc = 0
     rc |= run("schema validation", [sys.executable, "scripts/verify_examples.py"])
-    rc |= run("static checker conformance", [sys.executable, "tools/check/conformance.py"])
-    rc |= run("reference model + scenarios", [sys.executable, "tools/sim/run_scenarios.py"])
+    rc |= run("static checker conformance", [sys.executable, "oracle/legacy/tools/check/conformance.py"])
+    rc |= run("reference model + scenarios", [sys.executable, "oracle/legacy/tools/sim/run_scenarios.py"])
     rc |= run("c-header roundtrip (clang + gcc + smoke)", [sys.executable, "tests/roundtrip/c_header_compiles.py"])
     rc |= run("systemverilog roundtrip (structural + iverilog/slang/yosys if available)", [sys.executable, "tests/roundtrip/systemverilog_parses.py"])
     rc |= run("textual parser roundtrip", [sys.executable, "tests/parser/parser_roundtrip.py"])

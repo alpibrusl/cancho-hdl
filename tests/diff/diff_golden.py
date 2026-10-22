@@ -31,8 +31,8 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "diff"))
-sys.path.insert(0, str(ROOT / "tools" / "check"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "diff"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "check"))
 
 from diff import compute_diff, compute_impact, diff_is_empty  # noqa: E402
 
@@ -59,7 +59,7 @@ def expect(cond: bool, label: str, detail: str = "") -> None:
 
 def _ir(path_rel: str) -> dict:
     import sys as _s
-    _s.path.insert(0, str(ROOT / "tools" / "parse"))
+    _s.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "parse"))
     from parser import load_contract
     ir, diags = load_contract(str(ROOT / path_rel))
     assert ir is not None, diags[0].message
@@ -158,7 +158,7 @@ def main() -> int:
     print()
     print("## refusals ##")
     proc = subprocess.run(
-        [sys.executable, "tools/diff/diff.py", "diff",
+        [sys.executable, "oracle/legacy/tools/diff/diff.py", "diff",
          "examples/refusal/field-overlap.chw", "examples/uart-contract/uart.chw"],
         capture_output=True, text=True, cwd=str(ROOT))
     expect(proc.returncode == 1 and "field-overlap" in proc.stderr,

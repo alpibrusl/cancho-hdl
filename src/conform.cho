@@ -6,7 +6,7 @@ module chw.conform;
 //
 // For every valid example and every refusal fixture it runs the product's own
 // loader, validator and checker (`chw.load`) and compares what comes out with
-// the sidecar (`*.expect.json`), the check `tools/check/conformance.py` makes.
+// the sidecar (`*.expect.json`), the check `oracle/legacy/tools/check/conformance.py` makes.
 // Every sidecar entry is decided here, whatever its code: stage 1 decided the
 // structural ones (`parse-error`, `schema-invalid`) and left the semantic
 // rules "deferred"; stage 2 owns them all, and the count of deferred entries

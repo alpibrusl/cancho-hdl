@@ -215,7 +215,7 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
    /tmp/chw validate examples/refusal/bus-width-invalid.chw ; echo "exit $?"     # expect schema-invalid at a line:column, exit 1
    /tmp/chw parse examples/refusal/parse-error.chw ; echo "exit $?"              # expect parse-error at 2:26, exit 1
    /tmp/chw conform .                                                            # the refusal fixtures, a table
-   python3 tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
+   python3 oracle/legacy/tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
    The last command is the Python reference implementation (being replaced). It lists which generated artifacts a register-map change makes stale.
 
 6. Tell me, briefly:
@@ -263,7 +263,7 @@ python3 scripts/run_gate.py           # the reference gate</code></pre>
     ["d", "$ chw conform ."],
     ["g", "== 12 of 12 fixtures matched (19 of 19 sidecar entries …"],
     ["g", "   4 of 4 valid examples without an error (2 warnings)"],
-    ["d", "$ python3 tools/diff/diff.py impact uart.chw uart_rebase.chw"],
+    ["d", "$ python3 oracle/legacy/tools/diff/diff.py impact uart.chw uart_rebase.chw"],
     ["b", "c-header        stale  moved_registers=5; widened_fields=1", {t: 0, c: "hot"}],
     ["g", "cancho-binding  no change (byte-identical output)", {t: 1, c: "ok"}],
     ["b", "devicetree      stale  moved_registers=5; widened_fields=1", {t: 2, c: "hot"}],

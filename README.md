@@ -96,10 +96,10 @@ root):
 
 ```sh
 python3 scripts/run_gate.py                                    # schema, checker, simulator, generators, roundtrips
-python3 tools/check/checker.py examples/uart-contract/uart.chw
-python3 tools/generate/generate.py --target c-header examples/uart-contract/uart.chw > uart.h
-python3 tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
-python3 tools/report/report.py examples/uart-contract/uart.chw --output text
+python3 oracle/legacy/tools/check/checker.py examples/uart-contract/uart.chw
+python3 oracle/legacy/tools/generate/generate.py --target c-header examples/uart-contract/uart.chw > uart.h
+python3 oracle/legacy/tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
+python3 oracle/legacy/tools/report/report.py examples/uart-contract/uart.chw --output text
 ```
 
 Targets: `c-header`, `systemverilog`, `devicetree`, `cancho-binding`, `svd`.

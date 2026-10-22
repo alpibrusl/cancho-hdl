@@ -24,14 +24,14 @@
 
 - [x] `tests/conformance/valid.rs` equivalent — every example in
       `examples/MANIFEST.json#valid` passes the checker.
-      (Lives at `tools/check/conformance.py`.)
+      (Lives at `oracle/legacy/tools/check/conformance.py`.)
 - [x] `tests/conformance/refusal.rs` equivalent — every sidecar
       in `examples/refusal/` is matched by the checker's output.
-      (Lives at `tools/check/conformance.py`.)
+      (Lives at `oracle/legacy/tools/check/conformance.py`.)
 - [x] `tests/conformance/diagnostics.rs` equivalent — every
       rule code in `spec/diagnostics/README.md` §3 has a
       snapshot test that pins the diagnostic JSON shape.
-      (Live conformance in `tools/check/conformance.py`; full
+      (Live conformance in `oracle/legacy/tools/check/conformance.py`; full
       snapshot pinning lands in Phase 2.)
 
 ## Phase 1 roundtrip minimum

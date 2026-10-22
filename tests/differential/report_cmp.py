@@ -1,4 +1,4 @@
-"""Test-only oracle driver for stage 6 (docs/cancho-port.md, 35): compare `chw report` with `tools/report/report.py`.
+"""Test-only oracle driver for stage 6 (docs/cancho-port.md, 35): compare `chw report` with `oracle/legacy/tools/report/report.py`.
 
 Two parts.
 
@@ -43,7 +43,7 @@ import check_json as cj  # the same inputs and the same oracle; it reads sys.arg
 ROOT = cj.ROOT
 SCHEMA = cj.SCHEMA
 
-spec = importlib.util.spec_from_file_location("reportpy", ROOT / "tools" / "report" / "report.py")
+spec = importlib.util.spec_from_file_location("reportpy", ROOT / "oracle" / "legacy" / "tools" / "report" / "report.py")
 R = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(R)
 

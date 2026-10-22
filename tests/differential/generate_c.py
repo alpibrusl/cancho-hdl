@@ -1,6 +1,6 @@
 """Test-only oracle driver for stage 3 (docs/cancho-port.md, 17.5): compare the cancho C header
 generator (`chw generate FILE --target c-header`) with the Python tool
-(`tools/generate/generate.py --target c-header FILE`).
+(`oracle/legacy/tools/generate/generate.py --target c-header FILE`).
 
 Three parts.
 
@@ -60,7 +60,7 @@ spec = importlib.util.spec_from_file_location("check_json", HERE / "check_json.p
 check_json = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check_json)
 
-sys.path.insert(0, str(ROOT / "tools" / "generate"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "generate"))
 import generate as pygen  # noqa: E402  (the oracle)
 
 if __import__('shutil').which('cc') is None:

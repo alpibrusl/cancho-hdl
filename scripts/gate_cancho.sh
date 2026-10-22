@@ -20,20 +20,20 @@
 #   8b the checker against checker.py  --output json and the text form byte for byte on
 #                                    every fixture, the rule catalog against the spec,
 #                                    then the semantic mutants (about four minutes)
-#  8c the C header generator        `chw generate --target c-header` against tools/generate/generate.py:
+#  8c the C header generator        `chw generate --target c-header` against oracle/legacy/tools/generate/generate.py:
 #                                    bytes on every fixture and mutant, headers compiled with cc
-#  8d the device-tree generator     `chw generate --target devicetree` against tools/generate/generate.py:
+#  8d the device-tree generator     `chw generate --target devicetree` against oracle/legacy/tools/generate/generate.py:
 #                                    bytes on every fixture and mutant, fragments compiled with dtc
-#  8e the CMSIS-SVD generator       `chw generate --target svd` against tools/generate/generate.py:
+#  8e the CMSIS-SVD generator       `chw generate --target svd` against oracle/legacy/tools/generate/generate.py:
 #                                    bytes on every fixture and mutant, documents checked with xmllint
-#  8f the cancho-binding generator  `chw generate --target cancho-binding` against tools/generate/generate.py:
+#  8f the cancho-binding generator  `chw generate --target cancho-binding` against oracle/legacy/tools/generate/generate.py:
 #                                    bytes on every fixture and mutant (no compiler for the output: the Python bytes are the oracle)
-#  8g the SystemVerilog generator   `chw generate --target systemverilog` against tools/generate/generate.py:
+#  8g the SystemVerilog generator   `chw generate --target systemverilog` against oracle/legacy/tools/generate/generate.py:
 #                                    bytes on every fixture and mutant (no RTL tool on the runner: the Python bytes are the oracle)
 #  8h the rule groups that ran      `chw check --ran` against `checker.check(ir, ran=...)`, the fixtures and the mutants
-#  8i diff and impact               `chw diff` and `chw impact` against tools/diff/diff.py, bytes and exit status
+#  8i diff and impact               `chw diff` and `chw impact` against oracle/legacy/tools/diff/diff.py, bytes and exit status
 #  8j the SystemVerilog output       both tools' modules through iverilog: the verdicts must agree (both refuse them, 34)
-#  8k the evidence report           `chw report` against tools/report/report.py, bytes and exit status; `validate_report` against `--validate`
+#  8k the evidence report           `chw report` against oracle/legacy/tools/report/report.py, bytes and exit status; `validate_report` against `--validate`
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -69,7 +69,7 @@ echo "== 5 build"
 
 echo "== 6 text form"
 for f in examples/textual/uart.chw examples/textual/dma.chw; do
-    python3 tools/parse/parser.py "$f" | cmp - "$("$OUT" parse "$f" >"$OUT.out"; echo "$OUT.out")" \
+    python3 oracle/legacy/tools/parse/parser.py "$f" | cmp - "$("$OUT" parse "$f" >"$OUT.out"; echo "$OUT.out")" \
         && echo "identical JSON: $f"
 done
 python3 tests/differential/text_parse.py "$OUT"
@@ -153,7 +153,7 @@ echo "== 8h the rule groups the checker ran against checker.py"
 python3 tests/differential/check_ran.py "$OUT"
 
 echo "== 8i diff and impact against diff.py"
-# `chw diff` and `chw impact` against tools/diff/diff.py: bytes, standard error and exit status, on pairs of the fixtures
+# `chw diff` and `chw impact` against oracle/legacy/tools/diff/diff.py: bytes, standard error and exit status, on pairs of the fixtures
 # and on every mutant of a seed against its seed (docs/cancho-port.md, 33).
 python3 tests/differential/diff_cmp.py "$OUT"
 
@@ -164,7 +164,7 @@ echo "== 8j SystemVerilog output read by a parser (iverilog)"
 python3 tests/differential/sv_parse.py "$OUT"
 
 echo "== 8k the evidence report against report.py"
-# `chw report` against tools/report/report.py: bytes, standard error and exit status on every fixture and on every third
+# `chw report` against oracle/legacy/tools/report/report.py: bytes, standard error and exit status on every fixture and on every third
 # mutant of the checker's differential, with the roundtrip lanes stubbed on the Python side and read from a file on the
 # cancho side (the product runs no tool), and `validate_report` against `chw report --validate` on corrupted copies of
 # five reports (docs/cancho-port.md, 35).

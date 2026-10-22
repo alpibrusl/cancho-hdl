@@ -1,6 +1,6 @@
 module chw.report_check;
 
-// report_check.cho -- `validate_report` of tools/report/report.py: the refusals a finished report is held to
+// report_check.cho -- `validate_report` of oracle/legacy/tools/report/report.py: the refusals a finished report is held to
 // (spec/diagnostics/README.md 6.2), over the document as a tape (docs/cancho-port.md, 35).
 //
 // Each refusal is one line, `internal[CODE]: MESSAGE`, the way report.py's CLI prints them. The two codes are
