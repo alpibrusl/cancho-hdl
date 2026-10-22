@@ -267,7 +267,7 @@ can change. Until then, the schema is frozen.
   `examples/`.
 - [x] A parser from `.chw` text (§10) to canonical JSON
   (`oracle/legacy/tools/parse/`), with roundtrip tests for every valid example
-  and refusal tests for syntax errors (`tests/parser/parser_roundtrip.py`).
+  and refusal tests for syntax errors (`tests/parser/parser_cancho_roundtrip.py`).
 - A serializer from JSON to canonical JSON (idempotence is a
   tested guarantee).
 
@@ -289,7 +289,7 @@ diagnostics with real line/column spans
 normative cross-check: `examples/textual/uart.chw` parses to the
 JSON IR of `examples/uart-contract/uart.chw`, and
 `examples/textual/dma.chw` to `examples/simple-dma/dma.chw`'s —
-asserted by `tests/parser/parser_roundtrip.py`.
+asserted by `tests/parser/parser_cancho_roundtrip.py`.
 
 ```text
 file        := item* EOF

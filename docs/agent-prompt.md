@@ -12,10 +12,9 @@ Install cancho-hdl and check it on this machine. Work in a new empty directory, 
    export CANCHO="$PWD/cancho/target/release/cancho"
    pip install jsonschema==4.26.0 lxml
 
-4. Prove the install works. This needs no network, no key and no model. It takes about fifteen minutes:
+4. Prove the install works. This needs no network, no key and no model. It takes about an hour (measured 3,629 s with a second gate running on the same machine; not measured alone):
    cd cancho-hdl
-   sh scripts/gate_cancho.sh ; echo "exit $?"     # must print exit 0 (the script prints no final PASS line)
-   python3 scripts/run_gate.py                     # must end with: GATE PASSED
+   sh scripts/gate.sh ; echo "exit $?"     # must end with: ######## GATE PASSED, then exit 0
 
 5. Use the cancho tool `chw` on the examples (the gate built it at /tmp/chw):
    /tmp/chw validate examples/uart-contract/uart.chw ; echo "exit $?"            # expect exit 0
@@ -23,11 +22,11 @@ Install cancho-hdl and check it on this machine. Work in a new empty directory, 
    /tmp/chw parse examples/refusal/parse-error.chw ; echo "exit $?"              # expect parse-error at 2:26, exit 1
    /tmp/chw check examples/refusal/field-overlap.chw ; echo "exit $?"           # expect error[field-overlap] with a related line and a help line, exit 1
    /tmp/chw conform .                                                            # the refusal fixtures, a table
-   python3 oracle/legacy/tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
-   The last command is the Python reference implementation (being replaced). It lists which generated artifacts a register-map change makes stale.
+   /tmp/chw impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
+   The last command lists which generated artifacts a register-map change makes stale.
 
 6. Tell me, briefly:
-   - whether the gate exited 0 and whether `run_gate.py` ended with GATE PASSED;
+   - whether the gate exited 0 and whether `gate.sh` ended with GATE PASSED;
    - the first line each command printed in step 5, with its exit code, and the last line of `chw conform`;
    - which targets `impact` marked stale;
    - anything that failed, with the exact error.

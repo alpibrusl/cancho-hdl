@@ -50,7 +50,7 @@ same loader. Anything that loads a contract accepts both forms.
 
 ## Tests
 
-- `tests/parser/parser_roundtrip.py` — textual examples parse to
+- `tests/parser/parser_cancho_roundtrip.py` — textual examples parse to
   IR identical to their JSON twins; determinism; span positions
   pinned on synthetic inputs; the refusal fixture emits
   `parse-error` at the documented span.

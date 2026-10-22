@@ -11,7 +11,7 @@ python3 oracle/legacy/tools/check/checker.py <file.chw>...                  # pa
 python3 oracle/legacy/tools/check/checker.py <file.chw>... --output json    # ... and which rule, as data
 ```
 
-The full gate is `scripts/run_gate.py`, which runs schema
+The full gate is `scripts/gate.sh`, which runs schema
 validation, the checker conformance suite, and the reference-model
 scenarios. All three must pass for the gate to exit 0.
 
@@ -40,7 +40,7 @@ scenarios. All three must pass for the gate to exit 0.
    [`spec/diagnostics/README.md`](../../spec/diagnostics/README.md)
    §3 against the IR. Every rule has at least one refusal fixture
    in `examples/refusal/` and one snapshot test in
-   `oracle/legacy/tools/check/conformance.py`.
+   `chw conform .` (the retired `conformance.py` was its Python twin).
 4. Emits every independent refusal. The first refusal does not
    stop the run.
 5. Writes diagnostics to stdout in the requested form. `--output
@@ -61,7 +61,7 @@ scenarios. All three must pass for the gate to exit 0.
 - `checker.py` — runs the full Static rule catalog.
 - `diagnostic.py` — the diagnostic shape, shared with the
   reference-model simulator.
-- `conformance.py` — the refusal-fixture harness. Loads every
+- `conformance.py` (retired; `chw conform .` replaces it) — the refusal-fixture harness. Loads every
   `examples/refusal/<name>.expect.json` and asserts the checker
   emits the named diagnostic(s).
 
@@ -74,5 +74,5 @@ scenarios. All three must pass for the gate to exit 0.
 - Every `examples/refusal/<name>.chw` exits `1`, and the
   emitted diagnostics match the sidecar
   `examples/refusal/<name>.expect.json`.
-- `oracle/legacy/tools/check/conformance.py` passes.
-- `scripts/run_gate.py` passes (schema + checker + simulator).
+- `chw conform .` (the retired `conformance.py` was its Python twin) passes.
+- `scripts/gate.sh` passes (schema + checker + simulator).

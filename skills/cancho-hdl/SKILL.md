@@ -5,7 +5,7 @@ description: Check hardware register contracts (.chw files) and see which genera
 
 # cancho-hdl
 
-cancho-hdl declares the software/hardware boundary once in a `.chw` file, refuses contradictions with a stable diagnostic code, and generates the copies (C header, Cancho bindings, device tree, SystemVerilog register RTL, CMSIS-SVD). The product is being rewritten in cancho: the loader, the structural validator, the semantic checker (`chw check`, with `--output json` identical to the Python checker's) and the conformance runner (`chw conform`) are cancho; the generators, `diff`/`impact` and `report` are still the Python reference implementation. Python is the test oracle, never new product logic.
+cancho-hdl declares the software/hardware boundary once in a `.chw` file, refuses contradictions with a stable diagnostic code, and generates the copies (C header, Cancho bindings, device tree, SystemVerilog register RTL, CMSIS-SVD). The product is `chw`, one program written in cancho: `parse`, `validate`, `check`, `generate`, `diff`, `impact`, `report` and `conform`. The Python tools are kept under `oracle/legacy/` as the test oracle that `chw` is held to. Python is the test oracle, never new product logic.
 
 ## Rules (always)
 
@@ -17,7 +17,7 @@ cancho-hdl declares the software/hardware boundary once in a `.chw` file, refuse
 
 ## 1. Install (once)
 
-Follow `docs/agent-prompt.md` in the cancho-hdl repository: clone `cancho-hdl` and `cancho` side by side, check out the compiler at `.cancho-rev`, build it, export `CANCHO`, run `sh scripts/gate_cancho.sh` (exit 0) and `python3 scripts/run_gate.py` (GATE PASSED).
+Follow `docs/agent-prompt.md` in the cancho-hdl repository: clone `cancho-hdl` and `cancho` side by side, check out the compiler at `.cancho-rev`, build it, export `CANCHO`, run `sh scripts/gate_cancho.sh` (exit 0) and `sh scripts/gate.sh` (GATE PASSED).
 
 ## 2. Check a contract
 

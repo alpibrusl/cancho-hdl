@@ -40,15 +40,11 @@ exit 1
 - **A report that refuses to over-claim.** Counts come from what ran, a skipped
   roundtrip is never counted as passed, and vendor toolchains are listed as
   trust boundaries, never as verified.
-- **Becoming pure cancho.** The tools were first written in Python. The product
-  is being rewritten in cancho (`docs/cancho-port.md`), with Python kept only as
-  a test oracle. Ported so far: the textual parser (its JSON for `uart.chw` and
-  `dma.chw` is byte-identical to the Python parser's), the JSON wire loader, the
-  structural validator that replaces `jsonschema`, the `Diagnostic` record and
-  the semantic checker (all 34 rules of `checker.py`, `chw check`, with
-  `--output json` in the Python checker's exact shape), and a conformance runner
-  that decides every refusal sidecar entry. The generators, `diff` and `report`
-  are still Python.
+- **Pure cancho.** The product is `chw`, one cancho program (`docs/cancho-port.md`): `parse`, `validate`, `check`,
+  `generate` (five targets), `diff`, `impact`, `report` and `conform`. It runs no other program and writes no
+  file but standard output (`cancho authority` is pinned by the gate). The tools were first written in Python; that
+  implementation is kept under `oracle/legacy/` as the test oracle only, and the gate holds `chw` to it byte for byte
+  (and to the claims of its goldens), on the examples and on tens of thousands of mutated inputs.
 - **Measured.** The Python reference passes 22 of 22 simulator scenarios, every
   one of 12 refusal fixtures is matched, and the generated C header runs the
   scenario corpus op-for-op against the reference model under gcc and clang.
@@ -82,24 +78,22 @@ exit 1
 
 **Or ask your coding agent to do it:** paste [`docs/agent-prompt.md`](docs/agent-prompt.md) into Claude Code, Codex or similar. It installs the pinned compiler, proves the install with both gates (no network, no key, no model) and runs the tool on the examples.
 
-The cancho side (parser, JSON loader, validator, semantic checker, conformance
-runner) and its differential tests against the Python tools:
+Build the one entry point (needs the cancho compiler of `.cancho-rev`) and run it from the repository root:
 
 ```sh
 git clone https://github.com/alpibrusl/cancho-hdl.git && cd cancho-hdl
 export CANCHO=<path-to-the-cancho-binary>
-sh scripts/gate_cancho.sh   # 144 cancho tests, the conformance runner, the checker against checker.py, three differentials (about thirteen minutes)
+sh scripts/build.sh chw
+./chw check examples/uart-contract/uart.chw
+./chw generate examples/uart-contract/uart.chw --target c-header > uart.h
+./chw impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
+./chw report examples/uart-contract/uart.chw --output text --no-roundtrips
 ```
 
-The reference implementation (Python, being replaced, run from the repository
-root):
+The gate (the product, held to the oracle; then the oracle's own self-checks; Python outside `oracle/` and `tests/` is refused):
 
 ```sh
-python3 scripts/run_gate.py                                    # schema, checker, simulator, generators, roundtrips
-python3 oracle/legacy/tools/check/checker.py examples/uart-contract/uart.chw
-python3 oracle/legacy/tools/generate/generate.py --target c-header examples/uart-contract/uart.chw > uart.h
-python3 oracle/legacy/tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
-python3 oracle/legacy/tools/report/report.py examples/uart-contract/uart.chw --output text
+sh scripts/gate.sh
 ```
 
 Targets: `c-header`, `systemverilog`, `devicetree`, `cancho-binding`, `svd`.

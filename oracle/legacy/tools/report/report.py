@@ -83,7 +83,7 @@ _REPORT_SCHEMA_VERSION = "0.1.0"
 
 # ---------------------------------------------------------------------------
 # The §2 catalog: every row restated verbatim. Pinned against
-# docs/guarantees.md by tests/report/report_golden.py, which parses the
+# docs/guarantees.md by tests/report/report_cancho_golden.py, which parses the
 # markdown table and compares sets — a drift in either direction fails.
 # ---------------------------------------------------------------------------
 

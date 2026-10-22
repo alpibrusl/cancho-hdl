@@ -86,7 +86,7 @@ open question list in [`contract-design.md`](contract-design.md)
   shape from §2 as JSON, with the stable field order from §4.1.
 - `oracle/legacy/tools/check/diagnostic.py` — the diagnostic type, shared with
   the reference-model simulator.
-- `oracle/legacy/tools/check/conformance.py` — refuses every fixture in
+- `chw conform .` (the retired `conformance.py` was its Python twin) — refuses every fixture in
   `examples/refusal/` per its sidecar, with zero errors on the
   valid examples.
 - `oracle/legacy/tools/check/checker.py --output json` — the agent-facing CLI
@@ -127,12 +127,12 @@ open question list in [`contract-design.md`](contract-design.md)
   the dict carries. Lanes documented in
   [`spec/diagnostics/README.md`](../spec/diagnostics/README.md)
   §5.1; output pinned byte-for-byte by
-  `tests/text_format/golden.py`. `check` without `--output json`
+  `tests/text_format/golden_cancho.py`. `check` without `--output json`
   renders through it.
 - `examples/textual/uart.chw` and `examples/textual/dma.chw` —
   the two valid peripherals in the frozen text form. Their
   parsed IR is asserted identical (modulo hex case) to the JSON
-  wire forms by `tests/parser/parser_roundtrip.py`.
+  wire forms by `tests/parser/parser_cancho_roundtrip.py`.
 - `examples/refusal/parse-error.chw` — the refusal fixture
   exercising `parse-error` through the conformance suite.
 
@@ -169,7 +169,7 @@ open question list in [`contract-design.md`](contract-design.md)
       `examples/simple-dma/dma.chw` pass the checker.
 - [x] Every `examples/refusal/*.chw` is refused with the
       diagnostics named in its sidecar.
-- [x] `oracle/legacy/tools/check/conformance.py` passes.
+- [x] `chw conform .` (the retired `conformance.py` was its Python twin) passes.
 - [x] `cancho-hdl generate --target c-header` produces
       compile-ready output.
 - [x] `cancho-hdl generate --target systemverilog` produces
@@ -177,11 +177,11 @@ open question list in [`contract-design.md`](contract-design.md)
       slang, or yosys is available).
 - [x] The textual `.chw` syntax is frozen and parsed. Both text
       references parse to the same IR as their JSON twins
-      (`tests/parser/parser_roundtrip.py`), and the checker,
+      (`tests/parser/parser_cancho_roundtrip.py`), and the checker,
       generators, and scripts accept both forms.
 - [x] Every diagnostic can be rendered human-readably, derived
       from the JSON form (`oracle/legacy/tools/check/text_format.py`), with
-      the output pinned by `tests/text_format/golden.py`.
+      the output pinned by `tests/text_format/golden_cancho.py`.
 
 Stop/rethink if: generated SystemVerilog needs constant
 hand-editing to be usable — that means the contract model is
@@ -199,14 +199,14 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
 - `cancho-hdl diff <base> <candidate>` (`oracle/legacy/tools/diff/diff.py`) —
   the semantic-diff JSON in `spec/diagnostics/README.md` §7,
   with the §7.0 matching/classification/refusal rules and the
-  whole taxonomy pinned by `tests/diff/diff_golden.py`.
+  whole taxonomy pinned by `tests/diff/diff_cancho_golden.py`.
 - `cancho-hdl impact <base> <candidate>` — the §7 document plus
   `affected_artifacts`. Staleness is decided by byte-comparing
   generator output for base vs candidate; implemented targets
   (c-header, systemverilog) get `stale: true/false` with
   reasons, unimplemented ones get `stale: null` ("not checked").
 - The seeded-change exit criterion below is exercised by
-  `tests/diff/diff_golden.py` ("seeded change" section) against
+  `tests/diff/diff_cancho_golden.py` ("seeded change" section) against
   `tests/diff/fixtures/uart_rebase.chw` — the criterion's status
   flips to `[x]` when all five targets participate (three
   generators still pending).
@@ -257,7 +257,7 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
   execute; skipped roundtrips never counted as passed), and the
   report's self-refusals (`report-schema-truncated`,
   `evidence-over-claim`) exercised by
-  `tests/report/report_golden.py` on corrupted copies.
+  `tests/report/report_cancho_golden.py` on corrupted copies.
 
 **Exit criteria:**
 

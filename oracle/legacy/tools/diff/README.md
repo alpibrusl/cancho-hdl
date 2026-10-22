@@ -1,7 +1,7 @@
 # oracle/legacy/tools/diff/
 
 > **Status: Phase 2 (partial).** `diff` and `impact` are
-> implemented and pinned by `tests/diff/diff_golden.py`. Four
+> implemented and pinned by `tests/diff/diff_cancho_golden.py`. Four
 > of five targets have joined the byte-comparison set
 > (c-header, systemverilog, devicetree, cancho-binding — where
 > the seeded rebase proved a byte-identical binding stays

@@ -14,7 +14,7 @@ with its README as the contract it was built to satisfy:
 | [`check/`](check/) | `cancho-hdl check <file.chw>...` | Phase 1 — landed |
 | [`generate/`](generate/) | `cancho-hdl generate --target <t> <file.chw>` | Phase 1 — landed (`c-header`, `systemverilog`); Phase 2 pending (`devicetree`, `cancho-binding`, `svd`) |
 | [`diff/`](diff/) | `cancho-hdl diff <base> <candidate>` / `... impact ...` | Phase 2 — `diff` + `impact` landed; unimplemented generator targets report `stale: null` in impact |
-| [`report/`](report/) | `cancho-hdl report` | Phase 2 — landed (`report.py`, §6 self-validating; `tests/report/report_golden.py`) |
+| [`report/`](report/) | `cancho-hdl report` | Phase 2 — landed (`report.py`, §6 self-validating; `tests/report/report_cancho_golden.py`) |
 
 Phase 0 has **no** tool implementations. Each subdirectory's
 README is a contract for what Phase 1+ must build.

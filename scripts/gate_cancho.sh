@@ -59,7 +59,7 @@ for t in tests/unit/test_*.cho; do
 done
 
 echo "== 4 file length"
-long=$(find src tests scripts -name '*.cho' -o -name '*.py' -o -name '*.sh' | xargs wc -l | awk '$2 != "total" && $1 > 2000 {print $2 " " $1}')
+long=$(find src tests scripts oracle -name '*.cho' -o -name '*.py' -o -name '*.sh' | xargs wc -l | awk '$2 != "total" && $1 > 2000 {print $2 " " $1}')
 if [ -n "$long" ]; then
     echo "over 2,000 lines: $long"
     exit 1

@@ -1,7 +1,7 @@
 # oracle/legacy/tools/report/
 
 > **Status: Phase 2 — landed.** Implemented at `report.py`; pinned
-> by `tests/report/report_golden.py`. The output shape is
+> by `tests/report/report_cancho_golden.py`. The output shape is
 > [`spec/diagnostics/README.md`](../../spec/diagnostics/README.md)
 > §6, restating every row of
 > [`docs/guarantees.md`](../../docs/guarantees.md) §2 verbatim.

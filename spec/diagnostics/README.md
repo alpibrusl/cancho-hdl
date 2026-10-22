@@ -299,7 +299,7 @@ way around. The renderer (`oracle/legacy/tools/check/text_format.py`) projects
 the diagnostic onto its JSON dict (`—output json`'s exact value)
 and renders only what the dict carries. No `span` in the JSON →
 no `-->` line; no `remediation` → no `help:` line. This is a
-tested property (`tests/text_format/golden.py`, "derivation
+tested property (`tests/text_format/golden_cancho.py`, "derivation
 property"), not a style note.
 
 ### 5.1 The lanes
@@ -355,7 +355,7 @@ the hardware semantics).
 
 > **Status: Phase 2 — landed.** Implemented at
 > `oracle/legacy/tools/report/report.py`; pinned by
-> `tests/report/report_golden.py`. The example below is the
+> `tests/report/report_cancho_golden.py`. The example below is the
 > landed shape: it adds `input`, the top-level restatements of
 > §6.1, and `unknown.static_checks_not_run` to the Phase 0
 > sketch.
@@ -486,14 +486,14 @@ not against a contract:
 
 The conformance `evidence-over-claim` lane is this function fed
 intentionally corrupted report copies
-(`tests/report/report_golden.py`).
+(`tests/report/report_cancho_golden.py`).
 
 ---
 
 ## 7. The semantic-diff output
 
 > **Status: Phase 2 — landed.** Implemented at
-> `oracle/legacy/tools/diff/diff.py`; pinned by `tests/diff/diff_golden.py`.
+> `oracle/legacy/tools/diff/diff.py`; pinned by `tests/diff/diff_cancho_golden.py`.
 
 `cancho-hdl diff <base> <candidate>` produces a JSON document
 listing the semantic changes between two contract IRs.
@@ -657,7 +657,7 @@ refuses with `ir-version-unsupported` for IR inputs and
 - The JSON serializer for `Diagnostic` in §4.
 - [x] The text formatter for §5 (`oracle/legacy/tools/check/text_format.py`),
   derived from the JSON form; the interpretive contract is §5.1
-  and the pinned output is `tests/text_format/golden.py`.
+  and the pinned output is `tests/text_format/golden_cancho.py`.
 - A `tests/diagnostics.rs` snapshot test that pins every
   fixture's diagnostic output, so the schema does not drift.
 
@@ -670,7 +670,7 @@ schema bump.
 ## 10. Phase 2 landing record (this repo)
 
 - [x] §7 — the semantic-diff document: `oracle/legacy/tools/diff/diff.py`,
-      pinned by `tests/diff/diff_golden.py` (identity across
+      pinned by `tests/diff/diff_cancho_golden.py` (identity across
       source forms, determinism, refusals of invalid contracts,
       classification units, the seeded roadmap change from
       `tests/diff/fixtures/uart_rebase.chw`).
@@ -680,7 +680,7 @@ schema bump.
       The sketch's `path` field is omitted (no build graph;
       see §7.1).
 - [x] §6 — the evidence report: `oracle/legacy/tools/report/report.py`,
-      pinned by `tests/report/report_golden.py` (verbatim
+      pinned by `tests/report/report_cancho_golden.py` (verbatim
       non-guarantee restatement, arithmetic provenance,
       skipped-vs-run discipline, and the §6.3 refusal codes fed
       corrupted copies).
