@@ -1,6 +1,6 @@
 """Test-only oracle driver for stage 2 (docs/cancho-port.md, 13.6): compare the
 cancho semantic checker (`chw check`) with the Python reference
-(`tools/check/checker.py`).
+(`oracle/legacy/tools/check/checker.py`).
 
 Two parts.
 
@@ -49,7 +49,7 @@ if importlib.metadata.version("jsonschema") != ORACLE_VERSION:
     sys.exit(f"check_json.py needs jsonschema {ORACLE_VERSION} (found {importlib.metadata.version('jsonschema')})")
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "check"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "check"))
 import checker  # noqa: E402  (the oracle)
 from text_format import format_diagnostics  # noqa: E402
 
@@ -292,7 +292,7 @@ def fixture_files():
 
 
 def py_cli(path, *flags):
-    p = subprocess.run([sys.executable, "tools/check/checker.py", *flags, path], capture_output=True, text=True, cwd=ROOT)
+    p = subprocess.run([sys.executable, "oracle/legacy/tools/check/checker.py", *flags, path], capture_output=True, text=True, cwd=ROOT)
     return p.returncode, p.stdout
 
 

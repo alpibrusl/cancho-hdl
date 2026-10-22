@@ -1,6 +1,6 @@
 module chw.gen_sv;
 
-// gen_sv.cho -- `gen/systemverilog/systemverilog.py`: the AXI4-Lite register module of a checked contract
+// gen_sv.cho -- `oracle/legacy/gen/systemverilog/systemverilog.py`: the AXI4-Lite register module of a checked contract
 // (docs/cancho-port.md, 29). A pure function of the IR and the bytes its spans index; it prints nothing and opens
 // nothing. The line order, the spaces and the comments are the Python generator's, because the oracle is its bytes.
 //

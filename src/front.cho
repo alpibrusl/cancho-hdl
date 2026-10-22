@@ -57,7 +57,7 @@ pub fn parse_text[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] (model.Ir, 
 }
 
 // Text in; the IR as one line of JSON and 0, or the refusal line and 1, as
-// `python3 tools/parse/parser.py` prints them. The buffer is the caller's to
+// `python3 oracle/legacy/tools/parse/parser.py` prints them. The buffer is the caller's to
 // drop either way.
 pub fn parse_chw[&h, &t, &p](heap: &!h Heap, path: &p [byte], text: &t [byte]) -> [heap] (buffer.Buffer, int) {
     let (ir, report) = parse_text(heap, text);

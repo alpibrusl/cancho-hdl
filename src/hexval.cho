@@ -1,6 +1,6 @@
 module chw.hexval;
 
-// hexval.cho -- Python's `_parse_hex` (tools/check/checker.py): `int(s, 16)`
+// hexval.cho -- Python's `_parse_hex` (oracle/legacy/tools/check/checker.py): `int(s, 16)`
 // for a string that starts with a lowercase `0x`, and None for anything else.
 //
 // `int(s, 16)` is more generous than the schema's `^0x[0-9a-fA-F]+$`: it

@@ -14,11 +14,11 @@
 |---|---|---|
 | UART register block | `uart-contract/uart.chw` | `RW`, `RO`, `WO` registers, enum field, free-text constraint, single interrupt with all four linkages (source/enable/status/clear) |
 | DMA controller + descriptors | `simple-dma/dma.chw` | `W1C` register, multiple interrupts, `CPU` and `DEVICE` DMA fields, alignment, coherent flag, multiple DMA buffers |
-| UART register block, textual | `textual/uart.chw` | The frozen textual syntax for the UART contract above. `tests/parser/parser_roundtrip.py` asserts its parsed IR equals the JSON wire form. |
+| UART register block, textual | `textual/uart.chw` | The frozen textual syntax for the UART contract above. `tests/parser/parser_cancho_roundtrip.py` asserts its parsed IR equals the JSON wire form. |
 | DMA controller + descriptors, textual | `textual/dma.chw` | The frozen textual syntax for the DMA contract above. |
 
 Both JSON examples are **schema-valid**; both textual examples
-parse to the identical IR. `tools/check/conformance.py` also
+parse to the identical IR. `chw conform` also
 asserts all four pass every rule in
 `spec/diagnostics/README.md` §3.
 

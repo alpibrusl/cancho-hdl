@@ -23,8 +23,8 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "generate"))
-sys.path.insert(0, str(ROOT / "tools" / "parse"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "generate"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "parse"))
 
 # Use the dispatcher's loader so the roundtrip test exercises the
 # same code path as the CLI.

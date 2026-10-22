@@ -15,9 +15,9 @@ edition 6;
 //                                     position of the node a structural refusal names)
 //     chw generate FILE --target T [--schema S]
 //                                     the artifact of target T for a contract the checker accepts
-//                                     (tools/generate/generate.py): c-header and devicetree are ported
+//                                     (oracle/legacy/tools/generate/generate.py): c-header and devicetree are ported
 //     chw report FILE [--schema S] [--output json|text] [--pretty] [--strict] [--no-roundtrips] [--lanes FILE]
-//                                     the evidence report of tools/report/report.py (docs/cancho-port.md, 35);
+//                                     the evidence report of oracle/legacy/tools/report/report.py (docs/cancho-port.md, 35);
 //                                     the roundtrips are read from the oracle's results (--lanes), the product runs no tool
 //     chw report --validate DOC       the refusals report.py's `validate_report` gives a report in the file DOC
 //     chw catalog                     every rule with its subject, severity and tier
@@ -652,7 +652,7 @@ fn diff_text[&h, &i, &b, &c, &x, &y](heap: &!h Heap, io: &!i Io, base: &b load.D
     return status;
 }
 
-// `chw diff BASE CANDIDATE [--pretty]` and `chw impact ...` (tools/diff/diff.py): exit 1 if a contract is refused.
+// `chw diff BASE CANDIDATE [--pretty]` and `chw impact ...` (oracle/legacy/tools/diff/diff.py): exit 1 if a contract is refused.
 fn run_diff[&h, &i, &f, &g](heap: &!h Heap, io: &!i Io, fs: &f Fs(""), g: &g Args, as_impact: bool) -> [heap, io_write, err_write, fs_read(""), file_read, args] int {
     if nth_file(g, 1) < 0 || nth_file(g, 2) >= 0 {
         return usage(io);

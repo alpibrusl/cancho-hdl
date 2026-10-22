@@ -1,7 +1,7 @@
 module chw.dg_text;
 
 // dg_text.cho -- the text form of a diagnostic table, as
-// tools/check/text_format.py prints it (spec/diagnostics/README.md, 5): the
+// oracle/legacy/tools/check/text_format.py prints it (spec/diagnostics/README.md, 5): the
 // header, the span with a source snippet when it is a real position, the
 // related entries, the notes and the help line. Like the Python formatter it
 // reads only what the JSON form carries, so a diagnostic with no remediation

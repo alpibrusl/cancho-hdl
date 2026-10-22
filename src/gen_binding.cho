@@ -1,6 +1,6 @@
 module chw.gen_binding;
 
-// gen_binding.cho -- `gen/cancho-binding/cancho_binding.py`: the typed accessor declarations of a checked contract
+// gen_binding.cho -- `oracle/legacy/gen/cancho-binding/cancho_binding.py`: the typed accessor declarations of a checked contract
 // (docs/cancho-port.md, 26). A pure function of the IR and the bytes its spans index; it prints nothing and opens
 // nothing. The line order, the spaces and the comments are the Python generator's, because the oracle is its bytes.
 //

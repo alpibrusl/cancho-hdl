@@ -1,5 +1,5 @@
 """Golden tests for `chw report`, the cancho port of the evidence report (docs/cancho-port.md, 35): the claims of
-tests/report/report_golden.py, held against the cancho binary instead of report.py. Oracle code: it decides nothing.
+the retired Python golden (tests/report/report_golden.py, deleted in stage 7), held against the cancho binary instead of report.py. Oracle code: it decides nothing.
 
 The product runs no tool (1.2), so the Tested tier is read from lane results this script writes (a clang that passed, an
 iverilog that is not on the $PATH), as an oracle run would.

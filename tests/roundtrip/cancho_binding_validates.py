@@ -1,5 +1,5 @@
 """Roundtrip checks for the cancho-binding generator
-(gen/cancho-binding/cancho_binding.py).
+(oracle/legacy/gen/cancho-binding/cancho_binding.py).
 
 spec/generators/README.md §3 wants a `.cancho` file whose
 accessors match the contract, carry stable-ID comments, and
@@ -48,8 +48,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 _HANDLERS = {
     "cancho_binding":
-        (ROOT / "gen" / "cancho-binding" / "cancho_binding.py"),
-    "c_header": (ROOT / "gen" / "c-header" / "c_header.py"),
+        (ROOT / "oracle" / "legacy" / "gen" / "cancho-binding" / "cancho_binding.py"),
+    "c_header": (ROOT / "oracle" / "legacy" / "gen" / "c-header" / "c_header.py"),
 }
 
 
@@ -79,7 +79,7 @@ def main() -> int:
     c_header = _load("c_header_mod_r", _HANDLERS["c_header"])
     from common import GeneratorUnimplemented  # noqa: E402
 
-    sys.path.insert(0, str(ROOT / "tools" / "parse"))
+    sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "parse"))
     from parser import load_contract  # noqa: E402
 
     _snake = binding._snake
@@ -226,12 +226,12 @@ def main() -> int:
         expect(True, "same-name enums with different labels refuse (no type collision)")
 
     dispatcher = subprocess.run(
-        [sys.executable, "tools/generate/generate.py", "--target", "cancho-binding",
+        [sys.executable, "oracle/legacy/tools/generate/generate.py", "--target", "cancho-binding",
          "examples/refusal/field-overlap.chw"], capture_output=True, text=True, cwd=str(ROOT))
     expect(dispatcher.returncode == 1 and "field-overlap" in dispatcher.stderr,
            "dispatcher refuses a checker-refused contract (exit 1)")
     svd = subprocess.run(
-        [sys.executable, "tools/generate/generate.py", "--target", "svd",
+        [sys.executable, "oracle/legacy/tools/generate/generate.py", "--target", "svd",
          "examples/uart-contract/uart.chw"], capture_output=True, text=True, cwd=str(ROOT))
     expect(svd.returncode == 0 and svd.stdout.startswith("<?xml"),
            "svd (landed in Phase 2) generates from the valid example — "

@@ -1,5 +1,5 @@
 """Test-only oracle driver for stage 4 (docs/cancho-port.md, 20.5): compare the cancho device-tree generator
-(`chw generate FILE --target devicetree`) with the Python tool (`tools/generate/generate.py --target devicetree FILE`).
+(`chw generate FILE --target devicetree`) with the Python tool (`oracle/legacy/tools/generate/generate.py --target devicetree FILE`).
 
 The same three parts as generate_c.py (which this file copies the shape of; that file runs on import, so it cannot
 be imported):
@@ -48,7 +48,7 @@ spec = importlib.util.spec_from_file_location("check_json", HERE / "check_json.p
 check_json = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check_json)
 
-sys.path.insert(0, str(ROOT / "tools" / "generate"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "generate"))
 import generate as pygen  # noqa: E402  (the oracle)
 
 if __import__('shutil').which('dtc') is None:

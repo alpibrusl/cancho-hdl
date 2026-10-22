@@ -1,6 +1,6 @@
 module chw.check_dma;
 
-// check_dma.cho -- the DMA rules of tools/check/checker.py (`_check_dma`).
+// check_dma.cho -- the DMA rules of oracle/legacy/tools/check/checker.py (`_check_dma`).
 //
 // A field is 4 bytes unless it declares a `size` (the schema has none; a
 // document that bypasses it may). Offsets past 2^60 are saturated for the

@@ -108,7 +108,7 @@ pub fn source_of[&d](doc: &d Doc) -> [] &d [byte] {
 
 // Did the document get as far as an IR? False when it is not JSON, or the text form
 // does not parse: `load_contract` returns no IR then, and the generators' command
-// reports that alone, not the checker (tools/generate/generate.py).
+// reports that alone, not the checker (oracle/legacy/tools/generate/generate.py).
 pub fn loaded[&d](doc: &d Doc) -> [] bool {
     if dg.size(doc.diags) == 0 {
         return true;

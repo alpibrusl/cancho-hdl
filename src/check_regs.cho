@@ -1,6 +1,6 @@
 module chw.check_regs;
 
-// check_regs.cho -- the register and field rules of tools/check/checker.py
+// check_regs.cho -- the register and field rules of oracle/legacy/tools/check/checker.py
 // (`_check_registers`, `_check_fields`).
 //
 // Python's per-register `continue`s are early returns here; a register that is

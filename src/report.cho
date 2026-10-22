@@ -1,6 +1,6 @@
 module chw.report;
 
-// report.cho -- `chw report FILE`: the evidence report of tools/report/report.py (docs/cancho-port.md, 35).
+// report.cho -- `chw report FILE`: the evidence report of oracle/legacy/tools/report/report.py (docs/cancho-port.md, 35).
 //
 // The document is written straight to a buffer in Python's key order and in the spellings of `json.dumps`. The three
 // readers of a finished document (`text`, `strict_ok`, and `chw.report_check.validate`) work on a tape of that text, as

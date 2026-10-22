@@ -1,5 +1,8 @@
 # Porting cancho-hdl to cancho
 
+> **Update (stage 7, section 36): every stage is built, `chw` is the one entry point, and the Python lives only under `oracle/legacy/` and `tests/`. The
+> text below is the record of the stages as they were built; paths named in it (`tools/`, `gen/`) are now `oracle/legacy/tools/` and `oracle/legacy/gen/`.**
+>
 > **Status: design, a measured spike (§7), a built and measured stage 1
 > (design §9, measurements §10), a built and measured first slice of stage 2:
 > `Diagnostic` and the semantic checker (design §13, measurements §14,
@@ -60,7 +63,7 @@ removed.
 | 4 | **Remaining generators**: devicetree, cancho-binding, svd, systemverilog | `gen/*` (138 + 211 + 254 + 330) | 3, and the shared emit helpers | Same, per target. SVD additionally validates against `spec/generators/CMSIS-SVD.xsd` (oracle lane) |
 | 5 | **diff / impact** | `tools/diff/diff.py` (470) | 2, 3, 4 (staleness is decided by byte-comparing generator output) | **Built: section 33.** `tests/diff/` goldens, including the seeded Phase 2 change across all five targets |
 | 6 | **report** | `tools/report/report.py` (617) | 2, 3, 4 | `tests/report/` goldens, the verbatim `docs/guarantees.md` §2 restatement, both self-refusals (`report-schema-truncated`, `evidence-over-claim`). **Built: section 35** (the roundtrips come from the oracle's results; the product runs no tool) |
-| 7 | **CLI and deletion** | `tools/generate/generate.py` (144), `scripts/run_gate.py` (85) | all | `scripts/gate.sh` (§4) green with no Python product file left |
+| 7 | **CLI and deletion** | `tools/generate/generate.py` (144), `scripts/run_gate.py` (85) | all | `scripts/gate.sh` (§4) green with no Python product file left. **Built: section 36.** The CLI was already one program; the legacy tools are the differential oracle and were moved to `oracle/legacy/`, not deleted (36.2); what was deleted is the Python that tested Python as a product (36.4) |
 
 Why this order. The parser and checker first because every other stage
 consumes the IR and a refusal is the product's whole discipline. The c-header
@@ -2652,3 +2655,115 @@ survivors, of 162.**
 
 The row of section 2 reads "built"; `report` is no longer Python-only. The status line of 33.7 ("`report` is still Python") is
 superseded by this section.
+
+---
+
+## 36. Stage 7: one entry point, and what Python is left
+
+> **Status: built; measured in 36.5.** Written before the code, after reading `scripts/gate_cancho.sh`, `scripts/run_gate.py`,
+> every Python file named by the gate, and `src/main.cho`. Every number in 36.4 and later is from a run.
+
+### 36.1 What the plan said, and what was already true
+
+Section 2's row 7 reads "CLI and deletion: `tools/generate/generate.py` (144), `scripts/run_gate.py` (85); `scripts/gate.sh` (§4) green
+with no Python product file left", and section 1 says the end state is one program with a CLI and Python only under `oracle/`.
+
+* **The CLI was already one program.** `chw` has had `parse`, `validate`, `check`, `generate` (five targets), `diff`, `impact`,
+  `report`, `conform` and `catalog` since stage 6 (35); nothing was left to port. What stage 7 adds is *around* it: one list of the
+  program's modules that the gate and a build script both read (`scripts/sources.sh`, `scripts/build.sh`; before, the list was a
+  line inside the gate), and a README that said "the generators, `diff` and `report` are still Python" two stages after it stopped
+  being true (corrected in place; so is the skill text).
+* **The section 4 gate did not exist as one script.** There were two: `scripts/gate_cancho.sh` (the product, held to the oracle) and
+  `scripts/run_gate.py` (the Python reference gate, 13 checks). `scripts/gate.sh` is now the one, and it runs: the Python lint (36.3),
+  the product gate, and the oracle's own self-checks. A part that fails does not hide the others.
+
+### 36.2 The rule for deleting, and what it left
+
+Section 5 says the Python is "deleted when the stage's exit criterion is met", and the instruction for this stage was narrower: a
+Python file goes if no harness still diffs against it. **None of the legacy product tools qualifies.** The parser, checker, diagnostic
+type, diff, report and generator dispatcher and the five generators are loaded or run by 13 of the 23 differential and mutation
+drivers (`tests/differential/*.py`, `tests/mutation/*.py`), which is what gate steps 6, 8b to 8k and 9 are; the reference simulator is
+the oracle of the behavioral roundtrip. Deleting any of them would end a byte-for-byte comparison that is measured every run (35.5:
+165,546 comparisons for `report` alone). So they were **moved, not deleted**: `tools/` became `oracle/legacy/tools/` and `gen/` became
+`oracle/legacy/gen/`, which is where section 1.4 and section 5 say Python lives. The move is its own commit (mechanical: 121 path
+references in code, comments, specs and docs; four root lookups inside the oracle; nothing else) so that it can be read, and reverted,
+alone. Generated artifacts do not mention the tool's path (checked: the five targets over `uart.chw`, `chw` against the moved
+`generate.py`, byte-identical), so the differentials did not move.
+
+What was removed is the Python that tested the Python *as a product*, where the claim now lives in a check over the binary.
+
+### 36.3 The rules that keep Python from creeping (section 5, rules 1 and 2, now enforced)
+
+`scripts/lint_python.sh`, the first part of `scripts/gate.sh` and a CI step:
+
+1. **Location**: a tracked `*.py` file may be only under `oracle/` or `tests/`. (Section 5 said `scripts/` too, "while a stage is unported"; no
+   stage is. `tests/` holds the drivers, the mutation harnesses and the goldens, as built since stage 1.) Measured: a `src/x.py` makes it
+   exit 1.
+2. **A ceiling that only comes down**: `oracle/legacy/CEILING` is the line count of `oracle/legacy/**/*.py` (5,731 now). More is refused,
+   and so is fewer until the file is lowered in the same commit. Measured: one added line exits 1.
+
+The authority pin (rule 4) is unchanged and still step 10 of the product gate: the product cannot reach `exec`.
+
+### 36.4 What was retired, and what holds each claim now
+
+| Deleted | Lines | What it pinned (of the Python tool) | Held now by |
+|---|---|---|---|
+| `scripts/verify_examples.py` | 78 | the examples schema-validate, the refusal examples fail where the sidecar says | gate step 9 (`json_validate.py`, against `jsonschema`, 55k mutants) and step 7 (`chw conform`) |
+| `oracle/legacy/tools/check/conformance.py` | 171 | every sidecar entry decided by the checker | `chw conform .` (step 7) and step 8b |
+| `tests/parser/parser_roundtrip.py` | 167 | text twin equals JSON twin modulo hex case; deterministic; 0 checker errors; `parse-error` at 2:26; three synthetic spans | `tests/parser/parser_cancho_roundtrip.py` (new, step 8l), the same five over `chw`; and step 6 |
+| `tests/text_format/golden.py` | 130 | the text form of four diagnostics (related and remedy, real span, warning and note, duplicate rule) | `tests/text_format/golden_cancho.py` (new): the same four goldens, bytes and exit status |
+| `tests/diff/diff_golden.py` | 261 | identity, determinism, the seeded Phase 2 change and its impact, `stale: false` with proof, the refusal; the classification units | `tests/diff/diff_cancho_golden.py` (new): the first five over `chw`; the classification units are the 46 tests of `tests/unit/test_diff.cho` |
+| `tests/report/report_golden.py` | 196 | the report's claims | `tests/report/report_cancho_golden.py` (built in stage 6; it already held these) |
+| `scripts/run_gate.py` | 79 | the 13-check reference gate | `oracle/legacy/run_gate.py`, six checks (below), run by `scripts/gate.sh` |
+
+1,082 lines out of the old locations; 1,003 gone for good and 79 moved, against 364 added in the three new drivers. The behavioral roundtrip
+(`tests/behavioral/c_behavior.py`) is not deleted but retargeted: the header it compiles with gcc and clang and runs op for op against the reference
+model is now the one **`chw generate` writes** (it was the Python generator's); it is step 8l of the product gate and no longer a check of the oracle gate.
+
+**The three new drivers can fail** (the discipline of 35.6). One deliberate break each, in a copy of the sources, rebuilt: `help: ` spelled `hint: ` in
+`dg_text.cho`; the `moved_registers` label in `impact.cho` changed; the parser's error column off by one; the C generator's `_RESET` macro changed by one.
+Each driver exits 1 on its break (text golden, diff golden, parser roundtrip, behavioral roundtrip respectively) and 0 on the unbroken binary.
+
+### 36.5 What is left in Python, and why it was not retargeted
+
+* **`oracle/legacy/tools` and `oracle/legacy/gen`**: the differential oracle (36.2). 5,731 lines under the ceiling; `tests/` holds 7,925 more lines of drivers,
+  mutation harnesses, goldens and roundtrips, none of it product.
+* **`oracle/legacy/run_gate.py`, six checks**: the simulator's scenarios and refusals, and the five generator roundtrips (`tests/roundtrip/*.py`: c-header,
+  systemverilog, devicetree, cancho-binding, svd). These run the **legacy generator modules** against the specification's pins (banner, palette, DEVICE has no
+  setter, XSD, access mapping). Their claims about the product are carried by transitivity (the product's bytes equal the oracle's on the fixtures and on the mutants,
+  gate steps 8c to 8g, and 8c to 8e compile or validate the product's own output). That is weaker than a pin on `chw` and is said so here, not hidden.
+  They were not retargeted because half of each is not reachable through the product: they call a generator *below* the dispatcher, with a hand-built contract
+  (a 3-byte DMA field, a zero-register block, a base over 32 bits) to reach `generator-unimplemented`. Measured: `chw generate` and the Python dispatcher both refuse
+  such a contract first, at the schema (`schema-invalid`, "not generating from a refused contract", exit 1), so the generator's own refusal has no entry from outside.
+  The structural claims (banner, palette) could move to `chw`, and the day they do the oracle gate loses its generator lanes; that is stage 8 if anyone asks.
+* **The roundtrip lane with `iverilog` installed fails, in both tools** (34): `systemverilog_parses.py` runs a real parse when `iverilog` is on `$PATH`. CI
+  does not install it (34.3) and so passes; on a machine that has it, `scripts/gate.sh` ends `FAILED` at the oracle's self-checks, and the product gate (8j) passes
+  by design, because it checks that both tools *agree* (both refuse, for the same two reasons). Measured here, with `iverilog` installed: the oracle gate fails at that lane
+  only (`FAIL uart: iverilog: 25`, `FAIL dma: iverilog: 27`); with `iverilog` hidden from `$PATH` it passes in 14 s.
+
+### 36.6 Measured
+
+All runs on one machine, the compiler of `.cancho-rev` (`7e4088b`), `iverilog`, `dtc`, `xmllint`, `clang` and `gcc` installed. The two gates of
+"before" and the new gate overlapped in time, so the durations are an upper bound for a gate run alone; none was timed alone.
+
+| | Before (`385723d`) | After (this change) |
+|---|---|---|
+| Product gate (`gate_cancho.sh`) | exit 0, 3,849 s | passed (inside `gate.sh`, whose whole run took 3,629 s). Step 8l (new) runs four drivers, 55 PASS lines and no FAIL; steps 1 to 10 unchanged in what they compare |
+| Python location and ceiling | none | passed: 5,731 lines, ceiling 5,731 |
+| Oracle gate | `run_gate.py`, 13 checks: exit 1, because `iverilog` is installed (36.5); exit 0 in 14 s with it hidden from `$PATH` | `oracle/legacy/run_gate.py`, 6 checks: the same single `iverilog` failure; exit 0 in 2 s with `iverilog` hidden |
+| `scripts/gate.sh` | did not exist | `FAILED` here, for that one environmental reason, and `GATE PASSED` on a runner without `iverilog` (CI) |
+
+CI has not been run by this document's author on the final commit before this text was written; the pull request's check is the measurement.
+
+The three new drivers on a deliberate break each: 36.4. The moved oracle: the five targets over `uart.chw`, byte-identical between `chw` and the moved `generate.py`; the
+reference simulator's 11 scenarios and the checker, diff, report and parser tools run from their new paths.
+
+### 36.7 Corrections
+
+* README: "The generators, `diff` and `report` are still Python" (and the matching sentence of `skills/cancho-hdl/SKILL.md`) was false after stage 6; both now say
+  what is true. The README's "about thirteen minutes" for the cancho gate and the "about five minutes" of `docs/index.html` and "fifteen" of `docs/agent-prompt.md`
+  were not measurements; the measured figure is in 36.6.
+* `docs/agent-prompt.md` and `docs/index.html` told a reader to run `gate_cancho.sh` and then `run_gate.py`; they now run `gate.sh`.
+* Specification files that named a deleted test as the pin of a property (`spec/diagnostics/README.md`, `spec/contract-schema/README.md`, `docs/roadmap.md`, `docs/guarantees.md`,
+  `tests/README.md`, `examples/README.md`, the legacy tools' READMEs) now name the test over `chw` that holds it. Sections 1 to 35 of this document are left as they were written;
+  where they name `tools/` or `gen/`, read `oracle/legacy/tools/` and `oracle/legacy/gen/` (the note at the top).

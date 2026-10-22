@@ -5,7 +5,7 @@ changes ONE expression in the named file of the copy (the old text must occur ex
 and runs the two quick tiers:
 
   fixtures   tests/differential/diff_cmp.py --fixtures-only: the 804 runs of whole-file pairs, `chw diff` and `chw impact`
-             against tools/diff/diff.py, bytes and exit status
+             against oracle/legacy/tools/diff/diff.py, bytes and exit status
   unit       `cancho test` of tests/unit/test_diff.cho
 
 A break is KILLED when either fails. The table printed at the end is the evidence: each decision has a break, and the

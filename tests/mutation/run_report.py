@@ -5,7 +5,7 @@ expression in the named file of the copy (the old text must occur exactly once),
 two quick tiers:
 
   unit       `cancho test` of tests/unit/test_report.cho (120 tests: whole reports, taken from report.py)
-  fixtures   tests/differential/report_cmp.py --fixtures-only --real-lanes: `chw report` against tools/report/report.py on
+  fixtures   tests/differential/report_cmp.py --fixtures-only --real-lanes: `chw report` against oracle/legacy/tools/report/report.py on
              every fixture (the six lane stubs, the real clang/iverilog results, every output flag), and
              `validate_report` against `chw report --validate` on 8,000 corrupted copies of five reports;
              run only for a break the unit tests did not kill

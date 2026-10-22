@@ -46,13 +46,13 @@ examples" target when read as "10–20 total examples."
 
 **Reference-model simulator (lands in Phase 0, ahead of schedule):**
 
-- `tools/sim/reference_model.py` — interprets the contract IR
+- `oracle/legacy/tools/sim/reference_model.py` — interprets the contract IR
   with full access semantics. Tier `Runtime`.
-- `tools/sim/scenarios/uart_basic.py` — 5 scenarios.
-- `tools/sim/scenarios/dma_basic.py` — 6 scenarios.
-- `tools/sim/test_refusal_runtime.py` — runtime twin of the
+- `oracle/legacy/tools/sim/scenarios/uart_basic.py` — 5 scenarios.
+- `oracle/legacy/tools/sim/scenarios/dma_basic.py` — 6 scenarios.
+- `oracle/legacy/tools/sim/test_refusal_runtime.py` — runtime twin of the
   schema-level refusal suite, 11 cases.
-- `python3 tools/sim/run_scenarios.py` — runs all 22.
+- `python3 oracle/legacy/tools/sim/run_scenarios.py` — runs all 22.
 
 This makes the schema's claims falsifiable today: every rule
 in the catalog has a corresponding runtime scenario that
@@ -81,24 +81,24 @@ open question list in [`contract-design.md`](contract-design.md)
 
 **Delivered into this repo:**
 
-- `tools/check/checker.py` — runs the full Static rule catalog
+- `oracle/legacy/tools/check/checker.py` — runs the full Static rule catalog
   from `spec/diagnostics/README.md` §3. Emits the diagnostic
   shape from §2 as JSON, with the stable field order from §4.1.
-- `tools/check/diagnostic.py` — the diagnostic type, shared with
+- `oracle/legacy/tools/check/diagnostic.py` — the diagnostic type, shared with
   the reference-model simulator.
-- `tools/check/conformance.py` — refuses every fixture in
+- `chw conform .` (the retired `conformance.py` was its Python twin) — refuses every fixture in
   `examples/refusal/` per its sidecar, with zero errors on the
   valid examples.
-- `tools/check/checker.py --output json` — the agent-facing CLI
+- `oracle/legacy/tools/check/checker.py --output json` — the agent-facing CLI
   surface. Exit codes match Cancho Core: `0` / `1` / `2` / `3`.
-- `gen/c-header/c_header.py` — the c-header generator.
+- `oracle/legacy/gen/c-header/c_header.py` — the c-header generator.
   Deterministic, byte-identical output for the same IR.
-- `gen/systemverilog/systemverilog.py` — the AXI4-Lite
+- `oracle/legacy/gen/systemverilog/systemverilog.py` — the AXI4-Lite
   register module generator. One-hot address decode, per-
   register storage, per-access-kind write logic, behavior
   output ports for the user to wire up, contract reset
   values applied on `!rst_n`.
-- `tools/generate/generate.py` — the dispatcher. `--target`
+- `oracle/legacy/tools/generate/generate.py` — the dispatcher. `--target`
   selects the generator; unknown targets emit
   `generator-target-unknown`; targets whose implementation is
   not yet on disk emit `generator-unimplemented`.
@@ -113,7 +113,7 @@ open question list in [`contract-design.md`](contract-design.md)
   handling, stable IDs, enum localparams, write-decode and
   read-decode branches). If iverilog, slang, or yosys is on
   `$PATH`, the test also runs a real parse.
-- `tools/parse/parser.py` — the textual `.chw` parser. Hand-
+- `oracle/legacy/tools/parse/parser.py` — the textual `.chw` parser. Hand-
   written tokenizer + recursive descent, no dependencies,
   deterministic, position-accurate `parse-error` diagnostics.
   The grammar is frozen at
@@ -121,18 +121,18 @@ open question list in [`contract-design.md`](contract-design.md)
   §10. `checker.py::check_file` and every script load contracts
   through it, so both source forms flow through the whole
   pipeline.
-- `tools/check/text_format.py` — the `Diagnostic` text
+- `oracle/legacy/tools/check/text_format.py` — the `Diagnostic` text
   formatter (spec §5). Derived from the JSON form: the renderer
   projects each diagnostic onto `to_dict()` and prints only what
   the dict carries. Lanes documented in
   [`spec/diagnostics/README.md`](../spec/diagnostics/README.md)
   §5.1; output pinned byte-for-byte by
-  `tests/text_format/golden.py`. `check` without `--output json`
+  `tests/text_format/golden_cancho.py`. `check` without `--output json`
   renders through it.
 - `examples/textual/uart.chw` and `examples/textual/dma.chw` —
   the two valid peripherals in the frozen text form. Their
   parsed IR is asserted identical (modulo hex case) to the JSON
-  wire forms by `tests/parser/parser_roundtrip.py`.
+  wire forms by `tests/parser/parser_cancho_roundtrip.py`.
 - `examples/refusal/parse-error.chw` — the refusal fixture
   exercising `parse-error` through the conformance suite.
 
@@ -142,7 +142,7 @@ open question list in [`contract-design.md`](contract-design.md)
   (`tests/behavioral/c_behavior.py`): every corpus scenario
   (`tests/behavioral/scenarios.json`, mirroring the 11 Python
   scenarios op-for-op) is executed against BOTH the reference
-  model (`tools/sim/op_runner.py`) and a compiled C harness that
+  model (`oracle/legacy/tools/sim/op_runner.py`) and a compiled C harness that
   binds the generated c-header — block struct as the register
   file, per-register view typedefs overlaid for field RMW,
   RESET_* macros sourced at reset, packed DMA structs, and
@@ -157,7 +157,7 @@ open question list in [`contract-design.md`](contract-design.md)
 
 - SV-side behavioral roundtrip: the SystemVerilog module must be
   driven with the same corpus (`tests/behavioral/scenarios.json`
-  and `tools/sim/op_runner.py`'s trace shape are already
+  and `oracle/legacy/tools/sim/op_runner.py`'s trace shape are already
   engine-agnostic for it) and compared against the reference
   model. This needs hardware-simulation tooling (Verilator or
   cocotb are not in the reference environment); the C-side pair
@@ -169,7 +169,7 @@ open question list in [`contract-design.md`](contract-design.md)
       `examples/simple-dma/dma.chw` pass the checker.
 - [x] Every `examples/refusal/*.chw` is refused with the
       diagnostics named in its sidecar.
-- [x] `tools/check/conformance.py` passes.
+- [x] `chw conform .` (the retired `conformance.py` was its Python twin) passes.
 - [x] `cancho-hdl generate --target c-header` produces
       compile-ready output.
 - [x] `cancho-hdl generate --target systemverilog` produces
@@ -177,11 +177,11 @@ open question list in [`contract-design.md`](contract-design.md)
       slang, or yosys is available).
 - [x] The textual `.chw` syntax is frozen and parsed. Both text
       references parse to the same IR as their JSON twins
-      (`tests/parser/parser_roundtrip.py`), and the checker,
+      (`tests/parser/parser_cancho_roundtrip.py`), and the checker,
       generators, and scripts accept both forms.
 - [x] Every diagnostic can be rendered human-readably, derived
-      from the JSON form (`tools/check/text_format.py`), with
-      the output pinned by `tests/text_format/golden.py`.
+      from the JSON form (`oracle/legacy/tools/check/text_format.py`), with
+      the output pinned by `tests/text_format/golden_cancho.py`.
 
 Stop/rethink if: generated SystemVerilog needs constant
 hand-editing to be usable — that means the contract model is
@@ -196,24 +196,24 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
 
 **Delivered into this repo (complete; only the SV-side behavioral roundtrip remains, needing Verilator or cocotb):**
 
-- `cancho-hdl diff <base> <candidate>` (`tools/diff/diff.py`) —
+- `cancho-hdl diff <base> <candidate>` (`oracle/legacy/tools/diff/diff.py`) —
   the semantic-diff JSON in `spec/diagnostics/README.md` §7,
   with the §7.0 matching/classification/refusal rules and the
-  whole taxonomy pinned by `tests/diff/diff_golden.py`.
+  whole taxonomy pinned by `tests/diff/diff_cancho_golden.py`.
 - `cancho-hdl impact <base> <candidate>` — the §7 document plus
   `affected_artifacts`. Staleness is decided by byte-comparing
   generator output for base vs candidate; implemented targets
   (c-header, systemverilog) get `stale: true/false` with
   reasons, unimplemented ones get `stale: null` ("not checked").
 - The seeded-change exit criterion below is exercised by
-  `tests/diff/diff_golden.py` ("seeded change" section) against
+  `tests/diff/diff_cancho_golden.py` ("seeded change" section) against
   `tests/diff/fixtures/uart_rebase.chw` — the criterion's status
   flips to `[x]` when all five targets participate (three
   generators still pending).
 
 **Delivered into this repo:**
 
-- **`devicetree` generator — landed**: `gen/devicetree/
+- **`devicetree` generator — landed**: `oracle/legacy/gen/devicetree/
   devicetree.py`, pinned by `tests/roundtrip/
   devicetree_generates.py` (shape, determinism, §4.2 reg
   formula, conditional interrupt lines, refusal lane, dispatcher
@@ -221,7 +221,7 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
   byte-comparison set — the seeded change now yields three
   measured `stale: true` rows and two honest `stale: null`s.
 
-- **`cancho-binding` generator — landed**: `gen/cancho-binding/cancho_binding.py`,
+- **`cancho-binding` generator — landed**: `oracle/legacy/gen/cancho-binding/cancho_binding.py`,
   pinned by `tests/roundtrip/
   cancho_binding_validates.py` (accessor palette per register
   kind, uniform register-prefixed names, enum declarations,
@@ -233,7 +233,7 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
   names, widths, kinds — not offsets), so the impact tool
   correctly reports `stale: false` where a rule-based oracle
   would have flagged it.
-- **`svd` generator — landed**: `gen/svd/svd.py`, the CMSIS-SVD
+- **`svd` generator — landed**: `oracle/legacy/gen/svd/svd.py`, the CMSIS-SVD
   XML (schema 1.3 XSD vendored at `spec/generators/CMSIS-SVD.xsd`
   with ARM's license header), pinned by `tests/roundtrip/
   svd_validates.py` (XSD validation via lxml, the §6.1 access
@@ -248,7 +248,7 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
   the map's offsets), and the impact criterion is now
   measured across all five targets with zero `null` rows.
 - Roundtrip suite for all five generators (all five landed).
-- **`cancho-hdl report` — landed**: `tools/report/report.py`
+- **`cancho-hdl report` — landed**: `oracle/legacy/tools/report/report.py`
   produces the §6 evidence report with every mandatory
   `docs/guarantees.md` §3 field (`non_guarantees` restates §2
   verbatim — the golden suite pins the catalog against the
@@ -257,7 +257,7 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
   execute; skipped roundtrips never counted as passed), and the
   report's self-refusals (`report-schema-truncated`,
   `evidence-over-claim`) exercised by
-  `tests/report/report_golden.py` on corrupted copies.
+  `tests/report/report_cancho_golden.py` on corrupted copies.
 
 **Exit criteria:**
 

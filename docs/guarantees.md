@@ -55,7 +55,7 @@ The tier taxonomy (`Static` / `Tested` / `Runtime` / `Trust` /
 In every `cancho-hdl report` JSON, the following are mandatory
 fields. A report that omits any of them is refused with
 `report-schema-truncated` (the report's own refusal codes;
-`tools/report/report.py` §6.3):
+`oracle/legacy/tools/report/report.py` §6.3):
 
 - `non_guarantees`: an array containing every row of §2 above,
   as a structured list (not prose). The report must literally
@@ -70,7 +70,7 @@ fields. A report that omits any of them is refused with
 - `unknown_items`: free-form list of items the report cannot
   classify. An empty list is valid; an absent field is not.
 
-The golden suite `tests/report/report_golden.py` asserts all of
+The golden suite `tests/report/report_cancho_golden.py` asserts all of
 the above: the report's catalog equals the §2 table (set + count),
 and corrupted copies (missing fields, dropped rows, inflated
 counts) are refused by `validate_report` with the two codes above.

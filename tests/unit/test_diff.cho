@@ -2,7 +2,7 @@
 //
 // A base contract and a candidate with ONE change are run through `diff.document`, and the lists the change should
 // have made are looked for in the text, byte for byte. Every expected string was taken from `compute_diff` of
-// tools/diff/diff.py on the same two contracts (docs/cancho-port.md, 33.5); the changes are named by the test.
+// oracle/legacy/tools/diff/diff.py on the same two contracts (docs/cancho-port.md, 33.5); the changes are named by the test.
 //
 //     cancho test tests/unit/test_diff.cho src/*.cho --std
 //     (all of src/ except main.cho and conform.cho)

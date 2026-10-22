@@ -205,36 +205,34 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
    export CANCHO="$PWD/cancho/target/release/cancho"
    pip install jsonschema==4.26.0 lxml
 
-4. Prove the install works. This needs no network, no key and no model. It takes about five minutes:
+4. Prove the install works. This needs no network, no key and no model. It takes about an hour (measured 3,629 s with a second gate running on the same machine; not measured alone):
    cd cancho-hdl
-   sh scripts/gate_cancho.sh ; echo "exit $?"     # must print exit 0 (the script prints no final PASS line)
-   python3 scripts/run_gate.py                     # must end with: GATE PASSED
+   sh scripts/gate.sh ; echo "exit $?"     # must end with: ######## GATE PASSED, then exit 0
 
 5. Use the cancho tool `chw` on the examples (the gate built it at /tmp/chw):
    /tmp/chw validate examples/uart-contract/uart.chw ; echo "exit $?"            # expect exit 0
    /tmp/chw validate examples/refusal/bus-width-invalid.chw ; echo "exit $?"     # expect schema-invalid at a line:column, exit 1
    /tmp/chw parse examples/refusal/parse-error.chw ; echo "exit $?"              # expect parse-error at 2:26, exit 1
    /tmp/chw conform .                                                            # the refusal fixtures, a table
-   python3 tools/diff/diff.py impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
-   The last command is the Python reference implementation (being replaced). It lists which generated artifacts a register-map change makes stale.
+   /tmp/chw impact examples/uart-contract/uart.chw tests/diff/fixtures/uart_rebase.chw --pretty
+   The last command lists which generated artifacts a register-map change makes stale.
 
 6. Tell me, briefly:
-   - whether the gate exited 0 and whether `run_gate.py` ended with GATE PASSED;
+   - whether the gate exited 0 and whether `gate.sh` ended with GATE PASSED;
    - the first line each command printed in step 5, with its exit code, and the last line of `chw conform`;
    - which targets `impact` marked stale;
    - anything that failed, with the exact error.
 Not claimed: that generated hardware works, timing, or a SystemVerilog behavioural check. Docs: README.md, docs/cancho-port.md (what is ported and what is still Python), docs/guarantees.md.</pre>
   </div>
-  <p class="fine">It needs no key and no model, and takes about five minutes (mostly the compiler build and the gate). The same text is in <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/agent-prompt.md">docs/agent-prompt.md</a>, and a Claude Code skill for checking contracts and reading impact reports is in <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/skills/cancho-hdl/SKILL.md">skills/cancho-hdl</a>.</p>
+  <p class="fine">It needs no key and no model, and takes about an hour (mostly the gate; the compiler build is a few minutes). The same text is in <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/agent-prompt.md">docs/agent-prompt.md</a>, and a Claude Code skill for checking contracts and reading impact reports is in <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/skills/cancho-hdl/SKILL.md">skills/cancho-hdl</a>.</p>
 </div></section>
 <section id="try"><div class="wrap">
   <h2>Try it</h2>
-  <p class="lead">The cancho parser needs the <a href="https://github.com/alpibrusl/cancho">cancho</a> compiler. The reference tools need Python 3.</p>
+  <p class="lead">The cancho parser needs the <a href="https://github.com/alpibrusl/cancho">cancho</a> compiler. The Python oracle (not part of the product) needs Python 3.</p>
 <pre class="code"><code>git clone https://github.com/alpibrusl/cancho-hdl.git
 cd cancho-hdl
 export CANCHO=&lt;path-to-the-cancho-binary&gt;
-sh scripts/gate_cancho.sh              # cancho tests, validator and parser vs the Python tools
-python3 scripts/run_gate.py           # the reference gate</code></pre>
+sh scripts/gate.sh           # the product held to the Python oracle, then the oracle's own self-checks</code></pre>
 </div></section>
 
 <section><div class="wrap">
@@ -263,7 +261,7 @@ python3 scripts/run_gate.py           # the reference gate</code></pre>
     ["d", "$ chw conform ."],
     ["g", "== 12 of 12 fixtures matched (19 of 19 sidecar entries …"],
     ["g", "   4 of 4 valid examples without an error (2 warnings)"],
-    ["d", "$ python3 tools/diff/diff.py impact uart.chw uart_rebase.chw"],
+    ["d", "$ python3 oracle/legacy/tools/diff/diff.py impact uart.chw uart_rebase.chw"],
     ["b", "c-header        stale  moved_registers=5; widened_fields=1", {t: 0, c: "hot"}],
     ["g", "cancho-binding  no change (byte-identical output)", {t: 1, c: "ok"}],
     ["b", "devicetree      stale  moved_registers=5; widened_fields=1", {t: 2, c: "hot"}],

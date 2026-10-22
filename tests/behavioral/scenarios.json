@@ -1,6 +1,6 @@
 {
   "$schema": "https://alpibrusl/cancho-hdl/tests/behavioral/scenarios.schema.json (TODO-not-normative)",
-  "description": "Behavioral-roundtrip corpus. One op script per scenario, mirroring the Python scenarios in tools/sim/scenarios/ step for step. Each script is executed against the reference model (tools/sim/op_runner.py), the compiled C harness (tests/behavioral/c_device.c) and eventually the SystemVerilog module; the traces must match. There are no expected values here — expectations live in the reference model (the oracle); refusal expectations are part of the op stream itself (an op the oracle refuses produces ERR <code> in both engines' traces).",
+  "description": "Behavioral-roundtrip corpus. One op script per scenario, mirroring the Python scenarios in oracle/legacy/tools/sim/scenarios/ step for step. Each script is executed against the reference model (oracle/legacy/tools/sim/op_runner.py), the compiled C harness (tests/behavioral/c_device.c) and eventually the SystemVerilog module; the traces must match. There are no expected values here — expectations live in the reference model (the oracle); refusal expectations are part of the op stream itself (an op the oracle refuses produces ERR <code> in both engines' traces).",
   "scenarios": [
     {
       "contract": "examples/uart-contract/uart.chw",

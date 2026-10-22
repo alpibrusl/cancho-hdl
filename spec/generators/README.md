@@ -111,7 +111,7 @@ typedef struct {
 ## 3. `cancho-binding` — Cancho driver-side declarations
 
 > **Status: Phase 2 — landed.** Implemented at
-> `gen/cancho-binding/cancho_binding.py`; pinned by
+> `oracle/legacy/gen/cancho-binding/cancho_binding.py`; pinned by
 > `tests/roundtrip/cancho_binding_validates.py`.
 
 **Phase:** Phase 2.
@@ -214,7 +214,7 @@ pinned by the roundtrip suite):
 ## 4. `devicetree` — DTSI fragment
 
 > **Status: Phase 2 — landed.** Implemented at
-> `gen/devicetree/devicetree.py`; pinned by
+> `oracle/legacy/gen/devicetree/devicetree.py`; pinned by
 > `tests/roundtrip/devicetree_generates.py`.
 
 **Phase:** Phase 2.

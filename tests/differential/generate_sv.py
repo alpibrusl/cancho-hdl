@@ -1,5 +1,5 @@
 """Test-only oracle driver for stage 7 (docs/cancho-port.md, 29.5): compare the cancho SystemVerilog generator
-(`chw generate FILE --target systemverilog`) with the Python tool (`tools/generate/generate.py --target systemverilog FILE`).
+(`chw generate FILE --target systemverilog`) with the Python tool (`oracle/legacy/tools/generate/generate.py --target systemverilog FILE`).
 
 The same three parts as generate_binding.py (which this file copies the shape of; that file runs on import, so it cannot
 be imported), with the same difference from the earlier generators: **there is no tool for the output on this machine**
@@ -47,7 +47,7 @@ spec = importlib.util.spec_from_file_location("check_json", HERE / "check_json.p
 check_json = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check_json)
 
-sys.path.insert(0, str(ROOT / "tools" / "generate"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "generate"))
 import generate as pygen  # noqa: E402  (the oracle)
 
 EXE = sys.argv[1]

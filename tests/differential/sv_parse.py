@@ -1,5 +1,5 @@
 """Test-only oracle driver for the SystemVerilog output of both tools (docs/cancho-port.md, 34): does a SystemVerilog
-parser accept what `chw generate --target systemverilog` and `tools/generate/generate.py --target systemverilog` write?
+parser accept what `chw generate --target systemverilog` and `oracle/legacy/tools/generate/generate.py --target systemverilog` write?
 
 Byte equality of the two tools (tests/differential/generate_sv.py) shows the port is faithful to the Python tool; it shows
 nothing about whether the RTL is RTL. This runs `iverilog -g2012 -tnull` (parse and elaborate, write nothing) on the output
@@ -41,7 +41,7 @@ def generate_cancho(path):
 
 
 def generate_python(path):
-    p = subprocess.run([sys.executable, "tools/generate/generate.py", str(path), "--target", "systemverilog"],
+    p = subprocess.run([sys.executable, "oracle/legacy/tools/generate/generate.py", str(path), "--target", "systemverilog"],
                        capture_output=True, text=True, errors="replace", cwd=ROOT)
     return p.returncode, p.stdout
 

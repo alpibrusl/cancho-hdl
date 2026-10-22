@@ -1,5 +1,5 @@
 """Test-only oracle driver for `ran` (docs/cancho-port.md, 32): compare the rule groups `chw check FILE --ran` reports
-with the `ran` set `tools/check/checker.py` fills in (`check(ir, ran=...)`), on the same inputs as
+with the `ran` set `oracle/legacy/tools/check/checker.py` fills in (`check(ir, ran=...)`), on the same inputs as
 tests/differential/check_json.py: every fixture, and every mutant of it.
 
 The Python side is `checker.load_contract` then `checker.check(ir, ran=...)` in this process, `sorted(ran)` one name per

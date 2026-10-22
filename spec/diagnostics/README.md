@@ -152,7 +152,7 @@ line and column; fixtures for each sub-tag are in `tests/stage1/`.
 
 **The cancho checker's output (stage 2 of the port plan).** `chw check FILE
 --output json` prints exactly the shape of section 4 (`Diagnostic.to_json()` of
-`tools/check/diagnostic.py`), and the structural diagnostics in the words
+`oracle/legacy/tools/check/diagnostic.py`), and the structural diagnostics in the words
 `checker.py` gives them: `schema validation failed: ` and the `jsonschema` message,
 the pointer as a list in the subject, `expected` the schema's name. Its sub-tags
 and positions are not in that shape, so they appear only with `--located`: the
@@ -295,11 +295,11 @@ The human-readable form is parallel. `cancho-hdl check` without
 `--output json` prints one block per diagnostic.
 
 **The text form is derived from the JSON form**, not the other
-way around. The renderer (`tools/check/text_format.py`) projects
+way around. The renderer (`oracle/legacy/tools/check/text_format.py`) projects
 the diagnostic onto its JSON dict (`—output json`'s exact value)
 and renders only what the dict carries. No `span` in the JSON →
 no `-->` line; no `remediation` → no `help:` line. This is a
-tested property (`tests/text_format/golden.py`, "derivation
+tested property (`tests/text_format/golden_cancho.py`, "derivation
 property"), not a style note.
 
 ### 5.1 The lanes
@@ -354,8 +354,8 @@ the hardware semantics).
 ## 6. The evidence report
 
 > **Status: Phase 2 — landed.** Implemented at
-> `tools/report/report.py`; pinned by
-> `tests/report/report_golden.py`. The example below is the
+> `oracle/legacy/tools/report/report.py`; pinned by
+> `tests/report/report_cancho_golden.py`. The example below is the
 > landed shape: it adds `input`, the top-level restatements of
 > §6.1, and `unknown.static_checks_not_run` to the Phase 0
 > sketch.
@@ -470,7 +470,7 @@ the not-run list (the code is promoted into `checks_run`).
 
 ### 6.3 The report's own refusals
 
-`validate_report` (tools/report/report.py) refuses an (alleged)
+`validate_report` (oracle/legacy/tools/report/report.py) refuses an (alleged)
 report with exactly two codes — both live outside the §3 rule
 catalog because they are refusals against the *report artifact*,
 not against a contract:
@@ -486,14 +486,14 @@ not against a contract:
 
 The conformance `evidence-over-claim` lane is this function fed
 intentionally corrupted report copies
-(`tests/report/report_golden.py`).
+(`tests/report/report_cancho_golden.py`).
 
 ---
 
 ## 7. The semantic-diff output
 
 > **Status: Phase 2 — landed.** Implemented at
-> `tools/diff/diff.py`; pinned by `tests/diff/diff_golden.py`.
+> `oracle/legacy/tools/diff/diff.py`; pinned by `tests/diff/diff_cancho_golden.py`.
 
 `cancho-hdl diff <base> <candidate>` produces a JSON document
 listing the semantic changes between two contract IRs.
@@ -655,9 +655,9 @@ refuses with `ir-version-unsupported` for IR inputs and
   refusal fixture in `examples/refusal/` and one snapshot test
   under `tests/conformance/diagnostics.rs`.
 - The JSON serializer for `Diagnostic` in §4.
-- [x] The text formatter for §5 (`tools/check/text_format.py`),
+- [x] The text formatter for §5 (`oracle/legacy/tools/check/text_format.py`),
   derived from the JSON form; the interpretive contract is §5.1
-  and the pinned output is `tests/text_format/golden.py`.
+  and the pinned output is `tests/text_format/golden_cancho.py`.
 - A `tests/diagnostics.rs` snapshot test that pins every
   fixture's diagnostic output, so the schema does not drift.
 
@@ -669,8 +669,8 @@ schema bump.
 
 ## 10. Phase 2 landing record (this repo)
 
-- [x] §7 — the semantic-diff document: `tools/diff/diff.py`,
-      pinned by `tests/diff/diff_golden.py` (identity across
+- [x] §7 — the semantic-diff document: `oracle/legacy/tools/diff/diff.py`,
+      pinned by `tests/diff/diff_cancho_golden.py` (identity across
       source forms, determinism, refusals of invalid contracts,
       classification units, the seeded roadmap change from
       `tests/diff/fixtures/uart_rebase.chw`).
@@ -679,13 +679,13 @@ schema bump.
       report `stale: null` ("not checked"), never "no change."
       The sketch's `path` field is omitted (no build graph;
       see §7.1).
-- [x] §6 — the evidence report: `tools/report/report.py`,
-      pinned by `tests/report/report_golden.py` (verbatim
+- [x] §6 — the evidence report: `oracle/legacy/tools/report/report.py`,
+      pinned by `tests/report/report_cancho_golden.py` (verbatim
       non-guarantee restatement, arithmetic provenance,
       skipped-vs-run discipline, and the §6.3 refusal codes fed
       corrupted copies).
 - [ ] Remaining Phase 2 generators: `cancho-binding`
-      **landed** (`gen/cancho-binding/cancho_binding.py`,
+      **landed** (`oracle/legacy/gen/cancho-binding/cancho_binding.py`,
       pinned by `tests/roundtrip/cancho_binding_validates.py`;
       palette + DEVICE-no-setter + shared size refusal; joins
       the impact byte-comparison set — where it proved the

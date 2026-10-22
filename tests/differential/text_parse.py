@@ -11,8 +11,8 @@ This file is oracle code only: it decides nothing about the product."""
 import pathlib, re, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "parse"))
-sys.path.insert(0, str(ROOT / "tools" / "check"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "parse"))
+sys.path.insert(0, str(ROOT / "oracle" / "legacy" / "tools" / "check"))
 from parser import parse_source_text  # noqa: E402
 import json  # noqa: E402
 

@@ -1,5 +1,5 @@
 """Test-only oracle driver for stage 5 (docs/cancho-port.md, 33): compare `chw diff` and `chw impact` with
-`tools/diff/diff.py`, on pairs of contracts.
+`oracle/legacy/tools/diff/diff.py`, on pairs of contracts.
 
 The pairs are the inputs of the checker's differential (tests/differential/check_json.py) taken two at a time:
   * each valid example, the refusal fixtures, tests/stage1 and tests/stage2 against itself and against every valid
@@ -38,7 +38,7 @@ ROOT = cj.ROOT
 EXE = cj.EXE
 SCHEMA = cj.SCHEMA
 
-spec = importlib.util.spec_from_file_location("diffpy", ROOT / "tools" / "diff" / "diff.py")
+spec = importlib.util.spec_from_file_location("diffpy", ROOT / "oracle" / "legacy" / "tools" / "diff" / "diff.py")
 D = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(D)
 

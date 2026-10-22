@@ -1,6 +1,6 @@
 module chw.diff;
 
-// diff.cho -- `compute_diff` of tools/diff/diff.py: the semantic diff of two contracts, as the text of the
+// diff.cho -- `compute_diff` of oracle/legacy/tools/diff/diff.py: the semantic diff of two contracts, as the text of the
 // document `json.dumps` writes (docs/cancho-port.md, 33).
 //
 // Each of the sixteen lists of the document is one pass over the two inputs, so the order within a list is the

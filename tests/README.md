@@ -3,7 +3,7 @@
 > **Status: Phase 1 complete; Phase 2 in progress.** Conformance,
 > refusal, c-header and systemverilog roundtrips, the textual
 > parser roundtrip, the formatter golden, and the diff/impact
-> golden are implemented and gated by `scripts/run_gate.py`.
+> golden are implemented and gated by `scripts/gate.sh`.
 
 | Directory | Phase | Contents |
 |---|---|---|
@@ -24,14 +24,14 @@
 
 - [x] `tests/conformance/valid.rs` equivalent — every example in
       `examples/MANIFEST.json#valid` passes the checker.
-      (Lives at `tools/check/conformance.py`.)
+      (Lives at `chw conform .` (the retired `conformance.py` was its Python twin).)
 - [x] `tests/conformance/refusal.rs` equivalent — every sidecar
       in `examples/refusal/` is matched by the checker's output.
-      (Lives at `tools/check/conformance.py`.)
+      (Lives at `chw conform .` (the retired `conformance.py` was its Python twin).)
 - [x] `tests/conformance/diagnostics.rs` equivalent — every
       rule code in `spec/diagnostics/README.md` §3 has a
       snapshot test that pins the diagnostic JSON shape.
-      (Live conformance in `tools/check/conformance.py`; full
+      (Live conformance in `chw conform .` (the retired `conformance.py` was its Python twin); full
       snapshot pinning lands in Phase 2.)
 
 ## Phase 1 roundtrip minimum
@@ -51,13 +51,13 @@
 
 ## Phase 2 (in progress)
 
-- [x] `tests/diff/diff_golden.py` — the semantic-diff document
+- [x] `tests/diff/diff_cancho_golden.py` — the semantic-diff document
       and impact list are pinned: identity across source forms,
       determinism, the seeded roadmap change
       (`fixtures/uart_rebase.chw`), refusal of invalid
       contracts, and the widened/narrowed/repositioned
       classification units.
-- [x] `tests/report/report_golden.py` — the §6 evidence report
+- [x] `tests/report/report_cancho_golden.py` — the §6 evidence report
       is pinned: the non-guarantee catalog equals the
       `docs/guarantees.md` §2 table byte-for-byte, the report's
       counts are arithmetically derivable from what ran, refused
