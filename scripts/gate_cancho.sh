@@ -1,9 +1,9 @@
 #!/bin/sh
 # The gate for the cancho half of the repository (docs/cancho-port.md, 9.7).
 # Needs the built cancho compiler (CANCHO, default ../cancho/target/release/cancho)
-# and python3, which is used ONLY as the oracle: the legacy parser and
-# jsonschema in tests/differential/. `python3 scripts/run_gate.py` is the
-# separate gate for the Python reference implementation.
+# and python3, which is used ONLY as the oracle: the legacy reference implementation under oracle/legacy and jsonschema, driven
+# by tests/differential/ and tests/mutation/. `python3 oracle/legacy/run_gate.py` is the oracle's own gate (its self-checks).
+# `scripts/gate.sh` runs both.
 #
 #   1  cancho fmt --check            src/ tests/unit/
 #   2  cancho check                  the program (src/*.cho), refusal-free
@@ -34,6 +34,9 @@
 #  8i diff and impact               `chw diff` and `chw impact` against oracle/legacy/tools/diff/diff.py, bytes and exit status
 #  8j the SystemVerilog output       both tools' modules through iverilog: the verdicts must agree (both refuse them, 34)
 #  8k the evidence report           `chw report` against oracle/legacy/tools/report/report.py, bytes and exit status; `validate_report` against `--validate`
+#  8l the claims of the Python goldens, held against the binary: the text form of `chw check`, `chw diff` and `chw impact` on the
+#                                    seeded change, the textual parser's twin of the JSON form, and the C-side behavioral roundtrip (the
+#                                    header `chw generate` writes, compiled with gcc and clang, run op for op against the reference model)
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -41,8 +44,7 @@ set -eu
 cd "$(dirname "$0")/.."
 CANCHO=${CANCHO:-../cancho/target/release/cancho}
 OUT=${TMPDIR:-/tmp}/chw
-LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho src/gen_svd.cho src/gen_binding.cho src/gen_sv.cho src/diff_util.cho src/diff.cho src/diff_fmt.cho src/impact.cho src/report_data.cho src/report.cho src/report_check.cho"
-PROGRAM="src/main.cho $LIB src/io.cho src/conform.cho"
+. scripts/sources.sh
 
 echo "== 1 fmt"
 "$CANCHO" fmt --check src tests/unit
@@ -170,6 +172,12 @@ echo "== 8k the evidence report against report.py"
 # five reports (docs/cancho-port.md, 35).
 python3 tests/report/report_cancho_golden.py "$OUT"
 python3 tests/differential/report_cmp.py "$OUT" --real-lanes --stride 3
+
+echo "== 8l the claims of the Python goldens, held against the binary"
+python3 tests/text_format/golden_cancho.py "$OUT"
+python3 tests/diff/diff_cancho_golden.py "$OUT"
+python3 tests/parser/parser_cancho_roundtrip.py "$OUT"
+python3 tests/behavioral/c_behavior.py "$OUT"
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"

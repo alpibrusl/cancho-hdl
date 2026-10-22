@@ -1,0 +1,4 @@
+# The source files of the chw program, in one place: the gate (gate_cancho.sh) and the build (build.sh) both read it.
+# Sourced, not run. LIB is every module; PROGRAM is the entry point, the library and the two modules that touch a Dir.
+LIB="src/lex.cho src/ir.cho src/parse.cho src/json_out.cho src/json_in.cho src/diag.cho src/pyrepr.cho src/pattern.cho src/schema.cho src/front.cho src/load.cho src/diagnostic.cho src/hexval.cho src/check_util.cho src/check_block.cho src/check_regs.cho src/check_intr.cho src/check_dma.cho src/check.cho src/dg_json.cho src/dg_text.cho src/dg_report.cho src/gen_c.cho src/gen_dts.cho src/gen_svd.cho src/gen_binding.cho src/gen_sv.cho src/diff_util.cho src/diff.cho src/diff_fmt.cho src/impact.cho src/report_data.cho src/report.cho src/report_check.cho"
+PROGRAM="src/main.cho $LIB src/io.cho src/conform.cho"

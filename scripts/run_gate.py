@@ -1,6 +1,7 @@
 """Run the full Phase 0+2 gate.
 
-Thirteen checks, in order:
+Twelve checks, in order (the thirteenth, the C behavioral roundtrip, runs from scripts/gate_cancho.sh step 8l against
+the built chw binary, not against this reference implementation):
 
 1. Schema validates the valid examples in both source forms and
    reports the schema-level refusals (`scripts/verify_examples.py`).
@@ -31,14 +32,7 @@ Thirteen checks, in order:
     when lxml is available), the §6.1 access mapping, and the
     §6.2/§6.3 reset / interrupt / DMA comment rule
     (`tests/roundtrip/svd_validates.py`).
-13. The C-side behavioral roundtrip drives every corpus scenario
-    op-for-op through the generated c-header (compiled with gcc and
-    clang) and the reference model, and asserts identical traces —
-    including refusals, with seeded-drift negative lanes
-    (`tests/behavioral/c_behavior.py`). The SystemVerilog half of the
-    same criterion still needs Verilator/cocotb.
-
-All thirteen must pass for this script to exit 0. Any failure
+All twelve must pass for this script to exit 0. Any failure
 exits 1.
 """
 
@@ -73,7 +67,6 @@ def main() -> int:
     rc |= run("devicetree roundtrip (§4 structural + dtc when available)", [sys.executable, "tests/roundtrip/devicetree_generates.py"])
     rc |= run("cancho-binding roundtrip (§3 palette + DEVICE no-setter)", [sys.executable, "tests/roundtrip/cancho_binding_validates.py"])
     rc |= run("svd roundtrip (§6 XSD + access mapping + comment lane)", [sys.executable, "tests/roundtrip/svd_validates.py"])
-    rc |= run("C-side behavioral roundtrip (generated header vs reference model)", [sys.executable, "tests/behavioral/c_behavior.py"])
     print()
     if rc:
         print("== GATE FAILED ==")

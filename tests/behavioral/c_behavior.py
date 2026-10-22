@@ -4,7 +4,8 @@ For each valid example contract used by the corpus
 (`tests/behavioral/scenarios.json`, mirroring the 11 Python scenarios
 step for step):
 
-1. Generate the c-header into a temp dir (the artifact under test).
+1. Generate the c-header into a temp dir with the PRODUCT (`chw generate FILE --target c-header`, the binary named on the
+   command line; the artifact under test).
 2. Emit `<block>_wiring.h` from the same IR: semantic tables (access
    kinds, field ranges, enum membership, DMA owners/sizes, interrupt
    linkages), the storage instances binding the header's member names,
@@ -29,7 +30,7 @@ the SystemVerilog behavioral roundtrip (Verilator or cocotb)
 remains the generated-RTL half of the same criterion.
 
 Run from anywhere:
-    python3 tests/behavioral/c_behavior.py
+    python3 tests/behavioral/c_behavior.py /path/to/built/chw
 """
 
 from __future__ import annotations
@@ -49,7 +50,8 @@ from parser import load_contract  # noqa: E402
 from reference_model import ReferenceModel  # noqa: E402
 from op_runner import run_script  # noqa: E402
 
-# oracle/legacy/gen/c-header/c_header.py loads by spec (its directory has a dash,
+# Only the two name helpers of the oracle generator are used below (the C names the wiring must spell); the header
+# under test is the product's. oracle/legacy/gen/c-header/c_header.py loads by spec (its directory has a dash,
 # so a plain sys.path import cannot name it) — the same discipline
 # as the roundtrip suites.
 _ch_spec = importlib.util.spec_from_file_location(
@@ -298,11 +300,16 @@ def main() -> int:
     scenarios = corpus["scenarios"]
     expect(bool(scenarios), "corpus non-empty")
 
-    spec = importlib.util.spec_from_file_location(
-        "cancho_hdl_gen_c_header", ROOT / "oracle" / "legacy" / "gen" / "c-header" / "c_header.py")
-    gen_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gen_mod)
-    generate_header = gen_mod.generate
+    if len(sys.argv) < 2:
+        expect(False, "the built chw binary is named on the command line")
+        return 1
+    chw = sys.argv[1]
+
+    def generate_header(cpath: str) -> str:
+        proc = subprocess.run([chw, "generate", cpath, "--target", "c-header"], capture_output=True, text=True,
+                              cwd=str(ROOT))
+        expect(proc.returncode == 0, f"{cpath}: chw generate --target c-header", proc.stderr[:400])
+        return proc.stdout
 
     with tempfile.TemporaryDirectory(prefix="c-behavior-") as td:
         tmp = pathlib.Path(td)
@@ -312,7 +319,7 @@ def main() -> int:
             if cpath in built:
                 continue
             ir, _ = load_contract(str(ROOT / cpath))
-            header_src = generate_header(ir, source_path=str(cpath))
+            header_src = generate_header(str(cpath))
             header_name = f"{_to_lower_snake(ir['block']['name'])}.h"
             wiring_name = f"{_to_lower_snake(ir['block']['name'])}_wiring.h"
             wiring_src = emit_wiring(ir, header_name)
