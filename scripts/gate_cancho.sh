@@ -32,7 +32,7 @@
 #                                    bytes on every fixture and mutant (no RTL tool on the runner: the Python bytes are the oracle)
 #  8h the rule groups that ran      `chw check --ran` against `checker.check(ir, ran=...)`, the fixtures and the mutants
 #  8i diff and impact               `chw diff` and `chw impact` against oracle/legacy/tools/diff/diff.py, bytes and exit status
-#  8j the SystemVerilog output       both tools' modules through iverilog: the verdicts must agree (both refuse them, 34)
+#  8j the SystemVerilog output       both tools' modules through iverilog: both must accept every one, and agree (34.5)
 #  8k the evidence report           `chw report` against oracle/legacy/tools/report/report.py, bytes and exit status; `validate_report` against `--validate`
 #  8l the claims of the Python goldens, held against the binary: the text form of `chw check`, `chw diff` and `chw impact` on the
 #                                    seeded change, the textual parser's twin of the JSON form, and the C-side behavioral roundtrip (the
@@ -160,9 +160,8 @@ echo "== 8i diff and impact against diff.py"
 python3 tests/differential/diff_cmp.py "$OUT"
 
 echo "== 8j SystemVerilog output read by a parser (iverilog)"
-# Both tools' modules through `iverilog -g2012 -tnull`: today it refuses every one, in both, for the same two reasons
-# (docs/cancho-port.md, 34); the step fails only if the two tools disagree, and does nothing if iverilog is not installed
-# (CI does not install it, 34.3: the Python reference gate's own roundtrip lane then fails).
+# Both tools' modules through `iverilog -g2012 -tnull`: it must accept every one (docs/cancho-port.md, 34.5, issue 14); the step
+# fails if it refuses one or if the two tools disagree, and does nothing if iverilog is not installed (CI installs it).
 python3 tests/differential/sv_parse.py "$OUT"
 
 echo "== 8k the evidence report against report.py"

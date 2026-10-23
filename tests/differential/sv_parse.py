@@ -10,11 +10,9 @@ The step fails only if
 
   * `--require` is given and `iverilog` is not on the PATH, or
   * the two tools' outputs for one contract get different verdicts (accepted by one, refused by the other) or different
-    first diagnostics, which equal bytes cannot do; so it is a guard for the day the generators are changed on one side.
-
-It does NOT fail because the RTL is refused by the parser: at the time of writing every generated module is (34.1), in
-both tools, and the port reproduces the Python tool on purpose. Fixing the generator is a change to the reference
-implementation too and is filed (34.3), not made here.
+    first diagnostics, which equal bytes cannot do; so it is a guard for the day the generators are changed on one side, or
+  * `iverilog` refuses a module of either tool. It refused every one until issue 14 was fixed in both tools (34.1, 34.5);
+    now a refusal is a regression of the generator, and the step says which contract and the first diagnostic.
 
 Usage:
 
@@ -89,7 +87,9 @@ def main():
     print(f"{len(bad)} contracts on which the two tools' verdicts differ")
     for b in bad:
         print("DIFFERENT", b)
-    sys.exit(1 if bad else 0)
+    refused = tally["generated"] * 2 - tally["accepted by iverilog (cancho)"] - tally["accepted by iverilog (python)"]
+    print(f"{refused} modules refused by iverilog")
+    sys.exit(1 if bad or refused else 0)
 
 
 if __name__ == "__main__":

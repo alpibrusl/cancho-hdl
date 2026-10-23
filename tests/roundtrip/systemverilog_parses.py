@@ -77,7 +77,7 @@ def _check_address_localparams(src: str, registers: list[dict]) -> list[str]:
     for reg in registers:
         name = reg["name"]
         offset = int(reg["offset"], 16)
-        pattern = rf"ADDR_{name}\s*=\s*ADDR_WIDTH'h{offset:08x}"
+        pattern = rf"ADDR_{name}\s*=\s*'h{offset:08x}"
         if not re.search(pattern, src):
             notes.append(f"missing or wrong ADDR_{name} localparam (expected 0x{offset:08x})")
     return notes
@@ -89,11 +89,11 @@ def _check_reset_values(src: str, registers: list[dict]) -> list[str]:
         rn = reg["name"].lower()
         if "reset" in reg:
             reset_val = int(reg["reset"], 16)
-            expected = f"r_{rn} <= DATA_WIDTH'h{reset_val:08x}"
+            expected = f"r_{rn} <= 'h{reset_val:08x}"
             if expected not in src:
                 notes.append(f"missing reset assignment `{expected}` for register {reg['name']}")
         else:
-            expected = f"r_{rn} <= DATA_WIDTH'h0"
+            expected = f"r_{rn} <= 'h0"
             if expected not in src:
                 notes.append(f"missing zero-reset assignment `{expected}` for register {reg['name']}")
     return notes
@@ -117,7 +117,7 @@ def _check_access_kind_handling(src: str, registers: list[dict]) -> list[str]:
             if f"r_{rn} <= r_{rn} & ~s_axi_wdata" not in src:
                 notes.append(f"W0S register {reg['name']} missing `r_{rn} & ~s_axi_wdata` write logic")
         elif kind == "RC":
-            if f"r_{rn} <= DATA_WIDTH'h0" not in src:
+            if f"r_{rn} <= 'h0" not in src:
                 notes.append(f"RC register {reg['name']} missing clear-on-write logic")
     return notes
 
