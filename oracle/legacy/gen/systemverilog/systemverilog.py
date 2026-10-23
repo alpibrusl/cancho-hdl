@@ -75,7 +75,7 @@ def _emit_id(out: io.StringIO, *parts: str) -> None:
 def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
     block = ir["block"]
     block_name: str = block["name"]
-    bus_width: int = block["bus_width"]
+    bus_width: int = int(block["bus_width"])
     base_address: int = int(block["base_address"], 16)
     module_name = _to_lower_snake(block_name) + "_axi"
 
@@ -115,14 +115,14 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
     out.write("    output wire [DATA_WIDTH-1:0]      s_axi_rdata,\n")
     out.write("    output wire [1:0]                 s_axi_rresp,\n")
     out.write("    output wire                       s_axi_rvalid,\n")
-    out.write("    input  wire                       s_axi_rready,\n")
+    out.write("    input  wire                       s_axi_rready" + ("," if block.get("registers") else "") + "\n")
     out.write("\n")
 
     # Per-register behavior output ports
     registers = sorted(block.get("registers", []), key=lambda r: int(r["offset"], 16))
-    for reg in registers:
+    for n, reg in enumerate(registers):
         out.write(
-            f"    output wire [DATA_WIDTH-1:0]      reg_{_to_lower_snake(reg['name'])}_out,  "
+            f"    output wire [DATA_WIDTH-1:0]      reg_{_to_lower_snake(reg['name'])}_out{',' if n + 1 < len(registers) else ' '}  "
             f"// chw:{block_name}.register.{reg['name']}\n"
         )
     out.write(");\n\n")
@@ -134,7 +134,7 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
         offset = int(reg["offset"], 16)
         out.write(
             f"    localparam [ADDR_WIDTH-1:0] ADDR_{reg['name']} = "
-            f"ADDR_WIDTH'h{offset:08x};  // chw:{block_name}.register.{reg['name']}\n"
+            f"'h{offset:08x};  // chw:{block_name}.register.{reg['name']}\n"
         )
     out.write("\n")
 
@@ -183,12 +183,12 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
         if "reset" in reg:
             reset_val = int(reg["reset"], 16)
             out.write(
-                f"            r_{rn} <= DATA_WIDTH'h{reset_val:0{bus_width // 4}x};  "
+                f"            r_{rn} <= 'h{reset_val:0{bus_width // 4}x};  "
                 f"// chw:{block_name}.register.{reg['name']}\n"
             )
         else:
             out.write(
-                f"            r_{rn} <= DATA_WIDTH'h0;  "
+                f"            r_{rn} <= 'h0;  "
                 f"// chw:{block_name}.register.{reg['name']} (reset undefined)\n"
             )
     out.write("        end\n")
@@ -243,7 +243,7 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
                 )
             elif kind == "RC":
                 out.write(
-                    f"        if ({cond}) r_{rn} <= DATA_WIDTH'h0;  // RC: read clears, write has no effect\n"
+                    f"        if ({cond}) r_{rn} <= 'h0;  // RC: read clears, write has no effect\n"
                 )
             else:
                 out.write(
@@ -262,7 +262,7 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
     out.write("    reg [DATA_WIDTH-1:0] rdata;\n")
     out.write("    reg                  rdata_valid;\n")
     out.write("    always @(*) begin\n")
-    out.write("        rdata = DATA_WIDTH'h0;\n")
+    out.write("        rdata = 'h0;\n")
     out.write("        rdata_valid = 1'b0;\n")
     for reg in registers:
         rn = _to_lower_snake(reg["name"])
@@ -276,7 +276,7 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
             out.write(
                 f"            // WO register: reads return 0 (the spec notes this is a write-only register).\n"
             )
-            out.write(f"            rdata = DATA_WIDTH'h0;\n")
+            out.write(f"            rdata = 'h0;\n")
         else:
             out.write(f"            rdata = r_{rn};\n")
         out.write(f"            rdata_valid = 1'b1;\n")

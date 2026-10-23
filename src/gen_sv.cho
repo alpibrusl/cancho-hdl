@@ -40,7 +40,7 @@ fn sv_param_addr() -> [] &static [byte] {
 }
 
 fn sv_ports() -> [] &static [byte] {
-    return ") (\n    input  wire                       clk,\n    input  wire                       rst_n,\n\n    // AXI4-Lite write address channel\n    input  wire [ADDR_WIDTH-1:0]      s_axi_awaddr,\n    input  wire                       s_axi_awvalid,\n    output wire                       s_axi_awready,\n\n    // AXI4-Lite write data channel\n    input  wire [DATA_WIDTH-1:0]      s_axi_wdata,\n    input  wire [DATA_WIDTH/8-1:0]    s_axi_wstrb,\n    input  wire                       s_axi_wvalid,\n    output wire                       s_axi_wready,\n\n    // AXI4-Lite write response channel\n    output wire [1:0]                 s_axi_bresp,\n    output wire                       s_axi_bvalid,\n    input  wire                       s_axi_bready,\n\n    // AXI4-Lite read address channel\n    input  wire [ADDR_WIDTH-1:0]      s_axi_araddr,\n    input  wire                       s_axi_arvalid,\n    output wire                       s_axi_arready,\n\n    // AXI4-Lite read data channel\n    output wire [DATA_WIDTH-1:0]      s_axi_rdata,\n    output wire [1:0]                 s_axi_rresp,\n    output wire                       s_axi_rvalid,\n    input  wire                       s_axi_rready,\n\n";
+    return ") (\n    input  wire                       clk,\n    input  wire                       rst_n,\n\n    // AXI4-Lite write address channel\n    input  wire [ADDR_WIDTH-1:0]      s_axi_awaddr,\n    input  wire                       s_axi_awvalid,\n    output wire                       s_axi_awready,\n\n    // AXI4-Lite write data channel\n    input  wire [DATA_WIDTH-1:0]      s_axi_wdata,\n    input  wire [DATA_WIDTH/8-1:0]    s_axi_wstrb,\n    input  wire                       s_axi_wvalid,\n    output wire                       s_axi_wready,\n\n    // AXI4-Lite write response channel\n    output wire [1:0]                 s_axi_bresp,\n    output wire                       s_axi_bvalid,\n    input  wire                       s_axi_bready,\n\n    // AXI4-Lite read address channel\n    input  wire [ADDR_WIDTH-1:0]      s_axi_araddr,\n    input  wire                       s_axi_arvalid,\n    output wire                       s_axi_arready,\n\n    // AXI4-Lite read data channel\n    output wire [DATA_WIDTH-1:0]      s_axi_rdata,\n    output wire [1:0]                 s_axi_rresp,\n    output wire                       s_axi_rvalid,\n    input  wire                       s_axi_rready";
 }
 
 fn sv_ports_end() -> [] &static [byte] {
@@ -80,7 +80,7 @@ fn sv_read_hdr() -> [] &static [byte] {
 }
 
 fn sv_read_body() -> [] &static [byte] {
-    return "    reg [DATA_WIDTH-1:0] rdata;\n    reg                  rdata_valid;\n    always @(*) begin\n        rdata = DATA_WIDTH'h0;\n        rdata_valid = 1'b0;\n";
+    return "    reg [DATA_WIDTH-1:0] rdata;\n    reg                  rdata_valid;\n    always @(*) begin\n        rdata = 'h0;\n        rdata_valid = 1'b0;\n";
 }
 
 fn sv_read_close() -> [] &static [byte] {
@@ -281,7 +281,7 @@ fn put_write_logic[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte
         return gc.put(heap, o, " | s_axi_wdata;\n");
     }
     if bytes.equal(kind, "RC") {
-        return gc.put(heap, put_write_head(heap, o, src, ir, r), "DATA_WIDTH'h0;  // RC: read clears, write has no effect\n");
+        return gc.put(heap, put_write_head(heap, o, src, ir, r), "'h0;  // RC: read clears, write has no effect\n");
     }
     o = gc.put(heap, o, "        // Unknown kind ");
     o = pyrepr.str_repr(heap, o, kind);
@@ -295,7 +295,7 @@ fn put_read_branch[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte
     o = gc.put(heap, o, ")) begin\n");
     if bytes.equal(src[r.kind_s..r.kind_e], "WO") {
         o = gc.put(heap, o, "            // WO register: reads return 0 (the spec notes this is a write-only register).\n");
-        o = gc.put(heap, o, "            rdata = DATA_WIDTH'h0;\n");
+        o = gc.put(heap, o, "            rdata = 'h0;\n");
     } else {
         o = put_snake_register(heap, gc.put(heap, o, "            rdata = r_"), src, r);
         o = gc.put(heap, o, ";\n");
@@ -350,11 +350,21 @@ pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte],
         o = gc.put_int(heap, o, b.width);
         o = gc.put(heap, o, "\n");
         o = gc.put(heap, o, sv_ports());
+        if nregs > 0 {
+            o = gc.put(heap, o, ",");
+        }
+        o = gc.put(heap, o, "\n\n");
         var j = 0;
         while j < nregs {
             let r = vec.get(ir.regs, contents(pr)[j]);
             o = put_snake_register(heap, gc.put(heap, o, "    output wire [DATA_WIDTH-1:0]      reg_"), src, r);
-            o = gc.put(heap, o, "_out,  // ");
+            o = gc.put(heap, o, "_out");
+            if j + 1 < nregs {
+                o = gc.put(heap, o, ",");
+            } else {
+                o = gc.put(heap, o, " ");
+            }
+            o = gc.put(heap, o, "  // ");
             o = put_register_id(heap, o, src, ir, r);
             o = gc.put(heap, o, "\n");
             j = j + 1;
@@ -369,7 +379,7 @@ pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte],
         while j < nregs {
             let r = vec.get(ir.regs, contents(pr)[j]);
             o = gc.put_span(heap, gc.put(heap, o, "    localparam [ADDR_WIDTH-1:0] ADDR_"), src, r.name_s, r.name_e);
-            o = put_hex_digits(heap, gc.put(heap, o, " = ADDR_WIDTH'h"), src, r.off_s, r.off_e, 8);
+            o = put_hex_digits(heap, gc.put(heap, o, " = 'h"), src, r.off_s, r.off_e, 8);
             o = gc.put(heap, o, ";  // ");
             o = put_register_id(heap, o, src, ir, r);
             o = gc.put(heap, o, "\n");
@@ -424,13 +434,13 @@ pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte],
             let r = vec.get(ir.regs, contents(pr)[j]);
             o = put_snake_register(heap, gc.put(heap, o, "            r_"), src, r);
             if r.reset_s >= 0 {
-                o = gc.put(heap, o, " <= DATA_WIDTH'h");
+                o = gc.put(heap, o, " <= 'h");
                 o = put_hex_digits(heap, o, src, r.reset_s, r.reset_e, b.width / 4);
                 o = gc.put(heap, o, ";  // ");
                 o = put_register_id(heap, o, src, ir, r);
                 o = gc.put(heap, o, "\n");
             } else {
-                o = gc.put(heap, o, " <= DATA_WIDTH'h0;  // ");
+                o = gc.put(heap, o, " <= 'h0;  // ");
                 o = put_register_id(heap, o, src, ir, r);
                 o = gc.put(heap, o, " (reset undefined)\n");
             }

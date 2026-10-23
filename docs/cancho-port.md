@@ -2286,7 +2286,8 @@ Inputs (55,258 distinct: the mutants of `check_json.py`, 71 hand-made inputs and
    Both classes are admitted only on the whole-difference test (the first, by substituting `N.0` by `N`; the second
    by the stated cause and a float bus width in the input). This is a **defect of the Python generator** that the port
    does not reproduce and that the Python tool should fix, the same way the device-tree generator's float-width crash
-   was (§21). Neither is a defect of the port, and the Python tool is the oracle only.
+   was (§21). Neither is a defect of the port, and the Python tool is the oracle only. *(Corrected in 34.5: the Python generator now reads
+   the width with `int()`, so both classes are gone from the differential's counts; `iverilog` is what showed it still mattered.)*
 2. **`W0S` is written as `r & ~wdata`**, the same expression as `W1C` (29.3 predicted it from reading the source). The
    port reproduces it; the access table of the spec says `W0S` sets bits. That is the Python tool's bug to fix, and
    once it is fixed the port's one line follows. It is not hidden by being ported.
@@ -2469,8 +2470,9 @@ does (the label is the same string on both).
 
 ## 34. A parser reads the SystemVerilog
 
-> **Status: measured; the result is a defect of the Python tool, which the port reproduces on purpose.** 30.6 said no RTL tool had
-> read the module and that installing `iverilog` in CI and parsing both tools' output was the next check.
+> **Status: measured; the result was a defect of the Python tool, which the port reproduced on purpose, and is fixed in both (34.5, issue 14).**
+> 30.6 said no RTL tool had read the module and that installing `iverilog` in CI and parsing both tools' output was the next check.
+> 34.1 to 34.4 below are the state before the fix and are kept as measured; 34.5 says what changed and what was measured after.
 
 ### 34.1 What `iverilog` says
 
@@ -2504,7 +2506,7 @@ tools get the same verdict; if the generators are ever changed on one side only,
 fail because the RTL is refused. The gate runs it without `--require`, so on a machine without `iverilog` it says so and does
 nothing.
 
-**CI does not install `iverilog`**, which is a correction of the first version of this section (and of the pull request that
+**CI did not install `iverilog`** *(until 34.5, which fixed the generators and installs it)*, which is a correction of the first version of this section (and of the pull request that
 made it). The first version added the install to CI; the run failed, not in the cancho gate but in `scripts/run_gate.py`, the Python
 reference implementation's own gate, which CI also runs: its roundtrip lane `systemverilog_parses` runs a real parse *if a tool is on
 `$PATH`* and so failed on the same modules (`FAIL uart: iverilog: 25`, `FAIL dma: iverilog: 27`), and its evidence-report golden
@@ -2512,13 +2514,52 @@ asserts that the SystemVerilog roundtrip was *skipped* (`no SystemVerilog parser
 Installing the tool is therefore not a change to the cancho side alone. It waits for the fix: the generator (`gen/systemverilog`, the two
 defects of 34.1), the port in lock-step, the goldens that assume no parser, and then the install. The defect is filed as issue 14.
 
-### 34.4 What this does not show
+### 34.4 What this does not show (before the fix; 34.5 says which of these still hold)
 
 * That the other seven modules would parse after the same two repairs; only the first example was repaired and read.
 * Anything about the other four targets: C compiles with `cc`, the device tree with `dtc` and the SVD validates with `xmllint`
   (gate steps 8c to 8e); the binding generator's output has no tool (26).
 * Only `iverilog` was run; `slang`, `verilator` and `yosys` are not installed.
 
+
+### 34.5 The fix (issue 14), and what was measured after it
+
+Both generators were changed in one commit, `oracle/legacy/gen/systemverilog/systemverilog.py` (net zero lines, so `oracle/legacy/CEILING` is
+unchanged) and `src/gen_sv.cho`, so the bytes stay equal (gate step 8g):
+
+1. **No comma after the last port.** The last register port is written `reg_<name>_out   // chw:..` (the comma is a space, so the
+   comments keep their column), and the last fixed port, `s_axi_rready`, takes its comma only if the block has a register.
+2. **No size that is a parameter name.** The address constants and the reset values are written with an unsized literal, `'h00000010`, and
+   `'h0` for zero (`r_x <= 'h0;`, `rdata = 'h0;`). The width then comes from the declaration the value is assigned to
+   (`localparam [ADDR_WIDTH-1:0]`, `reg [DATA_WIDTH-1:0]`), which is what a parameterised width should follow. The cast
+   `ADDR_WIDTH'(..)` of 34.1 was tried first and is valid SystemVerilog, but `iverilog -t null` without `-g2012`, which is how the real-parse
+   lane of `tests/roundtrip/systemverilog_parses.py` runs it, refuses it (`Size cast requires SystemVerilog.`, measured), and the unsized form is
+   plain Verilog-2005, so it was kept. (`yosys` and `slang` are not installed here: nothing is claimed for them.) `BASE_ADDR` and the enum
+   constants keep the numeric size they always had.
+3. **A third reason, found by the same check: a float bus width.** After 1 and 2, `iverilog` still refused one of the eight contracts, the
+   Python tool's module for `tests/stage1/valid-float-integer.chw` (`"bus_width": 32.0`): `BASE_ADDR = 32.0'h40000000`. That is the defect 30.3, item 1
+   already described and left to the Python tool; it is now fixed there (`int(block["bus_width"])`), so the two tools are byte-equal on that
+   input too, where 30.2 counted `float-bus-width` and `python-float-width-crash` as known differences. Those two classes remain in
+   `generate_sv.py` as guards; they are now never taken.
+
+Measured, `iverilog -g2012 -tnull` 12.0, the same eight contracts as 34.1 (`tests/differential/sv_parse.py`, gate step 8j):
+
+| | before | after |
+|---|---:|---:|
+| modules of the port accepted | 0 of 8 | 8 of 8 |
+| modules of the Python tool accepted | 0 of 8 | 8 of 8 |
+| verdicts that differ between the tools | 0 | 0 |
+
+`tests/roundtrip/systemverilog_parses.py` (the legacy real-parse lane, plain `iverilog -t null`) passes on `uart` and `dma`, which it did not
+(`FAIL uart: iverilog: 25`). The unit test `tests/unit/test_gen_sv.cho` asserts the last port, the missing comma with no register, and the
+unsized literals: against the generator of before the fix, 7 of its 23 tests fail. Step 8j now **fails** when `iverilog` refuses a module of either
+tool, so the day a generator change reintroduces either defect, only the parser, not the byte comparison, is what says so (a break made in both
+tools alike passes 8g by construction). Three breaks were added to `tests/mutation/run_gen_sv.py` (`last-port-comma`, `rready-comma`,
+`sized-literal`) and killed.
+
+What this still does not show: that the **behaviour** of the modules is right (the handshake is simplified by its own words, `wstrb` is ignored,
+`W0S` is written as `W1C`: 30.3, 30.6), only that one parser reads them; and only `iverilog` was run, not `slang`, `verilator` or `yosys`.
+`iverilog` is now installed in CI (`.github/workflows/ci.yml`), which 34.3 waited for.
 
 ---
 
@@ -2738,7 +2779,7 @@ Each driver exits 1 on its break (text golden, diff golden, parser roundtrip, be
   The structural claims (banner, palette) could move to `chw`, and the day they do the oracle gate loses its generator lanes; that is stage 8 if anyone asks.
 * **The roundtrip lane with `iverilog` installed fails, in both tools** (34): `systemverilog_parses.py` runs a real parse when `iverilog` is on `$PATH`. CI
   does not install it (34.3) and so passes; on a machine that has it, `scripts/gate.sh` ends `FAILED` at the oracle's self-checks, and the product gate (8j) passes
-  by design, because it checks that both tools *agree* (both refuse, for the same two reasons). Measured here, with `iverilog` installed: the oracle gate fails at that lane
+  by design, because it checks that both tools *agree* (both refuse, for the same two reasons). *(Corrected in 34.5: the generators are fixed, `iverilog` is accepted by both, the lane passes and CI installs the tool.)* Measured here, with `iverilog` installed: the oracle gate fails at that lane
   only (`FAIL uart: iverilog: 25`, `FAIL dma: iverilog: 27`); with `iverilog` hidden from `$PATH` it passes in 14 s.
 
 ### 36.6 Measured

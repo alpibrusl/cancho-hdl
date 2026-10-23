@@ -24,7 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 CANCHO = os.environ.get("CANCHO", str(ROOT.parent / "cancho/target/release/cancho"))
 MODULES = """lex ir parse json_out json_in diag pyrepr pattern schema front load diagnostic hexval check_util check_block
 check_regs check_intr check_dma check dg_json dg_text dg_report gen_c gen_dts gen_svd gen_binding gen_sv
-diff_util diff diff_fmt impact""".split()
+diff_util diff diff_fmt impact report_data report report_check""".split()
 PROGRAM = ["main"] + MODULES + ["io", "conform"]
 
 # (name, old, new, what it breaks)
@@ -39,7 +39,7 @@ M = [
     ("param-data", '"   parameter DATA_WIDTH = "', '"    parameter DATA_WIDTH = "', "DATA_WIDTH is indented like ADDR_WIDTH"),
     ("base-comment-pad", "src, b.base_s, b.base_e, 8);\n        o = gc.put(heap, o, \"\\n    localparam", "src, b.base_s, b.base_e, 6);\n        o = gc.put(heap, o, \"\\n    localparam", "the base comment is padded to 6"),
     ("base-width", "        o = gc.put_int(heap, o, b.width);\n        o = put_hex_digits(heap, gc.put(heap, o, \"'h\")", "        o = gc.put_int(heap, o, b.width / 2);\n        o = put_hex_digits(heap, gc.put(heap, o, \"'h\")", "the base literal has half the width"),
-    ("addr-pad", 'o = put_hex_digits(heap, gc.put(heap, o, " = ADDR_WIDTH\'h"), src, r.off_s, r.off_e, 8);', 'o = put_hex_digits(heap, gc.put(heap, o, " = ADDR_WIDTH\'h"), src, r.off_s, r.off_e, 4);', "an address is padded to 4 digits"),
+    ("addr-pad", 'o = put_hex_digits(heap, gc.put(heap, o, " = \'h"), src, r.off_s, r.off_e, 8);', 'o = put_hex_digits(heap, gc.put(heap, o, " = \'h"), src, r.off_s, r.off_e, 4);', "an address is padded to 4 digits"),
     ("addr-name", 'o = gc.put_span(heap, gc.put(heap, o, "    localparam [ADDR_WIDTH-1:0] ADDR_"), src, r.name_s, r.name_e);', 'o = put_snake_register(heap, gc.put(heap, o, "    localparam [ADDR_WIDTH-1:0] ADDR_"), src, r);', "an address constant is named with the snake form"),
     ("enum-upper", "        o = buffer.push(heap, o, byte_of(bytes.to_upper(int_of(src[i]))));", "        o = buffer.push(heap, o, byte_of(int_of(src[i])));", "an enum label keeps its case"),
     ("enum-radix", "gc.put(heap, o, \"'d\")", "gc.put(heap, o, \"'h\")", "an enum value is written in hex"),
@@ -48,9 +48,12 @@ M = [
     ("storage-name", '"\\n    reg [DATA_WIDTH-1:0] r_"', '"\\n    reg [DATA_WIDTH-1:0] x_"', "the storage register is misnamed"),
     ("assign-out", '"_out = r_"', '"_out = x_"', "the behaviour port reads another register"),
     ("reset-pad", "o = put_hex_digits(heap, o, src, r.reset_s, r.reset_e, b.width / 4);", "o = put_hex_digits(heap, o, src, r.reset_s, r.reset_e, b.width / 8);", "a reset is padded to half the digits"),
-    ("reset-undefined", '" <= DATA_WIDTH\'h0;  // "', '" <= DATA_WIDTH\'h1;  // "', "an undefined reset is not zero"),
+    ("reset-undefined", '" <= \'h0;  // "', '" <= \'h1;  // "', "an undefined reset is not zero"),
     ("reset-undefined-comment", '" (reset undefined)\\n"', '" (reset not defined)\\n"', "the undefined-reset comment changes"),
-    ("reset-defined", "            if r.reset_s >= 0 {\n                o = gc.put(heap, o, \" <= DATA_WIDTH'h\");", "            if r.reset_s >= 100000 {\n                o = gc.put(heap, o, \" <= DATA_WIDTH'h\");", "no register has a reset value"),
+    ("reset-defined", "            if r.reset_s >= 0 {\n                o = gc.put(heap, o, \" <= 'h\");", "            if r.reset_s >= 100000 {\n                o = gc.put(heap, o, \" <= 'h\");", "no register has a reset value"),
+    ("last-port-comma", "            if j + 1 < nregs {\n                o = gc.put(heap, o, \",\");", "            if true {\n                o = gc.put(heap, o, \",\");", "the last register port keeps its comma, which a parser refuses (issue 14)"),
+    ("rready-comma", "        if nregs > 0 {\n            o = gc.put(heap, o, \",\");", "        if true {\n            o = gc.put(heap, o, \",\");", "a block with no register keeps a comma after its last fixed port"),
+    ("sized-literal", '" = \'h"), src, r.off_s', '" = ADDR_WIDTH\'h"), src, r.off_s', "an address constant is sized by a parameter name, which a parser refuses (issue 14)"),
     ("aw-match", '" =\\n        s_axi_awvalid && (s_axi_awaddr >= BASE_ADDR);\\n\\n"', '" =\\n        s_axi_awvalid && (s_axi_awaddr > BASE_ADDR);\\n\\n"', "the write match is strict"),
     ("ar-match", '" =\\n        s_axi_arvalid && (s_axi_araddr >= BASE_ADDR);\\n\\n"', '" =\\n        s_axi_arvalid && (s_axi_araddr > BASE_ADDR);\\n\\n"', "the read match is strict"),
     ("write-cond", '" && (s_axi_awaddr == ADDR_"', '" && (s_axi_araddr == ADDR_"', "a write is decoded on the read address"),

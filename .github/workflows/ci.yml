@@ -52,6 +52,10 @@ jobs:
       - name: Install xmllint
         run: sudo apt-get install -y -q libxml2-utils
 
+      # iverilog is the parse oracle of the SystemVerilog generator (gate step 8j, docs/cancho-port.md 34.5): both tools' modules must be accepted.
+      - name: Install iverilog
+        run: sudo apt-get install -y -q iverilog
+
       # Python only under oracle/ and tests/, and the legacy line count only comes down (docs/cancho-port.md, 36).
       - name: Where Python may be
         run: sh scripts/lint_python.sh

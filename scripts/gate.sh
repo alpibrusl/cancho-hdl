@@ -8,8 +8,7 @@
 #
 # A failed part does not hide the others: each is run, each result is printed, and the exit status is 1 if any failed.
 # Needs the cancho compiler of .cancho-rev (CANCHO, default ../cancho/target/release/cancho), python3 with jsonschema and
-# lxml, cc, dtc and xmllint. On a machine with iverilog installed part 3 fails at the systemverilog roundtrip lane, in the legacy
-# generator and the product alike (docs/cancho-port.md, 34 and 36.5); CI does not install it.
+# lxml, cc, dtc and xmllint. iverilog is the parse oracle of the SystemVerilog output (docs/cancho-port.md, 34.5); CI installs it.
 cd "$(dirname "$0")/.."
 status=0
 run() {
