@@ -11,7 +11,7 @@ simulates it under `tests/behavioral/sv_device_tb.sv` (`iverilog -g2012`, `vvp`)
 the reference model (`oracle/legacy/tools/sim/reference_model.py`) over the corpus `tests/behavioral/scenarios.json`.
 Compiler pin: `.cancho-rev` 7e4088b. Python is the oracle only: it never decides anything the product emits.
 
-Of the corpus's 11 scenarios (89 ops), 25 comparable ops are bus operations on registers (`R`, `Rf`, `W`, `Wf`,
+Of the corpus's 11 scenarios (64 ops), 25 are bus operations on registers that can be compared (`R`, `Rf`, `W`, `Wf`,
 `RESET`). The other ops have no port on the generated module (device-side writes, DMA, interrupts: 32 ops) or are
 refused by the model while the module has no refusal (4 ops), or read a register the device wrote (2 ops). 25 is a
 small number, and a module whose reads never answer already agrees on 13 of them (the writes, which are
