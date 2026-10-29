@@ -125,6 +125,20 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   dot product, so this is the smallest inference there is; the logistic, tree and boosting models of cancho-ml were not tried; the data are
   synthetic; one sample per round trip (about 0.2 s); nothing here is a speed claim.
 
+* **A toy language model, its matrix products on the board** (measured; `llm/train.py`, `llm/corpus.txt`, `llm/model.txt`,
+  `host/llm_gen.cho`; the matrix-vector design extended to four matrices with one-write-per-weight and per-input registers, 91 MHz, 0 hold
+  violations). This is **not a transformer and not a large model**: a character model with a 4-character context, 8-number embeddings and
+  three bias-free 32 x 32 layers (about 3,300 parameters, 27 characters), trained by `train.py` (numpy, manual gradients) on a 700-character
+  paragraph, 90 % next-character accuracy on that same text in float and 89.5 % in the 8-bit integer pipeline. It memorises the paragraph and
+  loops; nothing here is language ability. What was measured: cancho loads the three matrices (3072 weights, about 15 s), then for each
+  character the board computes the three products (exact 32-bit sums) and the host does the embedding lookup, relu, rescale and argmax in
+  integers. The same pipeline also runs on the host. Over 40 generated characters: **0 of 1,280 logits and 0 of 40 characters differ between
+  the board and the host pipeline**; the text ("the " then "safety core it runs. a clear the safety ...") is also what the trainer's own
+  integer pipeline produces. The float model's greedy text differs after a few characters (the 8-bit pipeline picks another branch), so
+  position-by-position agreement with it is low (5 of 40) and is not a quality measure. Speed: 1.7 s a character, 90 s for the run, almost
+  all of it register traffic over the 115200 baud link (about 300 register accesses a character); the multiply-accumulates take
+  microseconds. This is as small as a "language model" gets, and it shows the pipeline, not a capability.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.

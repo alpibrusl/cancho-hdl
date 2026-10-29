@@ -153,6 +153,65 @@
             "msb": 31
           }
         ]
+      },
+      {
+        "name": "MAT",
+        "offset": "0x2C",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "INDEX",
+            "lsb": 0,
+            "msb": 1
+          }
+        ]
+      },
+      {
+        "name": "W_PACK",
+        "offset": "0x30",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "ADDR",
+            "lsb": 0,
+            "msb": 11
+          },
+          {
+            "name": "VALUE",
+            "lsb": 12,
+            "msb": 19
+          },
+          {
+            "name": "TOG",
+            "lsb": 20,
+            "msb": 20
+          }
+        ]
+      },
+      {
+        "name": "X_PACK",
+        "offset": "0x34",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "INDEX",
+            "lsb": 0,
+            "msb": 4
+          },
+          {
+            "name": "VALUE",
+            "lsb": 8,
+            "msb": 15
+          },
+          {
+            "name": "TOG",
+            "lsb": 16,
+            "msb": 16
+          }
+        ]
       }
     ]
   }
