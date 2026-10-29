@@ -1,0 +1,236 @@
+{
+  "version": "0.1.0",
+  "block": {
+    "name": "Lab",
+    "base_address": "0x40000000",
+    "bus_width": 32,
+    "endianness": "little",
+    "registers": [
+      {
+        "name": "CTRL",
+        "offset": "0x00",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "AN_EN",
+            "lsb": 0,
+            "msb": 0
+          },
+          {
+            "name": "SEQ_RUN",
+            "lsb": 1,
+            "msb": 1
+          },
+          {
+            "name": "HIST_CLR",
+            "lsb": 2,
+            "msb": 2
+          },
+          {
+            "name": "PROBE_SEL",
+            "lsb": 4,
+            "msb": 4
+          }
+        ]
+      },
+      {
+        "name": "AN_POP",
+        "offset": "0x04",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "TOG",
+            "lsb": 0,
+            "msb": 15
+          }
+        ]
+      },
+      {
+        "name": "AN_STATUS",
+        "offset": "0x08",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "COUNT",
+            "lsb": 0,
+            "msb": 15
+          },
+          {
+            "name": "OVF",
+            "lsb": 16,
+            "msb": 16
+          }
+        ]
+      },
+      {
+        "name": "AN_TS",
+        "offset": "0x0C",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "TICKS",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "AN_VAL",
+        "offset": "0x10",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "PROBE",
+            "lsb": 0,
+            "msb": 7
+          }
+        ]
+      },
+      {
+        "name": "SEQ_ADDR",
+        "offset": "0x14",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "INDEX",
+            "lsb": 0,
+            "msb": 8
+          }
+        ]
+      },
+      {
+        "name": "SEQ_TIME",
+        "offset": "0x18",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "TICKS",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SEQ_MASK",
+        "offset": "0x1C",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "PINS",
+            "lsb": 0,
+            "msb": 5
+          }
+        ]
+      },
+      {
+        "name": "SEQ_LOAD",
+        "offset": "0x20",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "TOG",
+            "lsb": 0,
+            "msb": 15
+          }
+        ]
+      },
+      {
+        "name": "SEQ_LEN",
+        "offset": "0x24",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "EVENTS",
+            "lsb": 0,
+            "msb": 8
+          }
+        ]
+      },
+      {
+        "name": "SEQ_STATUS",
+        "offset": "0x28",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "DONE",
+            "lsb": 0,
+            "msb": 0
+          },
+          {
+            "name": "INDEX",
+            "lsb": 8,
+            "msb": 16
+          }
+        ]
+      },
+      {
+        "name": "HIST_IN",
+        "offset": "0x2C",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "OUTCOME",
+            "lsb": 0,
+            "msb": 11
+          },
+          {
+            "name": "TOG",
+            "lsb": 12,
+            "msb": 12
+          }
+        ]
+      },
+      {
+        "name": "HIST_SEL",
+        "offset": "0x30",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "BIN",
+            "lsb": 0,
+            "msb": 11
+          }
+        ]
+      },
+      {
+        "name": "HIST_COUNT",
+        "offset": "0x34",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "COUNT",
+            "lsb": 0,
+            "msb": 15
+          }
+        ]
+      },
+      {
+        "name": "HIST_TOTAL",
+        "offset": "0x38",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "TOTAL",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      }
+    ]
+  }
+}

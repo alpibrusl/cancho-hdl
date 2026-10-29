@@ -71,6 +71,21 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   to a servo or a scope; the timing figure is the host's view through a USB serial link, good to a few milliseconds, not a
   measurement of the hardware's accuracy.
 
+* **The lab design: analyzer, sequencer, histogram** (measured, on the board; `lab/lab.chw`, `rtl/lab.v`, `host/labio.cho`,
+  `host/lab_test.cho`; 3515 LUT4, 8 block RAMs, 98 MHz; `check.sh` simulates it, 12 checks). Registers read from the instruments
+  go through the new device-written inputs (cancho-hdl#21).
+  1. Histogram (4096 bins x 16 bits): 2000 pseudo-random shots over 16 outcomes, every bin equal to the host's own count, total 2000.
+     The same engine counted `qsim sample` output for two circuits (GHZ 3 qubits, 1000 shots; 5 qubits in uniform superposition, 4000
+     shots): all bins equal to qsim's counts. **This found a real bug**: the first version never cleared bin 0 (the clear loop's write
+     enable lagged its address by one clock), 981 counts left over after a clear; the simulation had not caught it because bin 0 was
+     never non-zero before a clear. The simulation now checks it and fails on the old RTL.
+  2. Sequencer watched by the analyzer on the same 27 MHz clock: four events programmed 135,000, 27,000 and 13,500,000 ticks apart;
+     recorded spacing differs from programmed by **0 ticks** (all three). Same clock, so this shows the two instruments agree, not
+     that either is right against an outside reference.
+  3. Analyzer on the UART line: 87 edges recorded; the one-bit interval is **234.30 ticks** (115200 baud would be 234.375, so the
+     adapter runs about 0.03 % fast); six bytes the host sent 50 ms apart (host sleep of 50 ms) are stamped 1,351,772 to 1,358,363
+     ticks apart, that is 50.07 to 50.31 ms by the FPGA's clock.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.
