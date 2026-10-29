@@ -155,13 +155,11 @@ open question list in [`contract-design.md`](contract-design.md)
 
 **Not yet delivered (Phase 1 remainder):**
 
-- SV-side behavioral roundtrip: the SystemVerilog module must be
-  driven with the same corpus (`tests/behavioral/scenarios.json`
-  and `oracle/legacy/tools/sim/op_runner.py`'s trace shape are already
-  engine-agnostic for it) and compared against the reference
-  model. This needs hardware-simulation tooling (Verilator or
-  cocotb are not in the reference environment); the C-side pair
-  above is operational evidence for the criterion's C half.
+- SV-side behavioral roundtrip: **delivered for the bus operations, 2026-10-29** (`tests/behavioral/sv_behavior.py`, Icarus Verilog,
+  in the gate as lane 8m; docs/sv-behavioral.md). The first run found that no register was reachable when the base address is not 0
+  and that the response was combinational on the request; both are fixed in the oracle and the port. Still open: the device side (a
+  register the device writes, DMA, interrupts) has no port on the module, `RC` is not cleared by a read, and nothing was synthesized
+  or run on hardware (Yosys, nextpnr and Verilator were not used).
 
 **Exit criteria (in progress):**
 
@@ -194,7 +192,7 @@ too thin. The watch list is [`contract-design.md`](contract-design.md)
 
 **Indicative duration:** 2–3 weeks.
 
-**Delivered into this repo (complete; only the SV-side behavioral roundtrip remains, needing Verilator or cocotb):**
+**Delivered into this repo (complete; the SV-side behavioral roundtrip covers the bus operations only, see Phase 1):**
 
 - `cancho-hdl diff <base> <candidate>` (`oracle/legacy/tools/diff/diff.py`) —
   the semantic-diff JSON in `spec/diagnostics/README.md` §7,
@@ -340,8 +338,8 @@ A as a tool. The `hdl/` subtree from parent proposal §4 is
 | Phase | Status |
 |---|---|
 | 0 — Schema and decisions | **Done** |
-| 1 — Checker + first generators | **Code complete** (checker, both generators, simulator, textual parser, text formatter landed; C-side behavioral roundtrip landed — only the SV side, needing Verilator/cocotb, remains, shared with Phase 2) |
-| 2 — Full generators + diff + impact + report | **Code complete** (diff, impact, report, all five generators, all five roundtrip tests, C-side behavioral roundtrip landed; only the SV-side behavioral roundtrip still needs Verilator/cocotb — the single open item) |
+| 1 — Checker + first generators | **Code complete** (checker, both generators, simulator, textual parser, text formatter landed; C-side and SV-side (bus operations, Icarus) behavioral roundtrips landed; the device side of the SV module and synthesis remain) |
+| 2 — Full generators + diff + impact + report | **Code complete** (diff, impact, report, all five generators, all five roundtrip tests, C-side and SV-side (bus operations) behavioral roundtrips landed; the device side of the SV module, synthesis and hardware remain open) |
 | 3 — Demo + benchmark | Not started |
 | 4 — Stage B gate | Not started |
 

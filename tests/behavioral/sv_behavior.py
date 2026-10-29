@@ -12,11 +12,16 @@ What can and cannot be compared (the module is a register file on an AXI4-Lite s
   * D, Df (the device writes a register), DW, DX, DR (DMA), IP, PE, PS, PC (interrupts) have no port on the module.
     They are not driven. A register the device wrote is *tainted* until the next RESET: its reads are not compared,
     because the module has no way to be given the device's value.
-  * An op the model refuses (`ERR <code>`) is not compared with a bus response: the module has no refusal. A write to a
-    read-only register is still driven, and the register is read back by whatever the script does next.
+  * An op the model refuses for the access kind (a write to a read-only register, a read of a write-only one) is driven, and
+    the module must answer SLVERR (`ERR slverr` in the bench's trace). Any other refusal of the model (a value that does not fit
+    a field, an enum violation) is a check the host makes before it touches the bus: it is not driven.
+  * Directed checks of the bus itself, not in the corpus: a write and a read at an address no register has (inside the block and
+    below its base) must answer SLVERR and change nothing, and a write with byte strobes changes only the bytes strobed.
   * Wf is a read-modify-write on the bus: the word is built from the model's value of the register before the op.
 
-Run: python3 tests/behavioral/sv_behavior.py /path/to/chw [--addr absolute|offset] [--mode hold|strict] [-v]
+Run: python3 tests/behavioral/sv_behavior.py /path/to/chw [--mode hold|strict] [-v]
+(the gate runs both masters. The module decodes the full bus address, base included, as AXI4-Lite gives it; an interconnect that
+strips the base would need BASE_ADDR set to 0, which the contract's base_address does not say.)
 Needs `iverilog` and `vvp` on PATH; without them it says so and exits 2 (it does not pass).
 """
 
@@ -47,7 +52,7 @@ def hex_of(text: str) -> int:
     return int(text, 16)
 
 
-def plan(ir: dict, ops: list[str], addr_mode: str):
+def plan(ir: dict, ops: list[str]):
     """Walk `ops` through the reference model; yield (model_line, bus_cmds, expect) per op.
 
     bus_cmds: command lines for the bench. expect: how to judge the bench's last line: None (not compared), or the
@@ -60,7 +65,7 @@ def plan(ir: dict, ops: list[str], addr_mode: str):
 
     def addr(name: str) -> int:
         off = hex_of(regs[name]["offset"])
-        return (base + off) if addr_mode == "absolute" else off
+        return base + off
 
     for line in ops:
         op, args = line.split()[0], line.split()[1:]
@@ -80,7 +85,9 @@ def plan(ir: dict, ops: list[str], addr_mode: str):
             continue
         reg = args[0]
         if op in ("R", "Rf"):
-            if got.startswith("ERR"):
+            if got == "ERR runtime-access-kind-violation":
+                yield line, [f"R {addr(reg):08x}"], "ERR slverr", None
+            elif got.startswith("ERR"):
                 yield line, [], None, "model-refused"
             elif reg in tainted:
                 yield line, [], None, "tainted"
@@ -97,27 +104,62 @@ def plan(ir: dict, ops: list[str], addr_mode: str):
             word = int(args[1], 0) & 0xFFFFFFFF
         else:
             fdef = model._fields_by_register[reg][args[1]]
-            if got.startswith("ERR"):
+            if got.startswith("ERR") and got != "ERR runtime-access-kind-violation":
                 yield line, [], None, "model-refused"
                 continue
-            enc = int(args[2], 0) << fdef["lsb"]
+            enc = (int(args[2], 0) << fdef["lsb"]) & 0xFFFFFFFF
             if kind in KINDS_BY_ACTION:
                 word = enc
             else:
                 cur = 0 if kind == "WO" else before[reg]
                 word = (cur & ~_field_mask(fdef["lsb"], fdef["msb"]) | enc) & 0xFFFFFFFF
-        # a refused write (read-only register) is driven and its response is not judged
-        yield line, [f"W {addr(reg):08x} {word:08x}"], (None if got.startswith("ERR") else got), None
+        # a write the model refuses for the access kind is driven: the module must answer SLVERR
+        yield line, [f"W {addr(reg):08x} {word:08x}"], ("ERR slverr" if got.startswith("ERR") else got), None
+
+
+def directed(ns, td: pathlib.Path, cpath: str, ir: dict, tag: str):
+    """Bus checks the corpus does not make. Returns (compared, equal, different)."""
+    block = ir["block"]
+    base = hex_of(block["base_address"])
+    regs = block["registers"]
+    top = max(hex_of(r["offset"]) for r in regs)
+    unmapped = top + 4 if (top + 4) % 4 == 0 else top + 8
+    below = (base - 4) & 0xFFFFFFFF
+    delta = base
+    cmds, want = [], []
+    # no register at these addresses: SLVERR, and nothing changes (the registers are read back below)
+    for a in (unmapped + delta,) + (((below,) if base >= 4 else ())):
+        cmds += [f"W {a:08x} ffffffff", f"R {a:08x}"]
+        want += ["ERR slverr", "ERR slverr"]
+    rw = next((r for r in regs if r["kind"] == "RW"), None)
+    if rw is not None:
+        a = hex_of(rw["offset"]) + delta
+        reset = hex_of(rw.get("reset", "0x0")) & 0xFFFFFFFF
+        cmds += ["RESET", f"WS {a:08x} ffffffff 1", f"R {a:08x}", f"WS {a:08x} 00000000 8", f"R {a:08x}"]
+        low = (reset & ~0xFF) | 0xFF
+        want += ["OK", "OK", f"OK 0x{low:08x}", "OK", f"OK 0x{low:08x}"]
+    cf = td / "directed.txt"
+    cf.write_text("\n".join(cmds) + "\n")
+    run = subprocess.run(["vvp", "-N", str(td / f"{tag}.vvp"), f"+CMDS={cf}", f"+MODE={ns.mode}"],
+                         capture_output=True, text=True, cwd=td)
+    lines = [l for l in run.stdout.splitlines() if l.startswith(("OK", "ERR"))]
+    ok = bad = 0
+    for c, w, g in zip(cmds, want, lines):
+        if g == w:
+            ok += 1
+        else:
+            bad += 1
+            print(f"  MISMATCH {cpath} directed: {c!r}: wanted {w}, module {g}")
+    if len(lines) != len(cmds):
+        bad += 1
+        print(f"  MISMATCH {cpath} directed: bench printed {len(lines)} lines for {len(cmds)} commands")
+    return len(cmds), ok, bad
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("chw")
-    ap.add_argument("--addr", choices=["absolute", "offset"], default="absolute")
     ap.add_argument("--mode", choices=["hold", "strict"], default="hold")
-    ap.add_argument("--diagnose-zero-base", action="store_true",
-                    help="investigation only: set the generated BASE_ADDR to 0 so that the checks behind the base-address "
-                         "defect can be seen; the result is not a statement about the product's output")
     ap.add_argument("-v", action="store_true")
     ns = ap.parse_args()
     for tool in ("iverilog", "vvp"):
@@ -141,10 +183,7 @@ def main() -> int:
                     continue
                 ir, _ = load_contract(str(ROOT / cpath))
                 tag = re.sub(r"\W", "_", cpath)
-                text = sv.stdout
-                if ns.diagnose_zero_base:
-                    text = re.sub(r"(BASE_ADDR = \d+'h)[0-9a-fA-F]+", r"\g<1>00000000", text)
-                (td / f"{tag}.sv").write_text(text)
+                (td / f"{tag}.sv").write_text(sv.stdout)
                 mod = re.search(r"^module (\w+) #\(", sv.stdout, re.M).group(1)
                 outs = re.findall(r"output wire \[DATA_WIDTH-1:0\]\s+(reg_\w+_out)", sv.stdout)
                 wiring = [f"  wire [31:0] {o}_w;" for o in outs]
@@ -167,7 +206,7 @@ def main() -> int:
                     del built[cpath]
                     continue
             ir, _sv, tag = built[cpath]
-            steps = list(plan(ir, sc["ops"], ns.addr))
+            steps = list(plan(ir, sc["ops"]))
             cmds = [c for _l, cs, _e, _s in steps for c in cs]
             cf = td / "cmds.txt"
             cf.write_text("\n".join(cmds) + "\n")
@@ -206,7 +245,12 @@ def main() -> int:
                     bad += 1
                     if ns.v or bad <= 12:
                         print(f"  MISMATCH {sc['name']}: {line!r}: model {expect}, module {got}")
-    print(f"sv_behavior ({ns.addr} addresses, {ns.mode} master): compared {total}, equal {ok}, different {bad}; not compared: {skipped}")
+        for cpath, (ir, _sv, tag) in built.items():
+            total_d, ok_d, bad_d = directed(ns, td, cpath, ir, tag)
+            total += total_d
+            ok += ok_d
+            bad += bad_d
+    print(f"sv_behavior ({ns.mode} master): compared {total}, equal {ok}, different {bad}; not compared: {skipped}")
     return 0 if bad == 0 else 1
 
 

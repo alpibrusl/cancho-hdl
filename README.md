@@ -62,8 +62,8 @@ exit 1
   has 0 unexplained differences, and answers without a trap on the 5,814 inputs
   on which `checker.py` itself raises. One deliberate break per rule (50
   mutations) is noticed by a test, the conformance runner or a differential:
-  the table is in the port plan. Not claimed: a SystemVerilog behavioural
-  roundtrip (needs Verilator or cocotb), timing, or working hardware. Those
+  the table is in the port plan. Not claimed: SystemVerilog behaviour
+  beyond the bus operations simulated under Icarus (docs/sv-behavioral.md), timing, synthesis, or working hardware. Those
   stay trust boundaries.
 
 **[Project page](https://alpibrusl.github.io/cancho-hdl)** ·

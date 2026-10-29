@@ -26,6 +26,7 @@ The tier taxonomy (`Static` / `Tested` / `Runtime` / `Trust` /
 | DMA `DEVICE`-owned fields are not written by the generated C / Cancho binding. | `Static` (in generated code) | Code generator emits the read-only accessor; refusal is structural |
 | Generated C header compiles under a real C compiler (clang/gcc). | `Tested` | Roundtrip suite under `tests/roundtrip/` |
 | Generated SystemVerilog module parses in at least one open-source parser (Yosys / slang). | `Tested` | Roundtrip suite under `tests/roundtrip/` |
+| Generated SystemVerilog register module, simulated with Icarus Verilog, answers the bus operations of the behavioral corpus (`R`, `Rf`, `W`, `Wf`, `RESET`) as the reference model does, and answers SLVERR at an address with no register, on a register of the wrong access kind, and never answers OKAY to a refused write. | `Tested` | `tests/behavioral/sv_behavior.py`, a master that holds its valids and one that follows AXI4-Lite; 47 bus operations per master (docs/sv-behavioral.md). Not covered: device-side writes, DMA and interrupts (the module has no port for them), `RC` clear-on-read, timing, synthesis. |
 | Generated SVD validates against the CMSIS-SVD XSD. | `Tested` | Roundtrip suite under `tests/roundtrip/` |
 | Generated device-tree fragment validates against the upstream DTS schema. | `Tested` | Roundtrip suite under `tests/roundtrip/` |
 | `cancho-hdl diff` returns a JSON document listing every semantic change (offset, width, enum value, ownership, interrupt linkage). | `Static` | Snapshot test under `tests/conformance/` |

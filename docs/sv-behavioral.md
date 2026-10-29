@@ -1,61 +1,69 @@
-# The SystemVerilog behavioral roundtrip: first measurement
+# The SystemVerilog behavioral roundtrip
 
-Status: measured with Icarus Verilog; the open item in `docs/roadmap.md` is **not** closed by this. This note records
-what the first simulation of the generated module showed, so that the roadmap and `docs/guarantees.md` can be
-corrected where they say more than this.
+Status: **delivered for the bus operations**, measured with Icarus Verilog (`iverilog -g2012`); the open item of
+`docs/roadmap.md` is narrowed, not closed (see "Not claimed"). Written 2026-10-29; the first measurement (earlier the same
+day) is kept below as "What it found", with its numbers corrected where the harness grew.
 
-## What was run
+## What is run
 
-`tests/behavioral/sv_behavior.py` generates the module with the product (`chw generate FILE --target systemverilog`),
-simulates it under `tests/behavioral/sv_device_tb.sv` (`iverilog -g2012`, `vvp`), and compares the bus-level trace with
-the reference model (`oracle/legacy/tools/sim/reference_model.py`) over the corpus `tests/behavioral/scenarios.json`.
-Compiler pin: `.cancho-rev` 7e4088b. Python is the oracle only: it never decides anything the product emits.
+`tests/behavioral/sv_behavior.py` generates the module with the product (`chw generate FILE --target systemverilog`), simulates
+it under `tests/behavioral/sv_device_tb.sv`, and compares the bus-level trace with the reference model
+(`oracle/legacy/tools/sim/reference_model.py`) over `tests/behavioral/scenarios.json`. Python is the oracle only: it never decides
+anything the product emits. It runs in the gate (`scripts/gate_cancho.sh`, lane 8m) with two masters:
 
-Of the corpus's 11 scenarios (64 ops), 25 are bus operations on registers that can be compared (`R`, `Rf`, `W`, `Wf`,
-`RESET`). The other ops have no port on the generated module (device-side writes, DMA, interrupts: 32 ops) or are
-refused by the model while the module has no refusal (4 ops), or read a register the device wrote (2 ops). 25 is a
-small number, and a module whose reads never answer already agrees on 13 of them (the writes, which are
-acknowledged whatever they do). Equal counts below are read with that in mind.
+* `hold`: keeps `awvalid`/`wvalid`/`arvalid` up until the response arrives;
+* `strict`: follows AXI4-Lite: a valid is held until its ready, then dropped, and a response counts only on a clock after the
+  request was accepted.
 
-## Results
+Of the corpus's 11 scenarios (64 ops), 29 are compared: the bus operations `R`, `Rf`, `W`, `Wf`, `RESET`. 32 have no port on the
+module (device-side writes, DMA, interrupts), 2 read a register the device wrote (the module cannot be given the device's value),
+1 is a refusal the host makes before it touches the bus (a value that does not fit a field). An op the model refuses for the access
+kind (a write to a read-only register, a read of a write-only one) is driven and the module must answer SLVERR. Eighteen directed
+bus commands that the corpus does not make are added per run: a write and a read at an address with no register (inside the block, and
+below its base) answer SLVERR and change nothing, and a write with byte strobes changes only the bytes strobed. 29 + 18 = 47 comparisons per
+master. The module decodes the full bus address, base included.
 
-| Master | `BASE_ADDR` | Compared | Equal |
-|---|---|---|---|
-| holds `*valid` until the response (`--mode hold`) | as generated (`0x40000000`) | 25 | 13 (every read times out) |
-| holds `*valid` until the response | zeroed in the generated text (`--diagnose-zero-base`; investigation only) | 25 | 25 |
-| follows AXI4-Lite (`--mode strict`) | zeroed | 25 | 2 |
+The harness can fail: against the generator as it was before the fix it reports 19 of 47 equal with the holding master and 4 of 47
+with the strict one.
 
-### Defect 1: no register is reachable when the block base is not 0
+## What it found, and what was done
 
-Measured on `examples/uart-contract/uart.chw` (`base_address 0x40000000`). The module compares
-`s_axi_awaddr == ADDR_<REG>` where `ADDR_<REG>` is the register's *offset* (`'h00000000`), and also requires
-`s_axi_awaddr >= BASE_ADDR` (`0x40000000`) before any register decode (`aw_match_*`, `ar_match_*`). No address satisfies
-both: an offset fails the second test, an absolute address fails the first. Writes are acknowledged and change nothing;
-reads never answer. Same in `oracle/legacy/gen/systemverilog/systemverilog.py` (lines 132, 203, 260), so the cancho
-port reproduces it faithfully (`src/gen_sv.cho`, `put_write_cond`, `put_read_branch`). The structural roundtrip
-(`tests/roundtrip/systemverilog_parses.py`) cannot see this, because it checks shape, not behavior.
+Measured on the first run, with the generator as written until 2026-10-28 (`uart.chw`, `base_address 0x40000000`):
 
-### Defect 2: the response is combinational on the request
+1. **No register was reachable when the block base was not 0.** The module compared `s_axi_awaddr == ADDR_<REG>` (the register's
+   *offset*) and also required `s_axi_awaddr >= BASE_ADDR` before any register decode. No address satisfied both: writes were
+   acknowledged and changed nothing, reads never answered. The Python generator had the same defect, so the cancho port had
+   reproduced it faithfully. The structural roundtrip could not see it, because it checks shape, not behavior.
+2. **The response was combinational on the request** (`bvalid = awvalid && wvalid`, `rvalid` a function of `arvalid`). A master that
+   drops its valids after the handshake gets no response. Measured: 4 of 47 with the strict master. By the AXI4-Lite rule as I
+   recall it (a slave asserts BVALID/RVALID only after the request handshake) this is also a protocol deviation; that reading is from
+   the spec text, not measured here.
+3. Found by reading, then fixed in the same change: `WSTRB` was ignored; there was no `SLVERR`; the reset and the write logic were two
+   `always @(posedge clk)` blocks assigning the same registers (a second driver, which synthesis tools commonly refuse); a held write
+   was applied on every clock it was held.
 
-`s_axi_bvalid = awvalid && wvalid` and `s_axi_rvalid = rdata_valid` (a function of `arvalid` and the address)
-(`gen_sv.cho` `sv_handshake`). A master that follows AXI4-Lite drops `*valid` after the handshake and waits for the
-response; the response is then gone. Measured: 2 of 25 equal with such a master even with defect 1 removed. By the
-AXI4-Lite rule as I recall it (a slave asserts BVALID/RVALID only after the request handshake), this is also a protocol
-deviation; that reading is from the spec text, not measured here. Consequence for a board: a vendor AXI interconnect or
-a soft-core bridge that registers its requests will not get responses.
+Fixed in one commit in both generators (`oracle/legacy/gen/systemverilog/systemverilog.py` and `src/gen_sv.cho`, the same bytes; the
+Python line count is unchanged, so `oracle/legacy/CEILING` is too):
 
-### From reading the generator, not measured
+* a register is decoded at `BASE_ADDR + ADDR_<REG>`;
+* a request is accepted on one clock (`awready = wready = awvalid && wvalid && !bvalid_r`, `arready = arvalid && !rvalid_r`) and
+  answered on the next from registers, held until `bready`/`rready`;
+* the reset, the handshake and every register's write are in one clocked block, so each register has one driver;
+* `WSTRB` selects the bytes written (`wmask`); W1C, W0C, W1S and W0S act on the strobed bits only;
+* an address with no writable register answers SLVERR to a write, one with no readable register answers SLVERR to a read; so does a
+  write to a read-only register and a read of a write-only one (the module used to drop the first silently and answer OKAY to the
+  second).
 
-* `WSTRB` is an input and is ignored; every write is a full-word write.
-* An address in the block that is not a register is acknowledged `OKAY`; there is no `SLVERR`.
-* The reset (`sv_reset_hdr`) and the write logic are two `always @(posedge clk)` blocks that assign the same `r_*`
-  registers. Synthesis tools commonly refuse or warn on that; no synthesis tool was available here to say which.
-* Kind `RC` is a write-clears register in the module, and the module never clears it on a read (`gen_sv.cho`
-  `put_read_branch`); the reference model clears on read. The corpus has no `RC` register, so this is unexercised.
-* `RO` write and `WO` read are silent in the module, refusals in the model (documented as a Trust-tier choice in the
-  generated comment).
+After: 47 of 47 equal with both masters, on `uart.chw` and `dma.chw`. The generator's differential against the Python tool is byte
+for byte on the fixtures and on the 55,258 mutants (0 unexplained differences), and the mutation table of
+`tests/mutation/run_gen_sv.py` has a break for each decision above.
 
 ## Not claimed
 
-Timing, synthesis and place-and-route are not covered: Yosys, nextpnr and Verilator were not available in this
-session. Nothing here has run on a board.
+* Device side: a register the device writes (`D`, `Df`), DMA buffers and interrupts have no port on the module, so their behavior is
+  not simulated; the reference model's `RC` clears on read, the module's does not, and no corpus scenario has an `RC` register.
+* Timing, synthesis and place-and-route: Yosys, nextpnr and Verilator were not used. Nothing here has run on a board.
+* AXI4-Lite conformance beyond the two masters above; the strict master is this repository's reading of the rule, not a protocol
+  checker.
+* Icarus accepts constructs other tools refuse; `generate`/`genvar`, `+:` part selects and `always @(*)` are plain Verilog-2005, but
+  that is not a measurement of any other tool.

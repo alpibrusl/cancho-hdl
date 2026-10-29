@@ -55,40 +55,44 @@ fn sv_behav_hdr() -> [] &static [byte] {
     return "    // ----------------------------------------------------------------\n    // Behavior ports: live register values for user to wire up\n    // ----------------------------------------------------------------\n";
 }
 
-fn sv_reset_hdr() -> [] &static [byte] {
-    return "    // ----------------------------------------------------------------\n    // Reset: apply contract reset values\n    // ----------------------------------------------------------------\n    always @(posedge clk) begin\n        if (!rst_n) begin\n";
+fn sv_wdec_1() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // Write decode: accepted when address and data are valid and no response is pending\n    // ----------------------------------------------------------------\n    reg                  bvalid_r;\n    reg [1:0]            bresp_r;\n    reg                  rvalid_r;\n    reg [1:0]            rresp_r;\n    reg [DATA_WIDTH-1:0] rdata_r;\n    wire wr_acc;\n    assign wr_acc = s_axi_awvalid && s_axi_wvalid && !bvalid_r;\n    wire aw_match_";
 }
 
-fn sv_reset_end() -> [] &static [byte] {
-    return "        end\n    end\n\n";
+fn sv_wdec_2() -> [] &static [byte] {
+    return ";\n    assign aw_match_";
 }
 
-fn sv_write_hdr() -> [] &static [byte] {
-    return "    // ----------------------------------------------------------------\n    // Write logic: per-register decode and access-kind handling\n    // ----------------------------------------------------------------\n";
+fn sv_wdec_3() -> [] &static [byte] {
+    return " =\n        wr_acc && (s_axi_awaddr >= BASE_ADDR);\n\n    reg wr_hit;\n    always @(*) begin\n        wr_hit = 1'b0;\n";
 }
 
-fn sv_always_open() -> [] &static [byte] {
-    return "    always @(posedge clk) begin\n";
+fn sv_wmask() -> [] &static [byte] {
+    return "    end\n\n    wire [DATA_WIDTH-1:0] wmask;\n    genvar bi;\n    generate\n        for (bi = 0; bi < DATA_WIDTH/8; bi = bi + 1) begin : g_wmask\n            assign wmask[8*bi +: 8] = {8{s_axi_wstrb[bi]}};\n        end\n    endgenerate\n\n";
 }
 
-fn sv_always_close() -> [] &static [byte] {
-    return "    end\n\n";
+fn sv_rdec_1() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // Read mux: accepted when the address is valid and no response is pending\n    // ----------------------------------------------------------------\n    wire rd_acc;\n    assign rd_acc = s_axi_arvalid && !rvalid_r;\n    wire ar_match_";
 }
 
-fn sv_read_hdr() -> [] &static [byte] {
-    return "    // ----------------------------------------------------------------\n    // Read mux: per-register one-hot decode\n    // ----------------------------------------------------------------\n";
+fn sv_rdec_2() -> [] &static [byte] {
+    return ";\n    assign ar_match_";
 }
 
-fn sv_read_body() -> [] &static [byte] {
-    return "    reg [DATA_WIDTH-1:0] rdata;\n    reg                  rdata_valid;\n    always @(*) begin\n        rdata = 'h0;\n        rdata_valid = 1'b0;\n";
+fn sv_rdec_3() -> [] &static [byte] {
+    return " =\n        rd_acc && (s_axi_araddr >= BASE_ADDR);\n\n    reg [DATA_WIDTH-1:0] rdata;\n    reg                  rdata_valid;\n    always @(*) begin\n        rdata = 'h0;\n        rdata_valid = 1'b0;\n";
 }
 
-fn sv_read_close() -> [] &static [byte] {
-    return "    end\n\n";
+fn sv_seq_hdr() -> [] &static [byte] {
+    return "    // ----------------------------------------------------------------\n    // Reset, handshake and write logic: one clocked block, one driver per register\n    // ----------------------------------------------------------------\n    always @(posedge clk) begin\n        if (!rst_n) begin\n";
 }
 
-fn sv_handshake() -> [] &static [byte] {
-    return "    // ----------------------------------------------------------------\n    // AXI4-Lite handshake (simplified one-cycle response)\n    // ----------------------------------------------------------------\n    assign s_axi_awready = s_axi_awvalid;\n    assign s_axi_wready  = s_axi_wvalid;\n    assign s_axi_bvalid  = s_axi_awvalid && s_axi_wvalid;\n    assign s_axi_bresp   = 2'b00;  // OKAY\n\n    assign s_axi_arready = s_axi_arvalid;\n    assign s_axi_rdata   = rdata;\n    assign s_axi_rvalid  = rdata_valid;\n    assign s_axi_rresp   = 2'b00;  // OKAY\n\n";
+fn sv_seq_mid() -> [] &static [byte] {
+    return "            bvalid_r <= 1'b0;\n            bresp_r <= 2'b00;\n            rvalid_r <= 1'b0;\n            rresp_r <= 2'b00;\n            rdata_r <= 'h0;\n        end else begin\n            if (bvalid_r && s_axi_bready) bvalid_r <= 1'b0;\n            if (rvalid_r && s_axi_rready) rvalid_r <= 1'b0;\n            if (wr_acc) begin\n                bvalid_r <= 1'b1;\n                bresp_r <= wr_hit ? 2'b00 : 2'b10;  // SLVERR: no writable register at the address\n            end\n            if (rd_acc) begin\n                rvalid_r <= 1'b1;\n                rdata_r <= rdata;\n                rresp_r <= rdata_valid ? 2'b00 : 2'b10;  // SLVERR: no readable register at the address\n            end\n";
+}
+
+fn sv_seq_end() -> [] &static [byte] {
+    return "        end\n    end\n\n    // ----------------------------------------------------------------\n    // AXI4-Lite handshake: a request is accepted on one clock and answered on the next, held until its ready\n    // ----------------------------------------------------------------\n    assign s_axi_awready = wr_acc;\n    assign s_axi_wready  = wr_acc;\n    assign s_axi_bvalid  = bvalid_r;\n    assign s_axi_bresp   = bresp_r;\n\n    assign s_axi_arready = rd_acc;\n    assign s_axi_rdata   = rdata_r;\n    assign s_axi_rvalid  = rvalid_r;\n    assign s_axi_rresp   = rresp_r;\n\n";
 }
 
 fn sv_tail() -> [] &static [byte] {
@@ -235,14 +239,14 @@ fn put_block_snake[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte
 // The condition of a register's write: the address match, the address and the data valid.
 fn put_write_cond[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
     var o = put_block_snake(heap, gc.put(heap, out, "aw_match_"), src, ir);
-    o = gc.put(heap, o, " && (s_axi_awaddr == ADDR_");
+    o = gc.put(heap, o, " && (s_axi_awaddr == BASE_ADDR + ADDR_");
     o = gc.put_span(heap, o, src, r.name_s, r.name_e);
     return gc.put(heap, o, ") && s_axi_wvalid");
 }
 
 // `r_<snake> <= <rhs>;`'s line start: `        if (<cond>) r_<snake> <= `.
 fn put_write_head[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
-    var o = put_write_cond(heap, gc.put(heap, out, "        if ("), src, ir, r);
+    var o = put_write_cond(heap, gc.put(heap, out, "            if ("), src, ir, r);
     o = put_snake(heap, gc.put(heap, o, ") r_"), src, r.name_s, r.name_e);
     return gc.put(heap, o, " <= ");
 }
@@ -255,52 +259,56 @@ fn put_snake_register[&h, &s](heap: &!h Heap, out: buffer.Buffer, src: &s [byte]
 
 fn put_write_logic[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
     let kind = src[r.kind_s..r.kind_e];
-    var o = gc.put(heap, out, "        // ");
+    var o = gc.put(heap, out, "            // ");
     o = put_register_id(heap, o, src, ir, r);
     o = gc.put_span(heap, gc.put(heap, o, " (kind="), src, r.kind_s, r.kind_e);
     o = gc.put(heap, o, ")\n");
     if bytes.equal(kind, "RO") {
-        o = gc.put(heap, o, "        // RO: writes are silently dropped. This is a Trust-tier behavioural choice; the checker flags WO/RO misuse.\n");
-        o = put_snake_register(heap, gc.put(heap, o, "        if (1'b0) r_"), src, r);
+        o = gc.put(heap, o, "            // RO: writes are dropped and answer SLVERR. This is a Trust-tier behavioural choice; the checker flags WO/RO misuse.\n");
+        o = put_snake_register(heap, gc.put(heap, o, "            if (1'b0) r_"), src, r);
         o = put_snake_register(heap, gc.put(heap, o, " <= r_"), src, r);
         return gc.put(heap, o, ";  // no-op\n");
     }
     if bytes.equal(kind, "RW") || bytes.equal(kind, "WO") {
-        return gc.put(heap, put_write_head(heap, o, src, ir, r), "s_axi_wdata;\n");
+        o = put_snake_register(heap, gc.put(heap, put_write_head(heap, o, src, ir, r), "(r_"), src, r);
+        return gc.put(heap, o, " & ~wmask) | (s_axi_wdata & wmask);\n");
     }
     if bytes.equal(kind, "W1C") || bytes.equal(kind, "W0S") {
         o = put_snake_register(heap, gc.put(heap, put_write_head(heap, o, src, ir, r), "r_"), src, r);
-        return gc.put(heap, o, " & ~s_axi_wdata;\n");
+        return gc.put(heap, o, " & ~(s_axi_wdata & wmask);\n");
     }
     if bytes.equal(kind, "W0C") {
         o = put_snake_register(heap, gc.put(heap, put_write_head(heap, o, src, ir, r), "r_"), src, r);
-        return gc.put(heap, o, " & s_axi_wdata;\n");
+        return gc.put(heap, o, " & (s_axi_wdata | ~wmask);\n");
     }
     if bytes.equal(kind, "W1S") {
         o = put_snake_register(heap, gc.put(heap, put_write_head(heap, o, src, ir, r), "r_"), src, r);
-        return gc.put(heap, o, " | s_axi_wdata;\n");
+        return gc.put(heap, o, " | (s_axi_wdata & wmask);\n");
     }
     if bytes.equal(kind, "RC") {
         return gc.put(heap, put_write_head(heap, o, src, ir, r), "'h0;  // RC: read clears, write has no effect\n");
     }
-    o = gc.put(heap, o, "        // Unknown kind ");
+    o = gc.put(heap, o, "            // Unknown kind ");
     o = pyrepr.str_repr(heap, o, kind);
     return gc.put(heap, o, "; no write logic emitted.\n");
 }
 
+// True when a write to a register of this kind is accepted (the module answers OKAY, not SLVERR).
+fn writable[&k](kind: &k [byte]) -> [] bool {
+    return bytes.equal(kind, "RW") || bytes.equal(kind, "WO") || bytes.equal(kind, "W1C") || bytes.equal(kind, "W0C") || bytes.equal(kind, "W1S") || bytes.equal(kind, "W0S") || bytes.equal(kind, "RC");
+}
+
 fn put_read_branch[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
     var o = put_block_snake(heap, gc.put(heap, out, "        if (ar_match_"), src, ir);
-    o = gc.put(heap, o, " && (s_axi_araddr == ADDR_");
+    o = gc.put(heap, o, " && (s_axi_araddr == BASE_ADDR + ADDR_");
     o = gc.put_span(heap, o, src, r.name_s, r.name_e);
     o = gc.put(heap, o, ")) begin\n");
     if bytes.equal(src[r.kind_s..r.kind_e], "WO") {
-        o = gc.put(heap, o, "            // WO register: reads return 0 (the spec notes this is a write-only register).\n");
-        o = gc.put(heap, o, "            rdata = 'h0;\n");
-    } else {
-        o = put_snake_register(heap, gc.put(heap, o, "            rdata = r_"), src, r);
-        o = gc.put(heap, o, ";\n");
+        o = gc.put(heap, o, "            // WO register: reads return 0 and answer SLVERR (the spec notes this is a write-only register).\n");
+        return gc.put(heap, o, "            rdata = 'h0;\n        end\n");
     }
-    return gc.put(heap, o, "            rdata_valid = 1'b1;\n        end\n");
+    o = put_snake_register(heap, gc.put(heap, o, "            rdata = r_"), src, r);
+    return gc.put(heap, o, ";\n            rdata_valid = 1'b1;\n        end\n");
 }
 
 // The module of `ir` (whose spans index `src`), named `path` in the banner.
@@ -428,7 +436,31 @@ pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte],
             o = gc.put(heap, o, ";\n");
             j = j + 1;
         }
-        o = gc.put(heap, gc.put(heap, o, "\n"), sv_reset_hdr());
+        o = gc.put(heap, o, "\n");
+        o = put_block_snake(heap, gc.put(heap, o, sv_wdec_1()), src, ir);
+        o = put_block_snake(heap, gc.put(heap, o, sv_wdec_2()), src, ir);
+        o = gc.put(heap, o, sv_wdec_3());
+        j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            if writable(src[r.kind_s..r.kind_e]) {
+                o = put_block_snake(heap, gc.put(heap, o, "        if (aw_match_"), src, ir);
+                o = gc.put_span(heap, gc.put(heap, o, " && (s_axi_awaddr == BASE_ADDR + ADDR_"), src, r.name_s, r.name_e);
+                o = gc.put(heap, o, ")) wr_hit = 1'b1;\n");
+            }
+            j = j + 1;
+        }
+        o = gc.put(heap, o, sv_wmask());
+        o = put_block_snake(heap, gc.put(heap, o, sv_rdec_1()), src, ir);
+        o = put_block_snake(heap, gc.put(heap, o, sv_rdec_2()), src, ir);
+        o = gc.put(heap, o, sv_rdec_3());
+        j = 0;
+        while j < nregs {
+            o = put_read_branch(heap, o, src, ir, vec.get(ir.regs, contents(pr)[j]));
+            j = j + 1;
+        }
+        o = gc.put(heap, o, "    end\n\n");
+        o = gc.put(heap, o, sv_seq_hdr());
         j = 0;
         while j < nregs {
             let r = vec.get(ir.regs, contents(pr)[j]);
@@ -446,32 +478,13 @@ pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte],
             }
             j = j + 1;
         }
-        o = gc.put(heap, o, sv_reset_end());
-        o = gc.put(heap, o, sv_write_hdr());
-        o = put_block_snake(heap, gc.put(heap, o, "    wire aw_match_"), src, ir);
-        o = gc.put(heap, o, ";\n    assign aw_match_");
-        o = put_block_snake(heap, o, src, ir);
-        o = gc.put(heap, o, " =\n        s_axi_awvalid && (s_axi_awaddr >= BASE_ADDR);\n\n");
-        o = gc.put(heap, o, sv_always_open());
+        o = gc.put(heap, o, sv_seq_mid());
         j = 0;
         while j < nregs {
             o = put_write_logic(heap, o, src, ir, vec.get(ir.regs, contents(pr)[j]));
             j = j + 1;
         }
-        o = gc.put(heap, o, sv_always_close());
-        o = gc.put(heap, o, sv_read_hdr());
-        o = put_block_snake(heap, gc.put(heap, o, "    wire ar_match_"), src, ir);
-        o = gc.put(heap, o, ";\n    assign ar_match_");
-        o = put_block_snake(heap, o, src, ir);
-        o = gc.put(heap, o, " =\n        s_axi_arvalid && (s_axi_araddr >= BASE_ADDR);\n\n");
-        o = gc.put(heap, o, sv_read_body());
-        j = 0;
-        while j < nregs {
-            o = put_read_branch(heap, o, src, ir, vec.get(ir.regs, contents(pr)[j]));
-            j = j + 1;
-        }
-        o = gc.put(heap, o, sv_read_close());
-        o = gc.put(heap, o, sv_handshake());
+        o = gc.put(heap, o, sv_seq_end());
         o = gc.put(heap, o, sv_tail());
     }
     unbox_slice(heap, perm);

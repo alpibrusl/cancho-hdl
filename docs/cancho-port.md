@@ -2322,7 +2322,7 @@ double-escaping mistake of §27.4 in mind. It is stated here so a clean first ru
 * The module is the Python tool's: its AXI4-Lite handshake is "simplified" by its own words, `wstrb` is ignored,
   and the `W0S` expression is wrong (30.3, 2). The port does not improve it.
 * Names are ASCII only; a name with an escape or a non-ASCII byte is refused where Python writes it.
-* Only Linux x86-64.
+* Only Linux x86-64. *(Corrected 2026-10-29, docs/sv-behavioral.md: the handshake is now registered and `wstrb` is honoured; the module was simulated against the reference model and had two defects, no register reachable at a non-zero base and a response combinational on the request, both fixed in the oracle and the port. The `W0S` line and the device side are unchanged.)*
 
 ---
 
@@ -2491,7 +2491,7 @@ Working the first example by hand (a scratch copy, not committed), the modules a
 With the comma taken out and both width names replaced by `32` in a scratch copy of `tools/generate/generate.py`'s output for
 `examples/uart-contract/uart.chw`, `iverilog -g2012 -tnull` accepts the module. That is one example, by hand: no claim is made for
 the others, and the module's behaviour (the AXI4-Lite handshake the Python tool calls "simplified", `wstrb` ignored, the `W0S`
-expression, 30.6) is still not read by anything.
+expression, 30.6) is still not read by anything. *(Corrected 2026-10-29, docs/sv-behavioral.md: the handshake is now registered and `wstrb` is honoured; the module was simulated against the reference model and had two defects, no register reachable at a non-zero base and a response combinational on the request, both fixed in the oracle and the port. The `W0S` line and the device side are unchanged.)*
 
 ### 34.2 Why the port does not change it
 
@@ -2559,7 +2559,7 @@ tools alike passes 8g by construction). Three breaks were added to `tests/mutati
 
 What this still does not show: that the **behaviour** of the modules is right (the handshake is simplified by its own words, `wstrb` is ignored,
 `W0S` is written as `W1C`: 30.3, 30.6), only that one parser reads them; and only `iverilog` was run, not `slang`, `verilator` or `yosys`.
-`iverilog` is now installed in CI (`.github/workflows/ci.yml`), which 34.3 waited for.
+`iverilog` is now installed in CI (`.github/workflows/ci.yml`), which 34.3 waited for. *(Corrected 2026-10-29, docs/sv-behavioral.md: the handshake is now registered and `wstrb` is honoured; the module was simulated against the reference model and had two defects, no register reachable at a non-zero base and a response combinational on the request, both fixed in the oracle and the port. The `W0S` line and the device side are unchanged.)*
 
 ---
 
