@@ -86,6 +86,15 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
      adapter runs about 0.03 % fast); six bytes the host sent 50 ms apart (host sleep of 50 ms) are stamped 1,351,772 to 1,358,363
      ticks apart, that is 50.07 to 50.31 ms by the FPGA's clock.
 
+* **Streaming least squares, a numerical example** (measured, on the board; `stats/stats.chw`, `rtl/stats.v`, `host/stats_test.cho`;
+  3 of 48 18x18 multipliers, 80 MHz, no Yosys warning). 2048 points (x, y) are streamed; the board accumulates n, Sx, Sy, Sxx, Sxy, Syy
+  in exact integers (48- and 64-bit). The host (cancho) compares: (1) each sum with the same sums computed in integers: **0 different**;
+  (2) the line from the board's sums (normal equations, in floats) with `std.linalg.lstsq` (Householder) on the same points: slope
+  0.429102290 and intercept 99.961410 from both, difference below the printed resolution (1e-15 for the slope, 1e-12 for the intercept);
+  R squared 0.947992. This is the "exact integer accumulators" case of the stats discussion: the board never rounds, the one rounding is
+  in the host's division. Limits: the data are synthetic and the points arrive over a 115200 baud link (13 s for 2048 points, one 10-byte
+  write each), so there is no speed claim; x is 16-bit and y 15-bit signed.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.
