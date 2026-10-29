@@ -65,8 +65,9 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   24 of 24 polls ok; after the last kick the trip is first seen **197 to 210 ms** later (8 runs, 200 ms timeout; the clock starts a few
   ms before the host sees the acknowledgement, so a value just under 200 is expected); a kick after the trip changes nothing;
   ENABLE 0 then 1 re-arms; a 500 ms silence with TIMEOUT_MS=0 stays ok. 700 LUT4, 152 MHz, no Yosys warning.
-  Limits, stated: the status byte comes from a new `T` command in the hand-written bridge (a generated register block has no input
-  for a device-written register, so the trip cannot be read through the contract); the "output" is an LED, nothing has been connected
+  Update (cancho-hdl#21): the trip is now read through a contract register, `STATUS` (RO, volatile, 0x0C), because the generator gives
+  device-written registers an input (`reg_status_in`); the `T` command of the first version is gone from the bridge, and the board test
+  passes the same way (trip seen 204 ms after the last kick, 3 runs). Limits, stated: the "output" is an LED, nothing has been connected
   to a servo or a scope; the timing figure is the host's view through a USB serial link, good to a few milliseconds, not a
   measurement of the hardware's accuracy.
 

@@ -12,7 +12,11 @@
         "kind": "RW",
         "reset": "0x00000000",
         "fields": [
-          { "name": "ENABLE", "lsb": 0, "msb": 0 }
+          {
+            "name": "ENABLE",
+            "lsb": 0,
+            "msb": 0
+          }
         ]
       },
       {
@@ -21,7 +25,11 @@
         "kind": "RW",
         "reset": "0x00000064",
         "fields": [
-          { "name": "MS", "lsb": 0, "msb": 15 }
+          {
+            "name": "MS",
+            "lsb": 0,
+            "msb": 15
+          }
         ]
       },
       {
@@ -30,7 +38,29 @@
         "kind": "RW",
         "reset": "0x00000000",
         "fields": [
-          { "name": "SEQ", "lsb": 0, "msb": 15 }
+          {
+            "name": "SEQ",
+            "lsb": 0,
+            "msb": 15
+          }
+        ]
+      },
+      {
+        "name": "STATUS",
+        "offset": "0x0C",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "TORQUE_OK",
+            "lsb": 0,
+            "msb": 0
+          },
+          {
+            "name": "TRIPPED",
+            "lsb": 1,
+            "msb": 1
+          }
         ]
       }
     ]

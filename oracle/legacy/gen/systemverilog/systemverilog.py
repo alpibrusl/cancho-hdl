@@ -8,7 +8,9 @@ Reads a contract IR and emits a SystemVerilog module that:
 - Has one `reg [N-1:0]` per register at its offset, applied
   through the AXI4-Lite write path.
 - Has one `reg_<name>_out` output port per register, exposing
-  the live value for the user to wire up behavior.
+  the live value for the user to wire up behavior, and one
+  `reg_<name>_in` input port per `RO` register marked `volatile`
+  (the device writes it): a read returns the input.
 - Honors access kinds: RW/RO/WO/RC/W1C/W0C/W1S/W0S.
 - Applies contract reset values on `!rst_n`.
 - Carries stable ID comments on every register and field, so a
@@ -177,6 +179,11 @@ SV_SEQ_END = """        end
 """
 
 
+def _device_written(reg: dict) -> bool:
+    """A read-only register the device writes: the contract marks it `volatile`."""
+    return reg.get("kind") == "RO" and bool(reg.get("volatile"))
+
+
 def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
     block = ir["block"]
     block_name: str = block["name"]
@@ -197,6 +204,13 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
 
     # Per-register behavior output ports
     registers = sorted(block.get("registers", []), key=lambda r: int(r["offset"], 16))
+    # A read-only register the device writes (`volatile`) is read from an input, not from the stored value
+    for reg in registers:
+        if _device_written(reg):
+            out.write(
+                f"    input  wire [DATA_WIDTH-1:0]      reg_{_to_lower_snake(reg['name'])}_in,  "
+                f"// chw:{block_name}.register.{reg['name']}\n"
+            )
     for n, reg in enumerate(registers):
         out.write(
             f"    output wire [DATA_WIDTH-1:0]      reg_{_to_lower_snake(reg['name'])}_out{',' if n + 1 < len(registers) else ' '}  "
@@ -260,6 +274,8 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
         if reg["kind"] == "WO":
             out.write("            // WO register: reads return 0 and answer SLVERR (the spec notes this is a write-only register).\n")
             out.write("            rdata = 'h0;\n        end\n")
+        elif _device_written(reg):
+            out.write(f"            rdata = reg_{_to_lower_snake(reg['name'])}_in;\n            rdata_valid = 1'b1;\n        end\n")
         else:
             out.write(f"            rdata = r_{_to_lower_snake(reg['name'])};\n            rdata_valid = 1'b1;\n        end\n")
     out.write("    end\n\n")

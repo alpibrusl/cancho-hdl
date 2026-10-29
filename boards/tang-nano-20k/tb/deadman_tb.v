@@ -13,7 +13,7 @@ module deadman_tb;
     task get(output [7:0] b); begin while (qo==qi) #(CLK_NS); b=q[qo%64]; qo=qo+1; end endtask
     task wr(input [31:0] a, input [31:0] d); reg [7:0] r; integer i; begin send("W");
         for (i=3;i>=0;i=i-1) send(a >> (8*i)); for (i=3;i>=0;i=i-1) send(d >> (8*i)); get(r); end endtask
-    task st(output [7:0] s); begin send("T"); get(s); end endtask
+    task st(output [7:0] s); reg [7:0] r, b3, b2, b1; begin send("R"); send(8'h40); send(8'h00); send(8'h00); send(8'h0C); get(r); get(b3); get(b2); get(b1); get(s); end endtask
     reg [7:0] s; integer k;
     initial begin
         #(40*CLK_NS);
