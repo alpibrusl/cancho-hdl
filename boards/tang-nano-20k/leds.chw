@@ -1,0 +1,29 @@
+{
+  "version": "0.1.0",
+  "block": {
+    "name": "TangLeds",
+    "base_address": "0x40000000",
+    "bus_width": 32,
+    "endianness": "little",
+    "registers": [
+      {
+        "name": "LEDS",
+        "offset": "0x00",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          { "name": "ON", "lsb": 0, "msb": 5 }
+        ]
+      },
+      {
+        "name": "SCRATCH",
+        "offset": "0x04",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          { "name": "VALUE", "lsb": 0, "msb": 31 }
+        ]
+      }
+    ]
+  }
+}

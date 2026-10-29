@@ -160,6 +160,7 @@ open question list in [`contract-design.md`](contract-design.md)
   and that the response was combinational on the request; both are fixed in the oracle and the port. Still open: the device side (a
   register the device writes, DMA, interrupts) has no port on the module, `RC` is not cleared by a read, and nothing was synthesized
   or run on hardware (Yosys, nextpnr and Verilator were not used).
+- Tang Nano 20K design (`boards/tang-nano-20k/`, docs/tang-nano-20k.md, 2026-10-29): simulated and synthesised with Yosys; place and route, the bitstream and the board are not done.
 
 **Exit criteria (in progress):**
 
