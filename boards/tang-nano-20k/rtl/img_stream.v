@@ -20,6 +20,14 @@ module img_stream (
     input  wire       tx_busy,
     output reg  [7:0] rows_done
 );
+    // results wait in a 256-byte FIFO for the serial transmitter: the host sends back to back at the line rate, and the transmitter
+    // restarts a few clocks late after each byte, so without it the board falls behind and drops input bytes
+    reg [7:0] fifo [0:255];
+    reg [8:0] wptr, rptr;
+    wire [8:0] fill = wptr - rptr;
+    reg [7:0] fifo_q;
+    reg       popping;
+
     // a byte that arrives while the filter is busy is kept (one deep): the host sends at the rate the board answers
     reg       pend_v;
     reg [7:0] pend_d;
@@ -49,10 +57,14 @@ module img_stream (
     always @(posedge clk) begin
         r0 <= lb0[x];                 // synchronous reads: block RAM
         r1 <= lb1[x];
+        fifo_q <= fifo[rptr[7:0]];          // synchronous read of the byte at the read pointer
         if (!rst_n) begin
-            st <= S_CMD; pend_v <= 1'b0; tx_start <= 1'b0; rows_done <= 8'd0; x <= 8'd0; y <= 8'd0;
+            st <= S_CMD; pend_v <= 1'b0; tx_start <= 1'b0; rows_done <= 8'd0; x <= 8'd0; y <= 8'd0; wptr <= 9'd0; rptr <= 9'd0; popping <= 1'b0;
         end else begin
             tx_start <= 1'b0;
+            // transmitter side: a byte is read out of the FIFO (synchronous read), then sent when the transmitter is free
+            if (popping) begin tx_data <= fifo_q; tx_start <= 1'b1; popping <= 1'b0; end
+            else if (fill != 9'd0 && !tx_busy && !tx_start) begin rptr <= rptr + 9'd1; popping <= 1'b1; end
             case (st)
                 S_CMD:  if (take) begin pend_v <= 1'b0; if (pend_d == 8'h49) st <= S_W; end
                 S_W:    if (take) begin pend_v <= 1'b0; w <= pend_d; st <= S_H; end
@@ -82,8 +94,8 @@ module img_stream (
                             endcase
                             st <= S_TX;
                         end
-                S_TX:   if (!tx_busy) begin
-                            tx_data <= res; tx_start <= 1'b1;
+                S_TX:   if (fill < 9'd256) begin
+                            fifo[wptr[7:0]] <= res; wptr <= wptr + 9'd1;
                             if (x == w - 8'd1) begin
                                 x <= 8'd0; rows_done <= rows_done + 8'd1;
                                 if (y == h - 8'd1) begin y <= 8'd0; st <= S_CMD; end else begin y <= y + 8'd1; st <= S_PIX; end

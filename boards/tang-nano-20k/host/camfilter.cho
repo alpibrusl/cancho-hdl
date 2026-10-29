@@ -42,7 +42,7 @@ fn main(world: World) -> [] int {
                             region r {
                                 let img = alloc_slice[r](n + 1, byte_of(0));
                                 let got = alloc_slice[r](n + 1, byte_of(0));
-                                let chunk = alloc_slice[r](32, byte_of(0));
+                                let chunk = alloc_slice[r](256, byte_of(0));
                                 let head = alloc_slice[r](5, byte_of(0));
                                 let ev = alloc_slice[r](2, 0);
                                 var more = status == 0;
@@ -69,18 +69,21 @@ fn main(world: World) -> [] int {
                                         var recv = 0;
                                         var tries = 0;
                                         while recv < n && tries < 3000 {
-                                            if sent < n {
-                                                var m = 16;
-                                                if n - sent < 16 { m = n - sent; }
+                                            // credit window: at most 48 bytes in flight (sent but not yet answered). The board answers every byte, so
+                                            // the answers are the credit. Measured: the USB serial adapter loses bytes when more than about 64 are
+                                            // in flight (win.py: 96 in flight loses data, 64 and below does not), so 48 leaves margin.
+                                            var room = 48 - (sent - recv);
+                                            if n - sent < room { room = n - sent; }
+                                            if room > 0 {
                                                 region s {
-                                                    let out = alloc_slice[s](m, byte_of(0));
+                                                    let out = alloc_slice[s](room, byte_of(0));
                                                     var k = 0;
-                                                    while k < m { out[k] = img[sent + k]; k = k + 1; }
-                                                    if tty_write(q, out) != m { status = 5; }
+                                                    while k < room { out[k] = img[sent + k]; k = k + 1; }
+                                                    let wrote = tty_write(q, out);
+                                                    if wrote < 0 { status = 5; } else { sent = sent + wrote; }
                                                 }
-                                                sent = sent + m;
                                             }
-                                            borrow mut p as &!pw in { poller_wait(pw, ev, 10); }
+                                            borrow mut p as &!pw in { poller_wait(pw, ev, 5); }
                                             let k = tty_read(q, chunk);
                                             var j = 0;
                                             while j < k && recv < n { got[recv] = chunk[j]; recv = recv + 1; j = j + 1; }

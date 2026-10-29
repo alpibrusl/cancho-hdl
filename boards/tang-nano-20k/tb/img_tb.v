@@ -10,7 +10,7 @@ module img_tb;
     wire host_rx;
     wire [5:0] led;
     top #(.CLKS_PER_BIT(234)) dut (.clk(clk), .uart_rx(host_tx), .uart_tx(host_rx), .led(led));
-    reg [7:0] rxq [0:255];
+    reg [7:0] rxq [0:4095];
     integer rx_in = 0;
     initial begin
         #(10 * CLK_NS);
@@ -20,7 +20,7 @@ module img_tb;
             #(BIT_NS/2);
             for (i = 0; i < 8; i = i + 1) begin #(BIT_NS); v[i] = host_rx; end
             #(BIT_NS);
-            rxq[rx_in] = v; rx_in = rx_in + 1;
+            rxq[rx_in % 4096] = v; rx_in = rx_in + 1;
         end
     end
     task send_byte(input [7:0] b);
@@ -42,8 +42,17 @@ module img_tb;
             for (k = 0; k < 30; k = k + 1) send_byte(img[k]);
             while (rx_in < base + 30) #(CLK_NS);
             $write("MODE %0d:", m);
-            for (k = 0; k < 30; k = k + 1) $write(" %0d", rxq[base + k]);
+            for (k = 0; k < 30; k = k + 1) $write(" %0d", rxq[(base + k) % 4096]);
             $write("\n");
+        end
+        // a long back-to-back stream in pass mode: 200x8 bytes, none may be lost or changed
+        base = rx_in;
+        send_byte("I"); send_byte(200); send_byte(8); send_byte(0); send_byte(0);
+        for (k = 0; k < 1600; k = k + 1) send_byte((k * 7 + k / 200) % 256);
+        while (rx_in < base + 1600 && $time < 64'd90000000000) #(CLK_NS);
+        begin : chk integer bad; bad = 0;
+            for (k = 0; k < 1600 && base + k < rx_in; k = k + 1) if (rxq[(base + k) % 4096] != (k * 7 + k / 200) % 256) bad = bad + 1;
+            $display("STREAM received %0d of 1600, different %0d", rx_in - base, bad);
         end
         $display("LEDS %b", led);
         $finish;

@@ -52,6 +52,24 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   Speed, not tuned: 2.6 s per 96x72 frame, because `camfilter` writes 16 bytes per poll; the serial line itself would allow about
   0.6 s per frame. No camera frame is kept in the repository.
 
+* **Line rate of the camera path** (measured). `camfilter` now keeps at most 48 bytes in flight, using the board's one answer per byte
+  as credit: 0.87 s per 96x72 frame (was 2.6 s), output byte-identical to the verified one. The limit is the USB serial adapter: with
+  96 or more bytes in flight it silently loses data (`tests/hardware/adapter_window.py`: 64 and below clean, 96 and 128 lose most of a
+  3000-byte stream). The image design also got a 256-byte result FIFO, because the host sends back to back and the transmitter
+  restarts a few clocks late after each byte (a 1600-byte back-to-back stream in simulation: 0 lost). A live pipe, ffmpeg at 1 frame/s
+  into `camfilter` into a reader: 6 frames out at the camera's rate (first at 3.6 s, camera start-up included).
+* **E4, the deadman** (measured, on the board). `deadman.chw` (CTRL.ENABLE, TIMEOUT_MS, KICK.SEQ; `chw check` clean) and the
+  hand-written `rtl/deadman.v` behind it: armed, a change of KICK.SEQ restarts a millisecond counter; when it reaches TIMEOUT_MS the
+  trip latches and `torque_ok` drops (LED 0 lit while ok, LED 1 while tripped); only ENABLE=0 clears it; TIMEOUT_MS=0 never trips.
+  `host/deadman.cho` checks from cancho, against the board's own clock: disarmed at start; armed reads ok; 24 kicks 50 ms apart,
+  24 of 24 polls ok; after the last kick the trip is first seen **197 to 210 ms** later (8 runs, 200 ms timeout; the clock starts a few
+  ms before the host sees the acknowledgement, so a value just under 200 is expected); a kick after the trip changes nothing;
+  ENABLE 0 then 1 re-arms; a 500 ms silence with TIMEOUT_MS=0 stays ok. 700 LUT4, 152 MHz, no Yosys warning.
+  Limits, stated: the status byte comes from a new `T` command in the hand-written bridge (a generated register block has no input
+  for a device-written register, so the trip cannot be read through the contract); the "output" is an LED, nothing has been connected
+  to a servo or a scope; the timing figure is the host's view through a USB serial link, good to a few milliseconds, not a
+  measurement of the hardware's accuracy.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.
@@ -76,7 +94,7 @@ hardware the contract describes:
 | E1 | cancho talks to the board through `Tty` | board | **done** (`host/probe.cho`) |
 | E2 | A cancho CLI `fpga` (`r ADDR`, `w ADDR DATA`, `selftest`) and the corpus replay in cancho, so Python is gone from the loop | E1 | next |
 | E3 | Round-trip latency and throughput of the bridge from cancho, 1000 transactions; find the baud limit (115200 up to 3 Mbaud on the FT2232) | E2 | |
-| E4 | `deadman.chw`: `TIMEOUT_MS`, `KICK`, an output pin; test in simulation, then on the board with a scope or LED: kick stops, output drops within the declared time | E2 | |
+| E4 | `deadman.chw`: `TIMEOUT_MS`, `KICK`, an output; test in simulation, then on the board: kick stops, output drops within the declared time | E2 | **done**, LED as the output, no scope (see results) |
 | E5 | Feetech passthrough with a recorder: a second UART at 1 Mbaud between a servo adapter and the bridge; first with a loopback, then a real servo, read-only (ping) | servo + adapter, an operator present | |
 | E6 | The limit gate in front of goal-position writes; only after E5 has run read-only | E4, E5, the e-stop | |
 

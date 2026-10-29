@@ -49,7 +49,7 @@ module top #(parameter CLKS_PER_BIT = 234) (input wire clk, input wire uart_rx, 
     wire awvalid, awready, wvalid, wready, bvalid, bready, arvalid, arready, rvalid, rready;
 {wires}
     uart_axil_bridge #(.CLKS_PER_BIT(CLKS_PER_BIT)) u_bridge (
-        .clk(clk), .rst_n(rst_n), .rx(uart_rx), .tx(uart_tx),
+        .clk(clk), .rst_n(rst_n), .rx(uart_rx), .status(8'h00), .tx(uart_tx),
         .awaddr(awaddr), .awvalid(awvalid), .awready(awready), .wdata(wdata), .wstrb(wstrb), .wvalid(wvalid), .wready(wready),
         .bresp(bresp), .bvalid(bvalid), .bready(bready), .araddr(araddr), .arvalid(arvalid), .arready(arready),
         .rdata(rdata), .rresp(rresp), .rvalid(rvalid), .rready(rready));

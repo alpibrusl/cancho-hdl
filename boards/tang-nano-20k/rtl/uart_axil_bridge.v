@@ -5,6 +5,7 @@
 // Protocol, 8N1, bytes in the order shown, addresses and data big-endian (most significant byte first):
 //   host -> 'W' a3 a2 a1 a0 d3 d2 d1 d0      one write, all byte strobes set       device -> resp
 //   host -> 'R' a3 a2 a1 a0                  one read                              device -> resp d3 d2 d1 d0
+//   host -> 'T'                              one byte of board status (the `status` input, glue-level, not a register)
 // resp is the AXI response: 0x00 OKAY, 0x02 SLVERR (no register at the address, a write to a read-only register, a read of a
 // write-only one). Any other command byte is ignored. A request that is never completed by the host leaves the bridge waiting.
 `timescale 1ns/1ps
@@ -15,6 +16,7 @@ module uart_axil_bridge #(
     input  wire        clk,
     input  wire        rst_n,
     input  wire        rx,
+    input  wire [7:0]  status,     // answered to 'T'; tie to 0 where the design has none
     output wire        tx,
     output reg  [31:0] awaddr,
     output reg         awvalid,
@@ -67,6 +69,7 @@ module uart_axil_bridge #(
                 S_CMD: if (rx_valid) begin
                     if (rx_data == 8'h57) begin is_write <= 1'b1; need <= 4'd8; nb <= 4'd0; state <= S_ARG; end
                     else if (rx_data == 8'h52) begin is_write <= 1'b0; need <= 4'd4; nb <= 4'd0; state <= S_ARG; end
+                    else if (rx_data == 8'h54) begin txbuf <= {status, 32'h0}; txn <= 3'd1; tx_wait <= 1'b0; state <= S_TX; end
                 end
                 S_ARG: if (rx_valid) begin
                     acc <= {acc[55:0], rx_data};
