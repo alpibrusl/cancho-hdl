@@ -1,0 +1,226 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+
+// imgtest.cho -- the image filter on the board (rtl/img_stream.v), judged against the same filter written here in cancho.
+//
+// A synthetic 64x48 greyscale image goes through five modes (pass, invert, threshold, sobel, box blur). For each, the board's answer
+// is compared byte for byte with `reference` below, which implements the integer definition in rtl/img_stream.v's header. stdout
+// gets one line per mode, then a line `---PGM---` and a contact sheet (the original and the five results, side by side) as an ASCII
+// PGM, so the images can be looked at. Authority: the Tty capability under /dev, a poll, stdout. No foreign call.
+
+fn width() -> [] int { return 64; }
+fn height() -> [] int { return 48; }
+
+// the test image: a gradient, a bright disc and a dark box, so every mode has something to do
+fn pixel(x: int, y: int) -> [] int {
+    let dx = x - 20;
+    let dy = y - 22;
+    if dx * dx + dy * dy < 14 * 14 {
+        return 220;
+    }
+    if x >= 40 && x < 58 && y >= 10 && y < 36 {
+        return 35;
+    }
+    return 40 + x * 2 + y;
+}
+
+fn at[&a](img: &a [byte], w: int, x: int, y: int) -> [] int {
+    return int_of(img[y * w + x]);
+}
+
+fn absi(v: int) -> [] int {
+    if v < 0 { return 0 - v; }
+    return v;
+}
+
+// out[i] for pixel (x, y): the definition in rtl/img_stream.v
+fn reference_pixel[&a](img: &a [byte], w: int, mode: int, thr: int, x: int, y: int) -> [] int {
+    let p = at(img, w, x, y);
+    if mode == 0 { return p; }
+    if mode == 1 { return 255 - p; }
+    if mode == 2 {
+        if p >= thr { return 255; }
+        return 0;
+    }
+    if x < 2 || y < 2 { return 0; }
+    // window columns oldest first: c0 = x-2, c1 = x-1, c2 = x; rows t = y-2, m = y-1, b = y
+    let c0t = at(img, w, x - 2, y - 2);
+    let c0m = at(img, w, x - 2, y - 1);
+    let c0b = at(img, w, x - 2, y);
+    let c1t = at(img, w, x - 1, y - 2);
+    let c1m = at(img, w, x - 1, y - 1);
+    let c1b = at(img, w, x - 1, y);
+    let c2t = at(img, w, x, y - 2);
+    let c2m = at(img, w, x, y - 1);
+    let c2b = at(img, w, x, y);
+    if mode == 3 {
+        let gx = (c2t + 2 * c2m + c2b) - (c0t + 2 * c0m + c0b);
+        let gy = (c0b + 2 * c1b + c2b) - (c0t + 2 * c1t + c2t);
+        let mag = absi(gx) + absi(gy);
+        if mag > 255 { return 255; }
+        return mag;
+    }
+    let sum = c0t + c0m + c0b + c1t + c1m + c1b + c2t + c2m + c2b;
+    return ((sum * 57) / 512) % 256;
+}
+
+fn hexdig(n: int) -> [] int {
+    if n < 10 { return 48 + n; }
+    return 87 + n;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec); release(clock);
+    let device = narrow(tty, "/dev");
+    let w = width();
+    let h = height();
+    let n = w * h;
+    var failures = 0;
+    var status = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status = 4; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            region r {
+                                let sheet = alloc_slice[r](n * 6, byte_of(0));   // original, then the five modes, each as the board answered
+                                let img = alloc_slice[r](n, byte_of(0));
+                                var y = 0;
+                                while y < h {
+                                    var x = 0;
+                                    while x < w {
+                                        img[y * w + x] = byte_of(pixel(x, y));
+                                        sheet[y * w + x] = byte_of(pixel(x, y));
+                                        x = x + 1;
+                                    }
+                                    y = y + 1;
+                                }
+                                let got = alloc_slice[r](n, byte_of(0));
+                                let chunk = alloc_slice[r](32, byte_of(0));
+                                let head = alloc_slice[r](5, byte_of(0));
+                                var mode = 0;
+                                while mode < 5 && status == 0 {
+                                    tty_flush_input(q);
+                                    head[0] = byte_of(73);
+                                    head[1] = byte_of(w);
+                                    head[2] = byte_of(h);
+                                    head[3] = byte_of(mode);
+                                    head[4] = byte_of(100);
+                                    tty_write(q, head);
+                                    var sent = 0;
+                                    var recv = 0;
+                                    var tries = 0;
+                                    while recv < n && tries < 3000 {
+                                        if sent < n {
+                                            var m = 16;
+                                            if n - sent < 16 { m = n - sent; }
+                                            region s {
+                                                let out = alloc_slice[s](m, byte_of(0));
+                                                var i = 0;
+                                                while i < m { out[i] = img[sent + i]; i = i + 1; }
+                                                if tty_write(q, out) != m { status = 5; }
+                                            }
+                                            sent = sent + m;
+                                        }
+                                        borrow mut p as &!pw in {
+                                            let ev = alloc_slice[r](2, 0);
+                                            poller_wait(pw, ev, 10);
+                                        }
+                                        let k = tty_read(q, chunk);
+                                        var i = 0;
+                                        while i < k && recv < n {
+                                            got[recv] = chunk[i];
+                                            recv = recv + 1;
+                                            i = i + 1;
+                                        }
+                                        tries = tries + 1;
+                                    }
+                                    var bad = 0;
+                                    var first = 0 - 1;
+                                    var yy = 0;
+                                    while yy < h {
+                                        var xx = 0;
+                                        while xx < w {
+                                            let i2 = yy * w + xx;
+                                            let want = reference_pixel(img, w, mode, 100, xx, yy);
+                                            var have = 0 - 1;
+                                            if i2 < recv { have = int_of(got[i2]); }
+                                            if have != want {
+                                                bad = bad + 1;
+                                                if first < 0 { first = i2; }
+                                            }
+                                            sheet[(mode + 1) * n + i2] = got[i2];
+                                            xx = xx + 1;
+                                        }
+                                        yy = yy + 1;
+                                    }
+                                    failures = failures + bad;
+                                    borrow mut heap as &!hp in {
+                                        var line = buffer.empty(hp, 80);
+                                        line = buffer.append(hp, line, "mode ");
+                                        line = buffer.push_nat(hp, line, mode);
+                                        line = buffer.append(hp, line, ": received ");
+                                        line = buffer.push_nat(hp, line, recv);
+                                        line = buffer.append(hp, line, " of ");
+                                        line = buffer.push_nat(hp, line, n);
+                                        line = buffer.append(hp, line, ", different from the reference: ");
+                                        line = buffer.push_nat(hp, line, bad);
+                                        if bad == 0 { line = buffer.append(hp, line, "  OK"); } else { line = buffer.append(hp, line, "  MISMATCH"); }
+                                        line = buffer.push(hp, line, byte_of(10));
+                                        borrow mut io as &!i3 in { borrow line as &lb in { io.write_all(i3, buffer.bytes(lb)); } }
+                                        buffer.drop(hp, line);
+                                    }
+                                    mode = mode + 1;
+                                }
+                                // the contact sheet: six images side by side, ASCII PGM
+                                borrow mut heap as &!hp in {
+                                    var pg = buffer.empty(hp, 4096);
+                                    pg = buffer.append(hp, pg, "---PGM---\nP2\n");
+                                    pg = buffer.push_nat(hp, pg, w * 6);
+                                    pg = buffer.push(hp, pg, byte_of(32));
+                                    pg = buffer.push_nat(hp, pg, h);
+                                    pg = buffer.append(hp, pg, "\n255\n");
+                                    var ry = 0;
+                                    while ry < h {
+                                        var im = 0;
+                                        while im < 6 {
+                                            var rx = 0;
+                                            while rx < w {
+                                                pg = buffer.push_nat(hp, pg, int_of(sheet[im * n + ry * w + rx]));
+                                                pg = buffer.push(hp, pg, byte_of(32));
+                                                rx = rx + 1;
+                                            }
+                                            im = im + 1;
+                                        }
+                                        pg = buffer.push(hp, pg, byte_of(10));
+                                        ry = ry + 1;
+                                    }
+                                    borrow mut io as &!i4 in { borrow pg as &pb in { io.write_all(i4, buffer.bytes(pb)); } }
+                                    buffer.drop(hp, pg);
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    if status != 0 { return status; }
+    if failures != 0 { return 1; }
+    return 0;
+}

@@ -19,6 +19,25 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   `cancho authority` says it performs `tty_open("/dev")`, `tty_read`, `tty_write`, `poll`, `io_write`, `heap` and
   "never touches ... foreign code". No `extern fn`, no Python.
 
+## Results since the first write-up (2026-10-29, same day)
+
+* **The compiler written in cancho** (measured). cancho at `471b8e93` has `scripts/build-standalone.sh`: the Rust `cancho` builds the
+  command line written in cancho (stage 1), which builds itself (stage 2), which builds itself again (stage 3); stage 2 and stage 3
+  are byte-identical (sha256 `ce39e42c...`). That binary (`--version`: `cancho 0.0.0 (rev 471b8e93...)`, 3.1 MB) then ran
+  `host/probe.cho` against the board, and built `chw` from `scripts/build.sh` whose `generate` output is byte-identical to the older
+  `chw` for the two contracts and two targets compared (`leds.chw` and `uart.chw`; SystemVerilog and C header). The repository's
+  `.cancho-rev` still pins `7e4088b`; nothing here moved it.
+* **An image filter on the board** (measured). `rtl/img_stream.v` is a streaming 3x3 filter (pass, invert, threshold, Sobel, box
+  blur) behind the UART; `host/imgtest.cho` sends a 64x48 greyscale image in each mode, reads the answers while writing, and compares
+  every byte with the same filter written in cancho: **5 modes x 3072 pixels, 0 different**. Whole run (compile included) 6.5 s. The
+  design uses 809 LUT4, 238 flip-flops and 2 block RAMs and closes timing at 78 MHz against 27 MHz. The contact sheet
+  (original, pass, invert, threshold, Sobel, blur) is `docs/img/tang-nano-20k-image-filter.png`. The Sobel and blur windows end at the
+  current pixel, so those two outputs are the image shifted by one pixel down and right, and zero in the first two rows and columns;
+  that is the stated definition, not a bug. This is a hand-written design, outside the `.chw` contract flow; the contract flow only
+  covers register blocks.
+  Not measured: any speed advantage. At 115200 baud the serial line is the limit (about 11.5 KB/s each way); a 64x48 image takes 0.27 s
+  per direction, and the filter itself keeps up with the line.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.
