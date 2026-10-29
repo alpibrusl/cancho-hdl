@@ -1,0 +1,87 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+
+// probe.cho -- the first native-cancho conversation with the board: read LEDS (0x40000000) over the UART bridge and
+// print the five bytes that come back (response, then the word big-endian). Tty capability only; no foreign call.
+
+fn hexdig(n: int) -> [] int {
+    if n < 10 {
+        return 48 + n;
+    }
+    return 87 + n;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec); release(clock);
+    let device = narrow(tty, "/dev");
+    var got = 0;
+    var line = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { got = 0 - errno; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { got = 0 - 1000; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            region r {
+                                let frame = alloc_slice[r](5, byte_of(0));
+                                frame[0] = byte_of(82);
+                                frame[1] = byte_of(64);
+                                tty_write(q, frame);
+                                let all = alloc_slice[r](5, byte_of(0));
+                                let chunk = alloc_slice[r](16, byte_of(0));
+                                var n = 0;
+                                var tries = 0;
+                                while n < 5 && tries < 20 {
+                                    borrow mut p as &!pw in {
+                                        let ev = alloc_slice[r](2, 0);
+                                        poller_wait(pw, ev, 50);
+                                    }
+                                    let k = tty_read(q, chunk);
+                                    var i = 0;
+                                    while i < k && n < 5 {
+                                        all[n] = chunk[i];
+                                        n = n + 1;
+                                        i = i + 1;
+                                    }
+                                    tries = tries + 1;
+                                }
+                                got = n;
+                                borrow mut heap as &!h in {
+                                    var out = buffer.empty(h, 32);
+                                    var j = 0;
+                                    while j < n {
+                                        out = buffer.push(h, out, byte_of(hexdig(int_of(all[j]) / 16)));
+                                        out = buffer.push(h, out, byte_of(hexdig(int_of(all[j]) % 16)));
+                                        out = buffer.push(h, out, byte_of(32));
+                                        j = j + 1;
+                                    }
+                                    out = buffer.push(h, out, byte_of(10));
+                                    borrow mut io as &!i2 in {
+                                        borrow out as &ob in { io.write_all(i2, buffer.bytes(ob)); }
+                                    }
+                                    buffer.drop(h, out);
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    if got == 5 { return 0; }
+    return 2;
+}
