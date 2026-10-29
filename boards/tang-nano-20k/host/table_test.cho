@@ -1,0 +1,117 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+import labio;
+
+// table_test.cho -- SELECT key, COUNT(*), SUM(v), MIN(v), MAX(v) FROM rows WHERE v >= :min GROUP BY key, on the FPGA (rtl/table_agg.v,
+// table/table.chw), judged against the same query computed here.
+//   Build: cancho build labio.cho table_test.cho --std      (the board must hold the group-by design)
+//
+// 1500 rows (key 0 to 11, value a signed 16-bit number) are streamed twice: once with WHERE v >= -200, once (after a clear) with
+// WHERE v >= 500. For every key the board's count, sum, min and max must equal the host's, and so must the number of rows received and kept.
+// Authority: standard output, the Tty capability under /dev, a poll. No filesystem, no network, no foreign call.
+
+fn key_of(i: int) -> [] int { return (i * 7 + i / 5) % 12; }
+fn val_of(i: int) -> [] int { return (i * i * 31 + i * 17) % 2001 - 1000; }
+
+fn signed32(v: int) -> [] int {
+    if v >= 2147483648 { return v - 4294967296; }
+    return v;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec); release(clock);
+    let device = narrow(tty, "/dev");
+    var failures = 0;
+    var status_code = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status_code = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status_code = 4; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            borrow mut p as &!pw in {
+                                region r {
+                                    let frame = alloc_slice[r](9, byte_of(0));
+                                    let cmd = alloc_slice[r](5, byte_of(0));
+                                    let ans = alloc_slice[r](8, byte_of(0));
+                                    let cnt = alloc_slice[r](12, 0);
+                                    let sum = alloc_slice[r](12, 0);
+                                    let mn = alloc_slice[r](12, 0);
+                                    let mx = alloc_slice[r](12, 0);
+                                    var query = 0;
+                                    var tog = 0;
+                                    while query < 2 {
+                                        var lo = 0 - 200;
+                                        if query == 1 { lo = 500; }
+                                        labio.write_reg(q, pw, frame, ans, 0, 1);              // clear every group
+                                        labio.pause(pw, 5);
+                                        labio.write_reg(q, pw, frame, ans, 0, 0);
+                                        labio.write_reg(q, pw, frame, ans, 4, (lo + 65536) % 65536);
+                                        var k = 0;
+                                        while k < 12 { cnt[k] = 0; sum[k] = 0; mn[k] = 32767; mx[k] = 0 - 32768; k = k + 1; }
+                                        var kept = 0;
+                                        var i = 0;
+                                        while i < 1500 {
+                                            let key = key_of(i);
+                                            let v = val_of(i);
+                                            if v >= lo {
+                                                kept = kept + 1;
+                                                cnt[key] = cnt[key] + 1;
+                                                sum[key] = sum[key] + v;
+                                                if v < mn[key] { mn[key] = v; }
+                                                if v > mx[key] { mx[key] = v; }
+                                            }
+                                            tog = 1 - tog;
+                                            labio.write_reg(q, pw, frame, ans, 8, tog * 2147483648 + ((v + 65536) % 65536) * 256 + key);
+                                            i = i + 1;
+                                        }
+                                        var bad = 0;
+                                        if labio.read_reg(q, pw, cmd, ans, 36) != 1500 { bad = bad + 1; }
+                                        if labio.read_reg(q, pw, cmd, ans, 40) != kept { bad = bad + 1; }
+                                        k = 0;
+                                        while k < 12 {
+                                            labio.write_reg(q, pw, frame, ans, 12, k);
+                                            labio.pause(pw, 1);
+                                            if labio.read_reg(q, pw, cmd, ans, 16) != cnt[k] { bad = bad + 1; }
+                                            var s = labio.read_reg(q, pw, cmd, ans, 20);
+                                            let hi = signed32(labio.read_reg(q, pw, cmd, ans, 24));
+                                            s = hi * 4294967296 + s;
+                                            if s != sum[k] { bad = bad + 1; }
+                                            if signed32(labio.read_reg(q, pw, cmd, ans, 28)) != mn[k] { bad = bad + 1; }
+                                            if signed32(labio.read_reg(q, pw, cmd, ans, 32)) != mx[k] { bad = bad + 1; }
+                                            k = k + 1;
+                                        }
+                                        borrow mut heap as &!h in { borrow mut io as &!i2 in {
+                                            labio.say(h, i2, "query ", query + 1, ": WHERE v >= lower bound, 1500 rows");
+                                            labio.say(h, i2, "   rows kept by the filter (host's count): ", kept, "");
+                                            labio.say(h, i2, "   figures different from the host's (12 groups x 4, plus the two row counts; want 0): ", bad, "");
+                                        } }
+                                        failures = failures + bad;
+                                        query = query + 1;
+                                    }
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    if status_code != 0 { return status_code; }
+    if failures != 0 { return 1; }
+    return 0;
+}

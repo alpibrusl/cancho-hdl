@@ -104,6 +104,17 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   board. This is the "int8 inference with an accuracy study" case of the ml discussion at its smallest: one layer, no activation, the data
   synthetic, not a cancho-ml model (I have not read cancho-ml). No speed claim: the link is the limit.
 
+* **A table query: GROUP BY with a filter** (measured, on the board; `table/table.chw`, `rtl/table_agg.v`, `host/table_test.cho`). The
+  board answers `SELECT key, COUNT(*), SUM(v), MIN(v), MAX(v) FROM rows WHERE v >= :min GROUP BY key` for rows (8-bit key, signed 16-bit
+  value) streamed in; the sum is 48-bit signed. cancho streamed 1500 rows twice, with `v >= -200` (919 rows kept) and `v >= 500` (382
+  kept), and read back 12 groups x (count, sum, min, max) plus the two row counts: **0 figures different** from the same query computed
+  in cancho, in both queries. The design uses 256-entry memories, runs at 129 MHz by nextpnr, and the simulation checks 13 things
+  including an empty group and a clear. **Caveat, not fixed:** nextpnr's timing report lists hold-time violations for this design
+  (112 in the first run; 10 worst paths shown for each of three other seeds, all through the memory write-enable). None of the other
+  designs here have any. The tests passed on the board regardless, but a design with reported hold violations should not be called
+  clean: the cause is probably the combinational write-enable (`we | clearing`) in front of the RAMs, and registering it is the next thing
+  to try. No speed claim: 1500 rows took about 10 s over the serial link.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.

@@ -28,6 +28,10 @@ grep -q '^RESULT: [1-9][0-9]* passed, 0 failed$' "$T/stats.out"
 iverilog -g2012 -o "$T/gemv.vvp" $B/tb/gemv_tb.v $B/rtl/gemv.v $B/rtl/top_gemv.v $B/rtl/uart_axil_bridge.v $B/rtl/uart_rx.v $B/rtl/uart_tx.v "$T/gemv_axi.sv"
 vvp "$T/gemv.vvp" | tee "$T/gemv.out"
 grep -q '^RESULT: [1-9][0-9]* passed, 0 failed$' "$T/gemv.out"
+"$CHW" generate $B/table/table.chw --target systemverilog >"$T/table_axi.sv"
+iverilog -g2012 -o "$T/table.vvp" $B/tb/table_tb.v $B/rtl/table_agg.v $B/rtl/top_table.v $B/rtl/uart_axil_bridge.v $B/rtl/uart_rx.v $B/rtl/uart_tx.v "$T/table_axi.sv"
+vvp "$T/table.vvp" | tee "$T/table.out"
+grep -q '^RESULT: [1-9][0-9]* passed, 0 failed$' "$T/table.out"
 if command -v yosys >/dev/null 2>&1; then
     yosys -q -l "$T/yosys.log" -p "read_verilog -sv $B/rtl/top.v $B/rtl/uart_axil_bridge.v $B/rtl/uart_rx.v $B/rtl/uart_tx.v $T/leds.sv; synth_gowin -top top -json $T/top.json"
     if grep -q '^Warning' "$T/yosys.log"; then grep '^Warning' "$T/yosys.log"; exit 1; fi
