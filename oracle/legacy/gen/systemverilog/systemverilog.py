@@ -59,17 +59,122 @@ def _to_lower_snake(name: str) -> str:
     return "".join(out)
 
 
-def _comment_id(*parts: str) -> str:
-    return "chw:" + ".".join(parts)
+SV_BAR = "    // ----------------------------------------------------------------\n"
+SV_PORTS = """    input  wire                       clk,
+    input  wire                       rst_n,
 
+    // AXI4-Lite write address channel
+    input  wire [ADDR_WIDTH-1:0]      s_axi_awaddr,
+    input  wire                       s_axi_awvalid,
+    output wire                       s_axi_awready,
 
-def _emit_id(out: io.StringIO, *parts: str) -> None:
-    out.write(f"// chw:{'.'.join(parts)}\n")
+    // AXI4-Lite write data channel
+    input  wire [DATA_WIDTH-1:0]      s_axi_wdata,
+    input  wire [DATA_WIDTH/8-1:0]    s_axi_wstrb,
+    input  wire                       s_axi_wvalid,
+    output wire                       s_axi_wready,
 
+    // AXI4-Lite write response channel
+    output wire [1:0]                 s_axi_bresp,
+    output wire                       s_axi_bvalid,
+    input  wire                       s_axi_bready,
 
-# ---------------------------------------------------------------------------
-# Top-level
-# ---------------------------------------------------------------------------
+    // AXI4-Lite read address channel
+    input  wire [ADDR_WIDTH-1:0]      s_axi_araddr,
+    input  wire                       s_axi_arvalid,
+    output wire                       s_axi_arready,
+
+    // AXI4-Lite read data channel
+    output wire [DATA_WIDTH-1:0]      s_axi_rdata,
+    output wire [1:0]                 s_axi_rresp,
+    output wire                       s_axi_rvalid,
+"""
+
+SV_WRITE_DECODE = """    // ----------------------------------------------------------------
+    // Write decode: accepted when address and data are valid and no response is pending
+    // ----------------------------------------------------------------
+    reg                  bvalid_r;
+    reg [1:0]            bresp_r;
+    reg                  rvalid_r;
+    reg [1:0]            rresp_r;
+    reg [DATA_WIDTH-1:0] rdata_r;
+    wire wr_acc;
+    assign wr_acc = s_axi_awvalid && s_axi_wvalid && !bvalid_r;
+    wire aw_match_{bn};
+    assign aw_match_{bn} =
+        wr_acc && (s_axi_awaddr >= BASE_ADDR);
+
+    reg wr_hit;
+    always @(*) begin
+        wr_hit = 1'b0;
+"""
+SV_WMASK = """    end
+
+    wire [DATA_WIDTH-1:0] wmask;
+    genvar bi;
+    generate
+        for (bi = 0; bi < DATA_WIDTH/8; bi = bi + 1) begin : g_wmask
+            assign wmask[8*bi +: 8] = {8{s_axi_wstrb[bi]}};
+        end
+    endgenerate
+
+"""
+SV_READ_DECODE = """    // ----------------------------------------------------------------
+    // Read mux: accepted when the address is valid and no response is pending
+    // ----------------------------------------------------------------
+    wire rd_acc;
+    assign rd_acc = s_axi_arvalid && !rvalid_r;
+    wire ar_match_{bn};
+    assign ar_match_{bn} =
+        rd_acc && (s_axi_araddr >= BASE_ADDR);
+
+    reg [DATA_WIDTH-1:0] rdata;
+    reg                  rdata_valid;
+    always @(*) begin
+        rdata = 'h0;
+        rdata_valid = 1'b0;
+"""
+SV_SEQ_HDR = """    // ----------------------------------------------------------------
+    // Reset, handshake and write logic: one clocked block, one driver per register
+    // ----------------------------------------------------------------
+    always @(posedge clk) begin
+        if (!rst_n) begin
+"""
+SV_SEQ_MID = """            bvalid_r <= 1'b0;
+            bresp_r <= 2'b00;
+            rvalid_r <= 1'b0;
+            rresp_r <= 2'b00;
+            rdata_r <= 'h0;
+        end else begin
+            if (bvalid_r && s_axi_bready) bvalid_r <= 1'b0;
+            if (rvalid_r && s_axi_rready) rvalid_r <= 1'b0;
+            if (wr_acc) begin
+                bvalid_r <= 1'b1;
+                bresp_r <= wr_hit ? 2'b00 : 2'b10;  // SLVERR: no writable register at the address
+            end
+            if (rd_acc) begin
+                rvalid_r <= 1'b1;
+                rdata_r <= rdata;
+                rresp_r <= rdata_valid ? 2'b00 : 2'b10;  // SLVERR: no readable register at the address
+            end
+"""
+SV_SEQ_END = """        end
+    end
+
+    // ----------------------------------------------------------------
+    // AXI4-Lite handshake: a request is accepted on one clock and answered on the next, held until its ready
+    // ----------------------------------------------------------------
+    assign s_axi_awready = wr_acc;
+    assign s_axi_wready  = wr_acc;
+    assign s_axi_bvalid  = bvalid_r;
+    assign s_axi_bresp   = bresp_r;
+
+    assign s_axi_arready = rd_acc;
+    assign s_axi_rdata   = rdata_r;
+    assign s_axi_rvalid  = rvalid_r;
+    assign s_axi_rresp   = rresp_r;
+
+"""
 
 
 def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
@@ -82,39 +187,11 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
     out = io.StringIO()
 
     # Banner
-    out.write(f"// Generated by cancho-hdl from {source_path}. Do not edit.\n")
-    _emit_id(out, block_name)
-    out.write("// Synthesis output is a Trust boundary (see docs/guarantees.md).\n")
-    out.write("`default_nettype none\n\n")
+    out.write(f"// Generated by cancho-hdl from {source_path}. Do not edit.\n// chw:{block_name}\n"
+              "// Synthesis output is a Trust boundary (see docs/guarantees.md).\n`default_nettype none\n\n")
 
     # Module declaration
-    out.write(f"module {module_name} #(\n")
-    out.write("    parameter ADDR_WIDTH = 32,\n")
-    out.write(f"   parameter DATA_WIDTH = {bus_width}\n")
-    out.write(") (\n")
-    out.write("    input  wire                       clk,\n")
-    out.write("    input  wire                       rst_n,\n\n")
-    out.write("    // AXI4-Lite write address channel\n")
-    out.write("    input  wire [ADDR_WIDTH-1:0]      s_axi_awaddr,\n")
-    out.write("    input  wire                       s_axi_awvalid,\n")
-    out.write("    output wire                       s_axi_awready,\n\n")
-    out.write("    // AXI4-Lite write data channel\n")
-    out.write("    input  wire [DATA_WIDTH-1:0]      s_axi_wdata,\n")
-    out.write("    input  wire [DATA_WIDTH/8-1:0]    s_axi_wstrb,\n")
-    out.write("    input  wire                       s_axi_wvalid,\n")
-    out.write("    output wire                       s_axi_wready,\n\n")
-    out.write("    // AXI4-Lite write response channel\n")
-    out.write("    output wire [1:0]                 s_axi_bresp,\n")
-    out.write("    output wire                       s_axi_bvalid,\n")
-    out.write("    input  wire                       s_axi_bready,\n\n")
-    out.write("    // AXI4-Lite read address channel\n")
-    out.write("    input  wire [ADDR_WIDTH-1:0]      s_axi_araddr,\n")
-    out.write("    input  wire                       s_axi_arvalid,\n")
-    out.write("    output wire                       s_axi_arready,\n\n")
-    out.write("    // AXI4-Lite read data channel\n")
-    out.write("    output wire [DATA_WIDTH-1:0]      s_axi_rdata,\n")
-    out.write("    output wire [1:0]                 s_axi_rresp,\n")
-    out.write("    output wire                       s_axi_rvalid,\n")
+    out.write(f"module {module_name} #(\n    parameter ADDR_WIDTH = 32,\n   parameter DATA_WIDTH = {bus_width}\n) (\n{SV_PORTS}")
     out.write("    input  wire                       s_axi_rready" + ("," if block.get("registers") else "") + "\n")
     out.write("\n")
 
@@ -151,9 +228,7 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
     out.write("\n")
 
     # Internal storage
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    // Internal storage\n")
-    out.write("    // ----------------------------------------------------------------\n")
+    out.write(SV_BAR + "    // Internal storage\n" + SV_BAR)
     for reg in registers:
         out.write(f"    // chw:{block_name}.register.{reg['name']}\n")
         out.write(
@@ -162,9 +237,7 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
     out.write("\n")
 
     # Continuous assignment: behavior output = register value
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    // Behavior ports: live register values for user to wire up\n")
-    out.write("    // ----------------------------------------------------------------\n")
+    out.write(SV_BAR + "    // Behavior ports: live register values for user to wire up\n" + SV_BAR)
     for reg in registers:
         rn = _to_lower_snake(reg["name"])
         out.write(
@@ -172,129 +245,56 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
         )
     out.write("\n")
 
-    # Reset
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    // Reset: apply contract reset values\n")
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    always @(posedge clk) begin\n")
-    out.write("        if (!rst_n) begin\n")
+    # Write decode: a write is accepted when both valids are up and no response is pending
+    bn = _to_lower_snake(block_name)
+    writable = [r for r in registers if r["kind"] in ("RW", "WO", "W1C", "W0C", "W1S", "W0S", "RC")]
+    out.write(SV_WRITE_DECODE.format(bn=bn))
+    for reg in writable:
+        out.write(f"        if (aw_match_{bn} && (s_axi_awaddr == BASE_ADDR + ADDR_{reg['name']})) wr_hit = 1'b1;\n")
+    out.write(SV_WMASK)
+
+    # Read decode and mux: a read is accepted when the address is valid and no response is pending
+    out.write(SV_READ_DECODE.format(bn=bn))
+    for reg in registers:
+        out.write(f"        if (ar_match_{bn} && (s_axi_araddr == BASE_ADDR + ADDR_{reg['name']})) begin\n")
+        if reg["kind"] == "WO":
+            out.write("            // WO register: reads return 0 and answer SLVERR (the spec notes this is a write-only register).\n")
+            out.write("            rdata = 'h0;\n        end\n")
+        else:
+            out.write(f"            rdata = r_{_to_lower_snake(reg['name'])};\n            rdata_valid = 1'b1;\n        end\n")
+    out.write("    end\n\n")
+
+    # Reset, handshake and write logic: one clocked block, so every register has one driver
+    out.write(SV_SEQ_HDR)
     for reg in registers:
         rn = _to_lower_snake(reg["name"])
         if "reset" in reg:
-            reset_val = int(reg["reset"], 16)
-            out.write(
-                f"            r_{rn} <= 'h{reset_val:0{bus_width // 4}x};  "
-                f"// chw:{block_name}.register.{reg['name']}\n"
-            )
+            out.write(f"            r_{rn} <= 'h{int(reg['reset'], 16):0{bus_width // 4}x};  // chw:{block_name}.register.{reg['name']}\n")
         else:
-            out.write(
-                f"            r_{rn} <= 'h0;  "
-                f"// chw:{block_name}.register.{reg['name']} (reset undefined)\n"
-            )
-    out.write("        end\n")
-    out.write("    end\n\n")
-
-    # Write logic: per-register one-hot decode
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    // Write logic: per-register decode and access-kind handling\n")
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    wire aw_match_" + _to_lower_snake(block_name) + ";\n")
-    out.write(f"    assign aw_match_{_to_lower_snake(block_name)} =\n")
-    out.write(f"        s_axi_awvalid && (s_axi_awaddr >= BASE_ADDR);\n\n")
-
-    out.write("    always @(posedge clk) begin\n")
+            out.write(f"            r_{rn} <= 'h0;  // chw:{block_name}.register.{reg['name']} (reset undefined)\n")
+    out.write(SV_SEQ_MID)
     for reg in registers:
         rn = _to_lower_snake(reg["name"])
         kind = reg["kind"]
-        offset = int(reg["offset"], 16)
-        out.write(
-            f"        // chw:{block_name}.register.{reg['name']} (kind={kind})\n"
-        )
+        out.write(f"            // chw:{block_name}.register.{reg['name']} (kind={kind})\n")
+        cond = f"aw_match_{bn} && (s_axi_awaddr == BASE_ADDR + ADDR_{reg['name']}) && s_axi_wvalid"
+        rhs = {
+            "RW": f"(r_{rn} & ~wmask) | (s_axi_wdata & wmask);",
+            "W1C": f"r_{rn} & ~(s_axi_wdata & wmask);",
+            "W0C": f"r_{rn} & (s_axi_wdata | ~wmask);",
+            "W1S": f"r_{rn} | (s_axi_wdata & wmask);",
+            "RC": "'h0;  // RC: read clears, write has no effect",
+        }
+        rhs["WO"] = rhs["RW"]
+        rhs["W0S"] = rhs["W1C"]
         if kind == "RO":
-            out.write(
-                f"        // RO: writes are silently dropped. "
-                f"This is a Trust-tier behavioural choice; the checker flags WO/RO misuse.\n"
-            )
-            out.write(f"        if (1'b0) r_{rn} <= r_{rn};  // no-op\n")
+            out.write("            // RO: writes are dropped and answer SLVERR. This is a Trust-tier behavioural choice; the checker flags WO/RO misuse.\n")
+            out.write(f"            if (1'b0) r_{rn} <= r_{rn};  // no-op\n")
+        elif kind in rhs:
+            out.write(f"            if ({cond}) r_{rn} <= {rhs[kind]}\n")
         else:
-            cond = (
-                f"aw_match_{_to_lower_snake(block_name)} && "
-                f"(s_axi_awaddr == ADDR_{reg['name']}) && s_axi_wvalid"
-            )
-            if kind in ("RW", "WO"):
-                out.write(
-                    f"        if ({cond}) r_{rn} <= s_axi_wdata;\n"
-                )
-            elif kind == "W1C":
-                out.write(
-                    f"        if ({cond}) r_{rn} <= r_{rn} & ~s_axi_wdata;\n"
-                )
-            elif kind == "W0C":
-                out.write(
-                    f"        if ({cond}) r_{rn} <= r_{rn} & s_axi_wdata;\n"
-                )
-            elif kind == "W1S":
-                out.write(
-                    f"        if ({cond}) r_{rn} <= r_{rn} | s_axi_wdata;\n"
-                )
-            elif kind == "W0S":
-                out.write(
-                    f"        if ({cond}) r_{rn} <= r_{rn} & ~s_axi_wdata;\n"
-                )
-            elif kind == "RC":
-                out.write(
-                    f"        if ({cond}) r_{rn} <= 'h0;  // RC: read clears, write has no effect\n"
-                )
-            else:
-                out.write(
-                    f"        // Unknown kind {kind!r}; no write logic emitted.\n"
-                )
-    out.write("    end\n\n")
-
-    # Read mux
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    // Read mux: per-register one-hot decode\n")
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write(f"    wire ar_match_{_to_lower_snake(block_name)};\n")
-    out.write(f"    assign ar_match_{_to_lower_snake(block_name)} =\n")
-    out.write(f"        s_axi_arvalid && (s_axi_araddr >= BASE_ADDR);\n\n")
-
-    out.write("    reg [DATA_WIDTH-1:0] rdata;\n")
-    out.write("    reg                  rdata_valid;\n")
-    out.write("    always @(*) begin\n")
-    out.write("        rdata = 'h0;\n")
-    out.write("        rdata_valid = 1'b0;\n")
-    for reg in registers:
-        rn = _to_lower_snake(reg["name"])
-        kind = reg["kind"]
-        offset = int(reg["offset"], 16)
-        out.write(
-            f"        if (ar_match_{_to_lower_snake(block_name)} && "
-            f"(s_axi_araddr == ADDR_{reg['name']})) begin\n"
-        )
-        if kind == "WO":
-            out.write(
-                f"            // WO register: reads return 0 (the spec notes this is a write-only register).\n"
-            )
-            out.write(f"            rdata = 'h0;\n")
-        else:
-            out.write(f"            rdata = r_{rn};\n")
-        out.write(f"            rdata_valid = 1'b1;\n")
-        out.write(f"        end\n")
-    out.write("    end\n\n")
-
-    # AXI4-Lite handshake (one-cycle response for writes, combinational for reads)
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    // AXI4-Lite handshake (simplified one-cycle response)\n")
-    out.write("    // ----------------------------------------------------------------\n")
-    out.write("    assign s_axi_awready = s_axi_awvalid;\n")
-    out.write("    assign s_axi_wready  = s_axi_wvalid;\n")
-    out.write("    assign s_axi_bvalid  = s_axi_awvalid && s_axi_wvalid;\n")
-    out.write("    assign s_axi_bresp   = 2'b00;  // OKAY\n\n")
-    out.write("    assign s_axi_arready = s_axi_arvalid;\n")
-    out.write("    assign s_axi_rdata   = rdata;\n")
-    out.write("    assign s_axi_rvalid  = rdata_valid;\n")
-    out.write("    assign s_axi_rresp   = 2'b00;  // OKAY\n\n")
+            out.write(f"            // Unknown kind {kind!r}; no write logic emitted.\n")
+    out.write(SV_SEQ_END)
 
     out.write("endmodule\n")
     out.write("\n`default_nettype wire\n")

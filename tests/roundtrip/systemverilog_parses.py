@@ -105,17 +105,17 @@ def _check_access_kind_handling(src: str, registers: list[dict]) -> list[str]:
         kind = reg["kind"]
         rn = reg["name"].lower()
         if kind == "W1C":
-            if f"r_{rn} <= r_{rn} & ~s_axi_wdata" not in src:
-                notes.append(f"W1C register {reg['name']} missing `r_{rn} & ~s_axi_wdata` write logic")
+            if f"r_{rn} <= r_{rn} & ~(s_axi_wdata & wmask)" not in src:
+                notes.append(f"W1C register {reg['name']} missing `r_{rn} & ~(s_axi_wdata & wmask)` write logic")
         elif kind == "W0C":
-            if f"r_{rn} <= r_{rn} & s_axi_wdata" not in src:
-                notes.append(f"W0C register {reg['name']} missing `r_{rn} & s_axi_wdata` write logic")
+            if f"r_{rn} <= r_{rn} & (s_axi_wdata | ~wmask)" not in src:
+                notes.append(f"W0C register {reg['name']} missing `r_{rn} & (s_axi_wdata | ~wmask)` write logic")
         elif kind == "W1S":
-            if f"r_{rn} <= r_{rn} | s_axi_wdata" not in src:
-                notes.append(f"W1S register {reg['name']} missing `r_{rn} | s_axi_wdata` write logic")
+            if f"r_{rn} <= r_{rn} | (s_axi_wdata & wmask)" not in src:
+                notes.append(f"W1S register {reg['name']} missing `r_{rn} | (s_axi_wdata & wmask)` write logic")
         elif kind == "W0S":
-            if f"r_{rn} <= r_{rn} & ~s_axi_wdata" not in src:
-                notes.append(f"W0S register {reg['name']} missing `r_{rn} & ~s_axi_wdata` write logic")
+            if f"r_{rn} <= r_{rn} & ~(s_axi_wdata & wmask)" not in src:
+                notes.append(f"W0S register {reg['name']} missing `r_{rn} & ~(s_axi_wdata & wmask)` write logic")
         elif kind == "RC":
             if f"r_{rn} <= 'h0" not in src:
                 notes.append(f"RC register {reg['name']} missing clear-on-write logic")
@@ -154,7 +154,7 @@ def _check_write_decode_branches(src: str, registers: list[dict]) -> list[str]:
         if kind == "RO":
             # RO writes are silently dropped (no explicit decode branch).
             continue
-        pattern = f"s_axi_awaddr == ADDR_{reg['name']}"
+        pattern = f"s_axi_awaddr == BASE_ADDR + ADDR_{reg['name']}"
         if pattern not in src:
             notes.append(f"missing write-decode branch for register {reg['name']}")
     return notes
@@ -163,7 +163,7 @@ def _check_write_decode_branches(src: str, registers: list[dict]) -> list[str]:
 def _check_read_decode_branches(src: str, registers: list[dict]) -> list[str]:
     notes: list[str] = []
     for reg in registers:
-        pattern = f"s_axi_araddr == ADDR_{reg['name']}"
+        pattern = f"s_axi_araddr == BASE_ADDR + ADDR_{reg['name']}"
         if pattern not in src:
             notes.append(f"missing read-decode branch for register {reg['name']}")
     return notes

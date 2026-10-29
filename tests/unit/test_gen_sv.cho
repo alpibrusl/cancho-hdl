@@ -73,7 +73,7 @@ fn test_a_contract_is_written_as_the_python_tool_writes_it[&h](heap: &!h Heap) -
         test.assert(has(o, "    localparam [DATA_WIDTH-1:0] CTRL_PARITY_EVENPARITY = 32'd1;\n"));
         test.assert(has(o, "            r_ctrl <= 'h000000a5;  // chw:UartRegs.register.CTRL\n"));
         test.assert(has(o, "            r_status <= 'h0;  // chw:UartRegs.register.STATUS (reset undefined)\n"));
-        test.assert(has(o, "    assign s_axi_bresp   = 2'b00;  // OKAY\n"));
+        test.assert(has(o, "    assign s_axi_bresp   = bresp_r;\n"));
         test.assert(has(o, "    input  wire                       s_axi_rready,\n\n    output wire [DATA_WIDTH-1:0]      reg_ctrl_out,  // chw:UartRegs.register.CTRL\n    output wire [DATA_WIDTH-1:0]      reg_status_out   // chw:UartRegs.register.STATUS\n);\n"));
         test.assert(has(o, "endmodule\n\n`default_nettype wire\n"));
     }
@@ -94,35 +94,35 @@ fn test_registers_are_in_offset_order_everywhere[&h](heap: &!h Heap) -> [heap] i
 }
 
 fn test_each_kind_has_its_write_line[&h](heap: &!h Heap) -> [heap] int {
-    let cond = "        if (aw_match_b && (s_axi_awaddr == ADDR_R) && s_axi_wvalid) r_r <= ";
+    let cond = "            if (aw_match_b && (s_axi_awaddr == BASE_ADDR + ADDR_R) && s_axi_wvalid) r_r <= ";
     var k = 0;
     while k < 8 {
         var kind = "RO";
-        var line = "        if (1'b0) r_r <= r_r;  // no-op\n";
+        var line = "            if (1'b0) r_r <= r_r;  // no-op\n";
         var other = true;
         if k == 1 {
             kind = "RW";
-            line = "s_axi_wdata;\n";
+            line = "(r_r & ~wmask) | (s_axi_wdata & wmask);\n";
         }
         if k == 2 {
             kind = "WO";
-            line = "s_axi_wdata;\n";
+            line = "(r_r & ~wmask) | (s_axi_wdata & wmask);\n";
         }
         if k == 3 {
             kind = "W1C";
-            line = "r_r & ~s_axi_wdata;\n";
+            line = "r_r & ~(s_axi_wdata & wmask);\n";
         }
         if k == 4 {
             kind = "W0C";
-            line = "r_r & s_axi_wdata;\n";
+            line = "r_r & (s_axi_wdata | ~wmask);\n";
         }
         if k == 5 {
             kind = "W1S";
-            line = "r_r | s_axi_wdata;\n";
+            line = "r_r | (s_axi_wdata & wmask);\n";
         }
         if k == 6 {
             kind = "W0S";
-            line = "r_r & ~s_axi_wdata;\n";
+            line = "r_r & ~(s_axi_wdata & wmask);\n";
         }
         if k == 7 {
             kind = "RC";
@@ -131,12 +131,14 @@ fn test_each_kind_has_its_write_line[&h](heap: &!h Heap) -> [heap] int {
         let (out, st) = block(heap, "B", "R", kind);
         test.assert_eq(st, 0);
         borrow out as &o in {
-            test.assert(has(o, "        // chw:B.register.R (kind="));
+            test.assert(has(o, "            // chw:B.register.R (kind="));
             if k == 0 {
                 test.assert(has(o, line));
-                test.assert(has(o, "        // RO: writes are silently dropped. This is a Trust-tier behavioural choice; the checker flags WO/RO misuse.\n"));
-                test.assert_eq(as_int(has(o, "aw_match_b && (s_axi_awaddr == ADDR_R) && s_axi_wvalid) r_r")), 0);
+                test.assert(has(o, "            // RO: writes are dropped and answer SLVERR. This is a Trust-tier behavioural choice; the checker flags WO/RO misuse.\n"));
+                test.assert_eq(as_int(has(o, "wr_hit = 1'b1;")), 0);
+                test.assert_eq(as_int(has(o, "aw_match_b && (s_axi_awaddr == BASE_ADDR + ADDR_R) && s_axi_wvalid) r_r")), 0);
             } else {
+                test.assert(has(o, "        if (aw_match_b && (s_axi_awaddr == BASE_ADDR + ADDR_R)) wr_hit = 1'b1;\n"));
                 var full = buffer.append(heap, buffer.empty(heap, 128), cond);
                 full = buffer.append(heap, full, line);
                 borrow full as &fr in {
@@ -155,7 +157,7 @@ fn test_a_write_only_register_reads_zero_and_the_others_read_the_register[&h](he
     let (wo, st) = block(heap, "B", "R", "WO");
     test.assert_eq(st, 0);
     borrow wo as &o in {
-        test.assert(has(o, "            // WO register: reads return 0 (the spec notes this is a write-only register).\n            rdata = 'h0;\n            rdata_valid = 1'b1;\n"));
+        test.assert(has(o, "            // WO register: reads return 0 and answer SLVERR (the spec notes this is a write-only register).\n            rdata = 'h0;\n        end\n"));
     }
     buffer.drop(heap, wo);
     let (rw, st2) = block(heap, "B", "R", "RW");

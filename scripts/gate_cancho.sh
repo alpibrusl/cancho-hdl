@@ -37,6 +37,8 @@
 #  8l the claims of the Python goldens, held against the binary: the text form of `chw check`, `chw diff` and `chw impact` on the
 #                                    seeded change, the textual parser's twin of the JSON form, and the C-side behavioral roundtrip (the
 #                                    header `chw generate` writes, compiled with gcc and clang, run op for op against the reference model)
+#  8m the SystemVerilog behavior    the module `chw generate --target systemverilog` writes, simulated with iverilog (tests/behavioral/sv_device_tb.sv)
+#                                    against the reference model on the behavioral corpus: a master that holds its valids, and one that follows AXI4-Lite
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -177,6 +179,10 @@ python3 tests/text_format/golden_cancho.py "$OUT"
 python3 tests/diff/diff_cancho_golden.py "$OUT"
 python3 tests/parser/parser_cancho_roundtrip.py "$OUT"
 python3 tests/behavioral/c_behavior.py "$OUT"
+
+echo "== 8m the SystemVerilog behavioral roundtrip (iverilog): the module against the reference model, a holding and a strict master"
+python3 tests/behavioral/sv_behavior.py "$OUT" --mode hold
+python3 tests/behavioral/sv_behavior.py "$OUT" --mode strict
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"
