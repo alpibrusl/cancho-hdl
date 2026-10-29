@@ -109,11 +109,10 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   value) streamed in; the sum is 48-bit signed. cancho streamed 1500 rows twice, with `v >= -200` (919 rows kept) and `v >= 500` (382
   kept), and read back 12 groups x (count, sum, min, max) plus the two row counts: **0 figures different** from the same query computed
   in cancho, in both queries. The design uses 256-entry memories, runs at 129 MHz by nextpnr, and the simulation checks 13 things
-  including an empty group and a clear. **Caveat, not fixed:** nextpnr's timing report lists hold-time violations for this design
-  (112 in the first run; 10 worst paths shown for each of three other seeds, all through the memory write-enable). None of the other
-  designs here have any. The tests passed on the board regardless, but a design with reported hold violations should not be called
-  clean: the cause is probably the combinational write-enable (`we | clearing`) in front of the RAMs, and registering it is the next thing
-  to try. No speed claim: 1500 rows took about 10 s over the serial link.
+  including an empty group and a clear. nextpnr first reported hold-time violations for this design (112 in the first run, all through the
+  memory write-enable, which was `we | clearing`). Fixed by putting a register in front of every RAM pin (read address, write enable,
+  write address, write data): 0 violations, 102 MHz, the simulation still passes 13 of 13 and the two queries on the board are still
+  0 figures different. No speed claim: 1500 rows took about 10 s over the serial link.
 
 * **A model fitted by cancho-ml, inferred on the board** (measured; `host/ml_infer.cho`, `tests/hardware/ml_export.py`, the matrix-vector
   design above with a 1 x 8 matrix). `ml` (built from cancho-ml at its head with `--ignore-compiler-rev`, compiler `471b8e93`; the repository
