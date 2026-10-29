@@ -1,0 +1,184 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+import std.linalg;
+import labio;
+
+// gemv_test.cho -- y = A x for a 32 x 32 signed 8-bit matrix, on the FPGA (rtl/gemv.v, gemv/gemv.chw), judged from cancho.
+//   Build: cancho build labio.cho gemv_test.cho --std      (the board must hold the matrix-vector design)
+//
+//   A. exact: an integer matrix and vector are loaded; the 32 results must equal both the integer product computed here and
+//      std.linalg.gemv on floats (every value is an integer far below 2^53, so the floats are exact too).
+//   B. quantisation: a matrix and vector of reals (multiples of 0.01 and of 1/75) are rounded to 8 bits with scale 127, multiplied on the board,
+//      divided by 127 x 127, and compared with std.linalg.gemv on the unrounded reals. The difference is the cost of 8-bit weights, not an error of
+//      the board: it is printed, and it must stay within the worst case 32 x (1/127) of the rounding.
+// Authority: standard output, the Tty capability under /dev, a poll. No filesystem, no network, no foreign call.
+
+fn wa(i: int, j: int) -> [] int { return (i * 31 + j * 17 + (i * j) % 7) % 255 - 127; }       // an 8-bit integer matrix
+fn xa(j: int) -> [] int { return (j * 29 + 11) % 255 - 127; }
+fn wr100(i: int, j: int) -> [] int { return (i * 31 + j * 17) % 201 - 100; }                  // reals: w = wr100 / 100
+fn xr75(j: int) -> [] int { return (j * 13 + 7) % 151 - 75; }                                 // x = xr75 / 75
+
+fn rnd(v: int, mul: int, den: int) -> [] int {
+    // round(v * mul / den) half away from zero, in integers
+    let num = v * mul * 2;
+    if num >= 0 { return (num + den) / (2 * den); }
+    return 0 - ((0 - num + den) / (2 * den));
+}
+
+fn signed32(v: int) -> [] int {
+    if v >= 2147483648 { return v - 4294967296; }
+    return v;
+}
+
+fn absf(v: float) -> [] float {
+    if v < 0.0 { return 0.0 - v; }
+    return v;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec); release(clock);
+    let device = narrow(tty, "/dev");
+    var failures = 0;
+    var status_code = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status_code = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status_code = 4; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            borrow mut p as &!pw in {
+                                region r {
+                                    let frame = alloc_slice[r](9, byte_of(0));
+                                    let cmd = alloc_slice[r](5, byte_of(0));
+                                    let ans = alloc_slice[r](8, byte_of(0));
+                                    labio.write_reg(q, pw, frame, ans, 0, 32 * 256 + 32);       // DIM: 32 rows, 32 columns
+                                    let yb = alloc_slice[r](32, 0);
+                                    let yi = alloc_slice[r](32, 0);
+                                    let a = alloc_slice[r](1024, 0.0);
+                                    let xf = alloc_slice[r](32, 0.0);
+                                    let yf = alloc_slice[r](32, 0.0);
+                                    var tog = 0;
+                                    // ---- A. exact ----
+                                    var i = 0;
+                                    while i < 32 {
+                                        var j = 0;
+                                        while j < 32 {
+                                            labio.write_reg(q, pw, frame, ans, 4, i * 32 + j);
+                                            labio.write_reg(q, pw, frame, ans, 8, (wa(i, j) + 256) % 256);
+                                            tog = tog + 1;
+                                            labio.write_reg(q, pw, frame, ans, 12, tog);
+                                            a[i * 32 + j] = float_of(wa(i, j));
+                                            j = j + 1;
+                                        }
+                                        i = i + 1;
+                                    }
+                                    var j = 0;
+                                    while j < 32 {
+                                        labio.write_reg(q, pw, frame, ans, 16, j);
+                                        labio.write_reg(q, pw, frame, ans, 20, (xa(j) + 256) % 256);
+                                        tog = tog + 1;
+                                        labio.write_reg(q, pw, frame, ans, 24, tog);
+                                        xf[j] = float_of(xa(j));
+                                        j = j + 1;
+                                    }
+                                    var gotog = 1;
+                                    labio.write_reg(q, pw, frame, ans, 28, gotog);
+                                    var tries = 0;
+                                    while labio.read_reg(q, pw, cmd, ans, 32) != 1 && tries < 50 { tries = tries + 1; }
+                                    i = 0;
+                                    while i < 32 {
+                                        labio.write_reg(q, pw, frame, ans, 36, i);
+                                        labio.pause(pw, 1);
+                                        yb[i] = signed32(labio.read_reg(q, pw, cmd, ans, 40));
+                                        i = i + 1;
+                                    }
+                                    linalg.gemv(32, 32, a, xf, yf);
+                                    var bad_int = 0;
+                                    var bad_float = 0;
+                                    i = 0;
+                                    while i < 32 {
+                                        var s = 0;
+                                        j = 0;
+                                        while j < 32 { s = s + wa(i, j) * xa(j); j = j + 1; }
+                                        if yb[i] != s { bad_int = bad_int + 1; }
+                                        if float_of(yb[i]) != yf[i] { bad_float = bad_float + 1; }
+                                        i = i + 1;
+                                    }
+                                    borrow mut heap as &!h in { borrow mut io as &!i2 in {
+                                        labio.say(h, i2, "A. exact: rows different from the integer product (want 0): ", bad_int, "");
+                                        labio.say(h, i2, "   rows different from std.linalg.gemv on floats (want 0): ", bad_float, "");
+                                    } }
+                                    failures = failures + bad_int + bad_float;
+                                    // ---- B. quantisation ----
+                                    i = 0;
+                                    while i < 32 {
+                                        j = 0;
+                                        while j < 32 {
+                                            labio.write_reg(q, pw, frame, ans, 4, i * 32 + j);
+                                            labio.write_reg(q, pw, frame, ans, 8, (rnd(wr100(i, j), 127, 100) + 256) % 256);
+                                            tog = tog + 1;
+                                            labio.write_reg(q, pw, frame, ans, 12, tog);
+                                            a[i * 32 + j] = float_of(wr100(i, j)) / 100.0;
+                                            j = j + 1;
+                                        }
+                                        i = i + 1;
+                                    }
+                                    j = 0;
+                                    while j < 32 {
+                                        labio.write_reg(q, pw, frame, ans, 16, j);
+                                        labio.write_reg(q, pw, frame, ans, 20, (rnd(xr75(j), 127, 75) + 256) % 256);
+                                        tog = tog + 1;
+                                        labio.write_reg(q, pw, frame, ans, 24, tog);
+                                        xf[j] = float_of(xr75(j)) / 75.0;
+                                        j = j + 1;
+                                    }
+                                    gotog = 0;
+                                    labio.write_reg(q, pw, frame, ans, 28, gotog);
+                                    tries = 0;
+                                    while labio.read_reg(q, pw, cmd, ans, 32) != 1 && tries < 50 { tries = tries + 1; }
+                                    linalg.gemv(32, 32, a, xf, yf);
+                                    var worst = 0.0;
+                                    var big = 0.0;
+                                    i = 0;
+                                    while i < 32 {
+                                        labio.write_reg(q, pw, frame, ans, 36, i);
+                                        labio.pause(pw, 1);
+                                        yi[i] = signed32(labio.read_reg(q, pw, cmd, ans, 40));
+                                        let deq = float_of(yi[i]) / (127.0 * 127.0);
+                                        let e = absf(deq - yf[i]);
+                                        if e > worst { worst = e; }
+                                        if absf(yf[i]) > big { big = absf(yf[i]); }
+                                        i = i + 1;
+                                    }
+                                    borrow mut heap as &!h in { borrow mut io as &!i2 in {
+                                        labio.say(h, i2, "B. 8-bit quantisation: largest |y| of the real product, x 1000: ", truncate(big * 1000.0), "");
+                                        labio.say(h, i2, "   largest |difference| after 8-bit weights and inputs, x 10^6: ", truncate(worst * 1000000.0), "");
+                                        labio.say(h, i2, "   worst-case bound 32/127, x 10^6: ", truncate(32.0 / 127.0 * 1000000.0), "");
+                                    } }
+                                    if worst > 32.0 / 127.0 { failures = failures + 1; }
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    if status_code != 0 { return status_code; }
+    if failures != 0 { return 1; }
+    return 0;
+}

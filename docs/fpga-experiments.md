@@ -95,6 +95,15 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   in the host's division. Limits: the data are synthetic and the points arrive over a 115200 baud link (13 s for 2048 points, one 10-byte
   write each), so there is no speed claim; x is 16-bit and y 15-bit signed.
 
+* **8-bit matrix-vector product, and what 8-bit costs** (measured, on the board; `gemv/gemv.chw`, `rtl/gemv.v`, `host/gemv_test.cho`;
+  2219 LUT4, 1 block RAM, 91 MHz, no Yosys warning). A 32 x 32 signed 8-bit matrix and vector are loaded over the UART (about 5 s for the
+  1024 weights), one multiply-accumulate every 3 clocks, exact 32-bit sums. **A. exact:** 32 of 32 rows equal both the integer product
+  computed in cancho and `std.linalg.gemv` on floats. **B. quantisation:** a matrix and vector of reals are rounded to 8 bits (scale 127),
+  multiplied on the board, divided by 127 x 127 and compared with `std.linalg.gemv` on the unrounded reals: largest difference 0.0143 for
+  results up to 8.23 (0.17 %), against a worst-case bound of 32/127 = 0.252; this is the cost of 8-bit weights, not an error of the
+  board. This is the "int8 inference with an accuracy study" case of the ml discussion at its smallest: one layer, no activation, the data
+  synthetic, not a cancho-ml model (I have not read cancho-ml). No speed claim: the link is the limit.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.

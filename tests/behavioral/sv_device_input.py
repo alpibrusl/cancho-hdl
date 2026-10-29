@@ -18,7 +18,7 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-CONTRACTS = ["examples/uart-contract/uart.chw", "boards/tang-nano-20k/deadman.chw", "boards/tang-nano-20k/lab/lab.chw", "boards/tang-nano-20k/stats/stats.chw"]
+CONTRACTS = ["examples/uart-contract/uart.chw", "boards/tang-nano-20k/deadman.chw", "boards/tang-nano-20k/lab/lab.chw", "boards/tang-nano-20k/stats/stats.chw", "boards/tang-nano-20k/gemv/gemv.chw"]
 
 
 def main() -> int:
