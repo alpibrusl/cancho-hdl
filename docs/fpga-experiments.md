@@ -38,6 +38,20 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   Not measured: any speed advantage. At 115200 baud the serial line is the limit (about 11.5 KB/s each way); a 64x48 image takes 0.27 s
   per direction, and the filter itself keeps up with the line.
 
+* **BRAM test** (measured). `rtl/mem_test.v` is an 8192-byte RAM with a built-in self-test (five patterns) behind the UART;
+  `host/memtest.cho` runs it from cancho: the board's self-test reports 0 differing bytes in all five patterns; the host reads 64
+  addresses back after the self-test fill (0 different, so the fill really wrote); the host writes 2048 pseudo-random bytes at
+  distinct addresses and reads them all back (0 different). 4 block RAMs, 425 LUT4, 148 MHz. Yosys prints 6 warnings from its
+  block-RAM mapping (unused write-data bits set to undefined); the build still completes and the test passes, but the warning gate of
+  `check.sh` would refuse this design as it stands. The self-test judges itself; only the host steps are independent evidence.
+* **The laptop webcam through the filter** (measured). ffmpeg grabs the LGE FHD camera (`/dev/video0`), scales to 96x72 greyscale,
+  and `host/camfilter.cho` (cancho; reads frames on standard input, streams them through the board, writes frames on standard
+  output) does the rest. 4 real frames x 5 modes = 27,648 pixels per mode, compared byte for byte with an independent Python
+  implementation of the same definition: **0 different in every mode**. The camera is not a cancho capability (the `Tty` design says
+  a camera `ioctl` is an open question), so ffmpeg is the helper here, as the robot's camera stack would be.
+  Speed, not tuned: 2.6 s per 96x72 frame, because `camfilter` writes 16 bytes per poll; the serial line itself would allow about
+  0.6 s per frame. No camera frame is kept in the repository.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.
