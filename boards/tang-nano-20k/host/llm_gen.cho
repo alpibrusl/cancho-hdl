@@ -5,18 +5,18 @@ import std.buffer;
 import labio;
 
 // llm_gen.cho -- a toy character language model, its matrix-vector products done by the FPGA.
-//   python3 ../llm/train.py ../llm/corpus.txt > model.txt            (Python trains the model; numpy, manual gradients)
+//   python3 ../../../tests/hardware/llm_train.py ../llm/corpus.txt > model.txt            (Python trains the model; numpy, manual gradients)
 //   cancho build labio.cho llm_gen.cho --std -o llm_gen && ./llm_gen < model.txt
 //   The board must hold the matrix-vector design (rtl/gemv.v, gemv/gemv.chw with MAT, W_PACK and X_PACK).
 //
-// The model (llm/train.py): the last 4 characters, each an 8-number embedding (32 numbers in all), then three bias-free 32 x 32 layers; after
+// The model (tests/hardware/llm_train.py): the last 4 characters, each an 8-number embedding (32 numbers in all), then three bias-free 32 x 32 layers; after
 // the first two, relu and a rescale to 0..127 (x = min(127, (a * M) / 65536)); the last gives one logit per character; greedy decoding. Weights and
 // embeddings are 8-bit integers. About 3,300 parameters. It is not a transformer and not a large model: a toy that memorises one paragraph.
 //
 // The program loads the three matrices into the board once, then for each character the board computes the three products (exact 32-bit sums)
 // and the host does the rest (embedding lookup, relu, rescale, argmax; all integers). The same pipeline runs on the host as well, with the host's
 // own products, and the two must agree on every logit and every character; the characters are also compared with the float model's greedy
-// output that train.py wrote into the file. Input: V (vocabulary size), C (character codes), P (4 prompt codes), E (V x 8 embeddings),
+// output that llm_train.py wrote into the file. Input: V (vocabulary size), C (character codes), P (4 prompt codes), E (V x 8 embeddings),
 // A, B, D (the three 32 x 32 matrices, row-major; D is padded with zero rows), M (the two rescale multipliers), F (the float model's greedy codes).
 // Authority: standard input and output, the Tty capability under /dev, a poll. No filesystem, no network, no foreign call.
 
@@ -212,7 +212,7 @@ fn main(world: World) -> [] int {
                                                 labio.say(h, i3, "characters generated: ", steps(), "");
                                                 labio.say(h, i3, "logits different between the board and the host pipeline, of 32 per character (want 0): ", logit_bad, "");
                                                 labio.say(h, i3, "characters different between the two (want 0): ", token_bad, "");
-                                                labio.say(h, i3, "positions where the float model's own greedy text has the same character (the two texts diverge after a few characters; see train.py for next-character accuracy): ", float_same, "");
+                                                labio.say(h, i3, "positions where the float model's own greedy text has the same character (the two texts diverge after a few characters; see llm_train.py for next-character accuracy): ", float_same, "");
                                             }
                                         }
                                         failures = failures + logit_bad + token_bad;

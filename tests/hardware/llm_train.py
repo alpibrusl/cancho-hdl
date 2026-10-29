@@ -6,7 +6,7 @@ Model: context of 4 characters, each an 8-number embedding (concatenated: 32), t
 Parameters: V*8 + 3*1024 (V = vocabulary, at most 32). Greedy decoding. Integer pipeline after training: weights and embeddings rounded to
 8 bits; after each of the first two layers the 32-bit sums are relu'd and rescaled to 0..127 by x = min(127, (a * M) >> 16).
 Output: one text line per item, all integers (see llm_gen.cho for the order).
-Usage: python3 train.py corpus.txt > model.txt
+Usage: python3 llm_train.py corpus.txt > model.txt
 """
 import sys
 import numpy as np

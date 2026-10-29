@@ -125,10 +125,10 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   dot product, so this is the smallest inference there is; the logistic, tree and boosting models of cancho-ml were not tried; the data are
   synthetic; one sample per round trip (about 0.2 s); nothing here is a speed claim.
 
-* **A toy language model, its matrix products on the board** (measured; `llm/train.py`, `llm/corpus.txt`, `llm/model.txt`,
+* **A toy language model, its matrix products on the board** (measured; `tests/hardware/llm_train.py`, `llm/corpus.txt`, `llm/model.txt`,
   `host/llm_gen.cho`; the matrix-vector design extended to four matrices with one-write-per-weight and per-input registers, 91 MHz, 0 hold
   violations). This is **not a transformer and not a large model**: a character model with a 4-character context, 8-number embeddings and
-  three bias-free 32 x 32 layers (about 3,300 parameters, 27 characters), trained by `train.py` (numpy, manual gradients) on a 700-character
+  three bias-free 32 x 32 layers (about 3,300 parameters, 27 characters), trained by `llm_train.py` (numpy, manual gradients) on a 700-character
   paragraph, 90 % next-character accuracy on that same text in float and 89.5 % in the 8-bit integer pipeline. It memorises the paragraph and
   loops; nothing here is language ability. What was measured: cancho loads the three matrices (3072 weights, about 15 s), then for each
   character the board computes the three products (exact 32-bit sums) and the host does the embedding lookup, relu, rescale and argmax in
