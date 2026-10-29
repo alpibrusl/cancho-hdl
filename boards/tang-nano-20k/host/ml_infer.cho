@@ -1,0 +1,168 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+import labio;
+
+// ml_infer.cho -- the predictions of a linear model fitted by cancho-ml's `ml`, computed on the FPGA with 8-bit weights and inputs
+// (the matrix-vector design: rtl/gemv.v, gemv/gemv.chw, with a 1 x 8 matrix) and compared with what `ml predict` printed.
+//   python3 tests/hardware/ml_export.py ml train.csv test.csv y | ml_infer          (Python only turns ml's outputs into integers)
+//   Build: cancho build labio.cho ml_infer.cho --std
+//
+// Input, integers in millionths: `W w0 .. w7 b`, then `R x0 .. x7 prediction` per test row. The weights are the model's, recovered by predicting on
+// unit rows. Weights and inputs are rounded to 8 bits with scale 60 (every value here has magnitude below 2.1, so at most 127); the board
+// forms sum(w_q x_q) in exact integers; the host divides by 60 x 60 and adds the bias b in full precision. The difference from `ml predict` is what
+// 8-bit costs; it is printed row by row and as a worst case.
+// Authority: standard input and output, the Tty capability under /dev, a poll. No filesystem, no network, no foreign call.
+
+fn rnd(v: int, mul: int, den: int) -> [] int {
+    let num = v * mul * 2;
+    if num >= 0 { return (num + den) / (2 * den); }
+    return 0 - ((0 - num + den) / (2 * den));
+}
+
+fn signed32(v: int) -> [] int {
+    if v >= 2147483648 { return v - 4294967296; }
+    return v;
+}
+
+fn absi(v: int) -> [] int {
+    if v < 0 { return 0 - v; }
+    return v;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec); release(clock);
+    let device = narrow(tty, "/dev");
+    var failures = 0;
+    var status_code = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status_code = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status_code = 4; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            borrow mut p as &!pw in {
+                                region r {
+                                    let frame = alloc_slice[r](9, byte_of(0));
+                                    let cmd = alloc_slice[r](5, byte_of(0));
+                                    let ans = alloc_slice[r](8, byte_of(0));
+                                    let vals = alloc_slice[r](16, 0);
+                                    let wq = alloc_slice[r](8, 0);
+                                    let rows = alloc_slice[r](64 * 10, 0);   // per test row: x0 .. x7, prediction (millionths), and the 8 quantised inputs after
+                                    var bias = 0;
+                                    var nrows = 0;
+                                    // ---- read the text ----
+                                    var tok = 0;      // numbers read on this line
+                                    var cur = 0;
+                                    var neg = false;
+                                    var innum = false;
+                                    var kind = 0;     // 0 none, 1 W, 2 R
+                                    var going = true;
+                                    while going {
+                                        var c = 0 - 1;
+                                        borrow mut io as &!ioh in { c = getchar(ioh); }
+                                        var is_digit = false;
+                                        if c >= 48 { if c <= 57 { is_digit = true; } }
+                                        if is_digit { cur = cur * 10 + (c - 48); innum = true; }
+                                        else if c == 45 { neg = true; }
+                                        else {
+                                            if innum { if tok < 16 { if neg { vals[tok] = 0 - cur; } else { vals[tok] = cur; } tok = tok + 1; } }
+                                            cur = 0; neg = false; innum = false;
+                                            if c == 87 { kind = 1; }
+                                            if c == 82 { kind = 2; }
+                                            if c == 10 || c < 0 {
+                                                if kind == 1 && tok >= 9 {
+                                                    var j = 0;
+                                                    while j < 8 { wq[j] = rnd(vals[j], 60, 1000000); j = j + 1; }
+                                                    bias = vals[8];
+                                                }
+                                                if kind == 2 && tok >= 9 && nrows < 64 {
+                                                    var j = 0;
+                                                    while j < 9 { rows[nrows * 10 + j] = vals[j]; j = j + 1; }
+                                                    nrows = nrows + 1;
+                                                }
+                                                tok = 0; kind = 0;
+                                                if c < 0 { going = false; }
+                                            }
+                                        }
+                                    }
+                                    if nrows == 0 { status_code = 2; }
+                                    if status_code == 0 {
+                                        labio.write_reg(q, pw, frame, ans, 0, 8 * 256 + 1);     // DIM: 1 row, 8 columns
+                                        var tog = 0;
+                                        var j = 0;
+                                        while j < 8 {
+                                            labio.write_reg(q, pw, frame, ans, 4, j);
+                                            labio.write_reg(q, pw, frame, ans, 8, (wq[j] + 256) % 256);
+                                            tog = tog + 1;
+                                            labio.write_reg(q, pw, frame, ans, 12, tog);
+                                            j = j + 1;
+                                        }
+                                        var xt = 0;
+                                        var gt = 0;
+                                        var worst = 0;
+                                        var sumerr = 0;
+                                        var i = 0;
+                                        while i < nrows {
+                                            j = 0;
+                                            while j < 8 {
+                                                labio.write_reg(q, pw, frame, ans, 16, j);
+                                                labio.write_reg(q, pw, frame, ans, 20, (rnd(rows[i * 10 + j], 60, 1000000) + 256) % 256);
+                                                xt = xt + 1;
+                                                labio.write_reg(q, pw, frame, ans, 24, xt);
+                                                j = j + 1;
+                                            }
+                                            gt = gt + 1;
+                                            labio.write_reg(q, pw, frame, ans, 28, gt);
+                                            var tries = 0;
+                                            while labio.read_reg(q, pw, cmd, ans, 32) != 1 && tries < 50 { tries = tries + 1; }
+                                            labio.write_reg(q, pw, frame, ans, 36, 0);
+                                            labio.pause(pw, 1);
+                                            let yint = signed32(labio.read_reg(q, pw, cmd, ans, 40));
+                                            // prediction in millionths: yint / 3600 + b
+                                            let board = (yint * 1000000) / 3600 + bias;
+                                            let want = rows[i * 10 + 8];
+                                            let err = absi(board - want);
+                                            if err > worst { worst = err; }
+                                            sumerr = sumerr + err;
+                                            if i < 5 {
+                                                borrow mut heap as &!h in { borrow mut io as &!i2 in {
+                                                    labio.say(h, i2, "row ", i, "");
+                                                    labio.say(h, i2, "   ml predict, millionths (offset 100 million to print): ", want + 100000000, "");
+                                                    labio.say(h, i2, "   FPGA with 8-bit weights, millionths (same offset): ", board + 100000000, "");
+                                                } }
+                                            }
+                                            i = i + 1;
+                                        }
+                                        borrow mut heap as &!h in { borrow mut io as &!i2 in {
+                                            labio.say(h, i2, "rows: ", nrows, "");
+                                            labio.say(h, i2, "mean |difference| from ml predict, millionths: ", sumerr / nrows, "");
+                                            labio.say(h, i2, "largest |difference| from ml predict, millionths: ", worst, "");
+                                        } }
+                                        if worst > 200000 { failures = failures + 1; }
+                                    }
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    if status_code != 0 { return status_code; }
+    if failures != 0 { return 1; }
+    return 0;
+}

@@ -115,6 +115,16 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   clean: the cause is probably the combinational write-enable (`we | clearing`) in front of the RAMs, and registering it is the next thing
   to try. No speed claim: 1500 rows took about 10 s over the serial link.
 
+* **A model fitted by cancho-ml, inferred on the board** (measured; `host/ml_infer.cho`, `tests/hardware/ml_export.py`, the matrix-vector
+  design above with a 1 x 8 matrix). `ml` (built from cancho-ml at its head with `--ignore-compiler-rev`, compiler `471b8e93`; the repository
+  pins `0207556`) fitted `--model linear` on 100 synthetic rows (8 features, y = w.x + 3 plus noise). The coefficients were recovered by
+  asking `ml predict` for the zero row and the eight unit rows, not by reading the binary model file. cancho rounds weights and inputs to 8
+  bits (scale 60), the board forms the exact integer dot product, and cancho divides by 3600 and adds the bias in full precision. Against
+  `ml predict` on 20 held-out rows (predictions between -1.8 and 10.1): **mean difference 0.015, largest 0.039**. That is what 8-bit costs
+  for this model, not an error of the board. Python is plumbing only (it runs `ml` and prints integers). Limits: a linear model is one
+  dot product, so this is the smallest inference there is; the logistic, tree and boosting models of cancho-ml were not tried; the data are
+  synthetic; one sample per round trip (about 0.2 s); nothing here is a speed claim.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.
