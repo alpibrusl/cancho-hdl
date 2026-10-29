@@ -1,8 +1,8 @@
 # Drafted issues
 
-Drafts only, written 2026-10-29 on `hardware-test-tang-nano-20k`. **None of these has been posted.** Each file is one issue for the
+Written 2026-10-29 on `hardware-test-tang-nano-20k` and **posted the same day**: cancho-hdl#21, cancho#647, cancho-robot#31, cancho-quantum#32. Each file is one issue for the
 repository named in its first line; every number in them was measured in this branch (see `docs/fpga-experiments.md`), and anything
-not measured says so. Post them with `gh issue create --repo OWNER/REPO --title ... --body-file FILE` after reading and editing.
+not measured says so.
 
 | File | Repository |
 |---|---|
