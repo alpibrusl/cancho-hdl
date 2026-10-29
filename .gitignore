@@ -20,3 +20,7 @@ __pycache__/
 # gitguardian
 .gitleaks/
 .gitguardian.yml
+
+# board build output and the built chw
+boards/*/build*/
+/chw
