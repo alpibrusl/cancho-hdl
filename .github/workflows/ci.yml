@@ -55,6 +55,9 @@ jobs:
       # iverilog is the parse oracle of the SystemVerilog generator (gate step 8j, docs/cancho-port.md 34.5): both tools' modules must be accepted.
       - name: Install iverilog
         run: sudo apt-get install -y -q iverilog
+      # yosys synthesises the Tang Nano 20K design (gate step 8n); nextpnr and the board are not on the runner.
+      - name: Install yosys
+        run: sudo apt-get install -y -q yosys
 
       # Python only under oracle/ and tests/, and the legacy line count only comes down (docs/cancho-port.md, 36).
       - name: Where Python may be

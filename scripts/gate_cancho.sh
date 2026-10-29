@@ -39,6 +39,8 @@
 #                                    header `chw generate` writes, compiled with gcc and clang, run op for op against the reference model)
 #  8m the SystemVerilog behavior    the module `chw generate --target systemverilog` writes, simulated with iverilog (tests/behavioral/sv_device_tb.sv)
 #                                    against the reference model on the behavioral corpus: a master that holds its valids, and one that follows AXI4-Lite
+#  8n the Tang Nano 20K design      boards/tang-nano-20k: the register block of leds.chw and the hand-written UART bridge, simulated with iverilog
+#                                    (the bridge protocol, the LED pins, SLVERR), and synthesised for the Gowin GW2A-18C with Yosys (no warning)
 #   9  JSON form                     differential against json + jsonschema,
 #                                    then large and hostile inputs (never a trap or a hang)
 #  10  cancho authority              what the program can reach, pinned in authority.expected
@@ -183,6 +185,9 @@ python3 tests/behavioral/c_behavior.py "$OUT"
 echo "== 8m the SystemVerilog behavioral roundtrip (iverilog): the module against the reference model, a holding and a strict master"
 python3 tests/behavioral/sv_behavior.py "$OUT" --mode hold
 python3 tests/behavioral/sv_behavior.py "$OUT" --mode strict
+
+echo "== 8n the Tang Nano 20K design: the register block and the UART bridge under iverilog, synthesised with Yosys"
+sh boards/tang-nano-20k/check.sh "$OUT"
 
 echo "== 9 JSON form"
 python3 tests/differential/json_validate.py "$OUT"
