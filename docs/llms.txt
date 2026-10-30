@@ -1,0 +1,18 @@
+# cancho-hdl
+
+> One `.chw` contract for the software/hardware boundary (registers, fields, interrupts, DMA layouts), checked for contradictions and used to generate the C header, device tree, SystemVerilog register block, cancho binding and CMSIS-SVD. Also runs on a real Tang Nano 20K, driven from cancho. Dated 2026-10-30.
+
+## Read first
+- [README](https://github.com/alpibrusl/cancho-hdl/blob/main/README.md): the commands.
+- [Guarantees](https://github.com/alpibrusl/cancho-hdl/blob/main/docs/guarantees.md): what each tier does and does not claim.
+- [Board experiments](https://github.com/alpibrusl/cancho-hdl/blob/main/docs/fpga-experiments.md): the measured results of every design on the board, and the limits.
+- [Tang Nano 20K](https://github.com/alpibrusl/cancho-hdl/blob/main/docs/tang-nano-20k.md): the flow and the byte protocol.
+- [Agent prompt](https://github.com/alpibrusl/cancho-hdl/blob/main/docs/agent-prompt.md) and [board prompt](https://github.com/alpibrusl/cancho-hdl/blob/main/docs/agent-prompt-board.md): install and try it.
+
+## Facts an agent should not get wrong
+- Refusals carry a stable `code` (`--output json`). Match on it, not on the message. Codes in the fixtures: parse-error, schema-invalid, field-overlap, register-offset-duplicate, reset-overflow, field-enum-overflow, interrupt-source-unresolved, dma-overlap, dma-align-unsatisfied.
+- Never edit a fixture or its `.expect.json` to make a check pass. Fix the contract.
+- Never hand-edit a generated file. The SystemVerilog generator exists twice (src/gen_sv.cho and oracle/legacy/gen/systemverilog/systemverilog.py) and the two must stay byte-identical. The Python line ceiling only goes down; Python is allowed only under oracle/ and tests/.
+- A read-only volatile register gets an input port `reg_<name>_in` (device-written registers). The generated block has no write strobe, so "act on change" registers are used instead.
+- Board results are judged byte for byte against the same computation in cancho. Designs live in SRAM. Loading needs sudo or a udev rule: do not run it unasked.
+- Not claimed: that a servo moved, any speed advantage (the 115200 baud serial line is the limit; the adapter loses data above about 64 bytes in flight), timing against an outside reference.
