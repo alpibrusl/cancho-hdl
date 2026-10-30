@@ -21,16 +21,21 @@ import labio;
 // Authority: standard input and output, the Tty capability under /dev, a poll. No filesystem, no network, no foreign call.
 
 fn steps() -> [] int { return 40; }
+// the host's serial rate (the board must be built for it: CLKS=27 is 1,000,000 baud) and whether to use the bridge's block commands
+fn baud() -> [] int { return 115200; }
+fn blocks() -> [] int { return 0; }
 
 // y = matrix `mat` (held by the board) times x (32 integers between -128 and 127), through the board; `ctr` holds the toggles
-fn mv[&a, &b, &c, &d, &e, &f](q: &!a Port, pw: &!b Poller, frame: &!c [byte], cmd: &!c [byte], ans: &!c [byte], ctr: &!d [int], mat: int, x: &e [int], y: &!f [int]) -> [tty_write, tty_read, poll] int {
+fn mv[&a, &b, &c, &d, &e, &f](q: &!a Port, pw: &!b Poller, frame: &!c [byte], cmd: &!c [byte], ans: &!c [byte], blk: &!c [byte], ctr: &!d [int], mat: int, x: &e [int], y: &!f [int]) -> [tty_write, tty_read, poll] int {
     labio.write_reg(q, pw, frame, ans, 44, mat);
     var i = 0;
     while i < 32 {
         ctr[0] = ctr[0] + 1;
-        labio.write_reg(q, pw, frame, ans, 52, (ctr[0] % 2) * 65536 + ((x[i] + 256) % 256) * 256 + i);
+        let word = (ctr[0] % 2) * 65536 + ((x[i] + 256) % 256) * 256 + i;
+        if blocks() == 0 { labio.write_reg(q, pw, frame, ans, 52, word); } else { labio.put_word(blk, i, word); }
         i = i + 1;
     }
+    if blocks() != 0 { labio.block_write(q, pw, blk, ans, 52, 0, 32); }
     ctr[1] = ctr[1] + 1;
     labio.write_reg(q, pw, frame, ans, 28, ctr[1]);
     var tries = 0;
@@ -92,7 +97,7 @@ fn main(world: World) -> [] int {
                     TtyOpened::Failed(errno) => { status_code = 3; }
                     TtyOpened::Ok(port) => {
                         borrow mut port as &!q in {
-                            if tty_configure(q, 115200) != 0 { status_code = 4; }
+                            if tty_configure(q, baud()) != 0 { status_code = 4; }
                             tty_flush_input(q);
                             borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
                             borrow mut p as &!pw in {
@@ -100,6 +105,7 @@ fn main(world: World) -> [] int {
                                     let frame = alloc_slice[r](9, byte_of(0));
                                     let cmd = alloc_slice[r](5, byte_of(0));
                                     let ans = alloc_slice[r](8, byte_of(0));
+                                    let blk = alloc_slice[r](6 + 4 * 64, byte_of(0));
                                     let vocab = alloc_slice[r](1, 0);
                                     let codes = alloc_slice[r](32, 0);
                                     let prompt = alloc_slice[r](4, 0);
@@ -151,7 +157,12 @@ fn main(world: World) -> [] int {
                                         var k = 0;
                                         while k < 3072 {
                                             wt = wt + 1;
-                                            labio.write_reg(q, pw, frame, ans, 48, (wt % 2) * 1048576 + ((w[k] + 256) % 256) * 4096 + k);
+                                            let word = (wt % 2) * 1048576 + ((w[k] + 256) % 256) * 4096 + k;
+                                            if blocks() == 0 { labio.write_reg(q, pw, frame, ans, 48, word); }
+                                            else {
+                                                labio.put_word(blk, (wt - 1) % 64, word);
+                                                if wt % 64 == 0 { labio.block_write(q, pw, blk, ans, 48, 0, 64); }
+                                            }
                                             k = k + 1;
                                         }
                                         // ---- generate ----
@@ -176,11 +187,11 @@ fn main(world: World) -> [] int {
                                         while s < steps() {
                                             d = 0;
                                             while d < 32 { x0[d] = emb[ctx[d / 8] * 8 + d % 8]; d = d + 1; }
-                                            mv(q, pw, frame, cmd, ans, ctr, 0, x0, by1);
+                                            mv(q, pw, frame, cmd, ans, blk, ctr, 0, x0, by1);
                                             rescale(by1, x1, mult[0]);
-                                            mv(q, pw, frame, cmd, ans, ctr, 1, x1, by2);
+                                            mv(q, pw, frame, cmd, ans, blk, ctr, 1, x1, by2);
                                             rescale(by2, x2, mult[1]);
-                                            mv(q, pw, frame, cmd, ans, ctr, 2, x2, by3);
+                                            mv(q, pw, frame, cmd, ans, blk, ctr, 2, x2, by3);
                                             // the same three products on the host, from the same weights
                                             host_mv(w, 0, x0, hy1);
                                             rescale(hy1, x1, mult[0]);

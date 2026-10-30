@@ -16,7 +16,7 @@ session that wrote it, and the place-and-route and bitstream steps could not be 
 
 The byte protocol (big-endian): host sends `W a3 a2 a1 a0 d3 d2 d1 d0` and gets one byte back, or sends `R a3 a2 a1 a0` and gets
 `resp d3 d2 d1 d0`. `resp` is the AXI response: `00` OKAY, `02` SLVERR (no register at the address, a write to a read-only
-register, a read of a write-only one). Any other command byte is ignored.
+register, a read of a write-only one). Any other command byte is ignored. Block commands (`B`, `I`, `E`, `D`: many words in one frame) are described at the top of `rtl/uart_axil_bridge.v` and measured in `docs/fpga-experiments.md`.
 
 ## Measured (this session, Icarus Verilog 12 and Yosys 0.33 from Ubuntu 24.04)
 

@@ -54,6 +54,7 @@ module top_tb;
         reg [7:0] b3, b2, b1, b0;
         begin send_byte("R"); send_word(a); recv_byte(resp); recv_byte(b3); recv_byte(b2); recv_byte(b1); recv_byte(b0); d = {b3, b2, b1, b0}; end
     endtask
+    reg [7:0] r0, r1, r2, r3, r4, r5, r6, r7;
     task check(input [8*64-1:0] what, input ok);
         begin
             if (ok) begin pass = pass + 1; $display("PASS  %0s", what); end
@@ -84,6 +85,30 @@ module top_tb;
         check("all six LEDs on", led === 6'b000000);
         write(32'h40000000, 32'h00000000, resp);
         check("all six LEDs off", led === 6'b111111);
+        // block commands: no byte is answered until the frame is complete
+        send_byte("B"); send_word(32'h40000004); send_byte(8'd3); send_word(32'h11111111); send_word(32'h22222222); send_word(32'h33333333); recv_byte(resp);
+        check("B: three writes to SCRATCH answer OKAY", resp === 8'h00);
+        read(32'h40000004, resp, d);
+        check("B: SCRATCH holds the last word", d === 32'h33333333);
+        send_byte("I"); send_word(32'h40000000); send_byte(8'd2); send_word(32'h00000009); send_word(32'hcafef00d); recv_byte(resp);
+        check("I: two writes to LEDS, SCRATCH answer OKAY", resp === 8'h00);
+        check("I: the first word reached LEDS", led === 6'b110110);
+        read(32'h40000004, resp, d);
+        check("I: the second word reached SCRATCH", d === 32'hcafef00d);
+        send_byte("D"); send_word(32'h40000000); send_byte(8'd2);
+        recv_byte(r0); recv_byte(r1); recv_byte(r2); recv_byte(r3); recv_byte(r4); recv_byte(r5); recv_byte(r6); recv_byte(r7); recv_byte(resp);
+        check("D: two incrementing reads, LEDS then SCRATCH", {r0, r1, r2, r3} === 32'h00000009 && {r4, r5, r6, r7} === 32'hcafef00d && resp === 8'h00);
+        send_byte("E"); send_word(32'h40000004); send_byte(8'd2);
+        recv_byte(r0); recv_byte(r1); recv_byte(r2); recv_byte(r3); recv_byte(r4); recv_byte(r5); recv_byte(r6); recv_byte(r7); recv_byte(resp);
+        check("E: two reads of the same address", {r0, r1, r2, r3} === 32'hcafef00d && {r4, r5, r6, r7} === 32'hcafef00d && resp === 8'h00);
+        send_byte("I"); send_word(32'h40000004); send_byte(8'd2); send_word(32'h01010101); send_word(32'h02020202); recv_byte(resp);
+        check("I: a word past the last register answers 0x02 at the end", resp === 8'h02);
+        read(32'h40000004, resp, d);
+        check("and the word before it still landed", d === 32'h01010101);
+        send_byte("B"); send_word(32'h40000004); send_byte(8'd0);
+        write(32'h40000004, 32'h0000abcd, resp);
+        read(32'h40000004, resp, d);
+        check("n = 0 does nothing and answers nothing", resp === 8'h00 && d === 32'h0000abcd);
         $display("RESULT: %0d passed, %0d failed", pass, fail);
         $finish;
     end
