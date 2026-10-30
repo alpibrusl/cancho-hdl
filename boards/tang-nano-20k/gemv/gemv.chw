@@ -1,0 +1,218 @@
+{
+  "version": "0.1.0",
+  "block": {
+    "name": "Gemv",
+    "base_address": "0x40000000",
+    "bus_width": 32,
+    "endianness": "little",
+    "registers": [
+      {
+        "name": "DIM",
+        "offset": "0x00",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "ROWS",
+            "lsb": 0,
+            "msb": 5
+          },
+          {
+            "name": "COLS",
+            "lsb": 8,
+            "msb": 13
+          }
+        ]
+      },
+      {
+        "name": "W_ADDR",
+        "offset": "0x04",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "INDEX",
+            "lsb": 0,
+            "msb": 9
+          }
+        ]
+      },
+      {
+        "name": "W_DATA",
+        "offset": "0x08",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "VALUE",
+            "lsb": 0,
+            "msb": 7
+          }
+        ]
+      },
+      {
+        "name": "W_LOAD",
+        "offset": "0x0C",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "TOG",
+            "lsb": 0,
+            "msb": 15
+          }
+        ]
+      },
+      {
+        "name": "X_IDX",
+        "offset": "0x10",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "INDEX",
+            "lsb": 0,
+            "msb": 4
+          }
+        ]
+      },
+      {
+        "name": "X_VAL",
+        "offset": "0x14",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "VALUE",
+            "lsb": 0,
+            "msb": 7
+          }
+        ]
+      },
+      {
+        "name": "X_LOAD",
+        "offset": "0x18",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "TOG",
+            "lsb": 0,
+            "msb": 15
+          }
+        ]
+      },
+      {
+        "name": "GO",
+        "offset": "0x1C",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "TOG",
+            "lsb": 0,
+            "msb": 15
+          }
+        ]
+      },
+      {
+        "name": "STATUS",
+        "offset": "0x20",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "DONE",
+            "lsb": 0,
+            "msb": 0
+          }
+        ]
+      },
+      {
+        "name": "Y_SEL",
+        "offset": "0x24",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "INDEX",
+            "lsb": 0,
+            "msb": 4
+          }
+        ]
+      },
+      {
+        "name": "Y_VAL",
+        "offset": "0x28",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "VALUE",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "MAT",
+        "offset": "0x2C",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "INDEX",
+            "lsb": 0,
+            "msb": 1
+          }
+        ]
+      },
+      {
+        "name": "W_PACK",
+        "offset": "0x30",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "ADDR",
+            "lsb": 0,
+            "msb": 11
+          },
+          {
+            "name": "VALUE",
+            "lsb": 12,
+            "msb": 19
+          },
+          {
+            "name": "TOG",
+            "lsb": 20,
+            "msb": 20
+          }
+        ]
+      },
+      {
+        "name": "X_PACK",
+        "offset": "0x34",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "INDEX",
+            "lsb": 0,
+            "msb": 4
+          },
+          {
+            "name": "VALUE",
+            "lsb": 8,
+            "msb": 15
+          },
+          {
+            "name": "TOG",
+            "lsb": 16,
+            "msb": 16
+          }
+        ]
+      }
+    ]
+  }
+}

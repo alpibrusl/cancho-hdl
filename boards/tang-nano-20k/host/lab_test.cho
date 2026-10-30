@@ -1,0 +1,176 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+import labio;
+
+// lab_test.cho -- the three instruments of rtl/lab.v, judged from cancho (build with labio.cho: cancho build labio.cho lab_test.cho --std).
+//   1. histogram: 2000 pseudo-random shots over 16 outcomes are counted by the board; every bin and the total must equal the host's own count.
+//   2. sequencer and analyzer: four events at known ticks (1 ms, 5 ms, 6 ms and 0.5 s apart) drive the LED pins; the analyzer watching
+//      those pins timestamps each edge on the same 27 MHz clock, and the spacing of the stamps must equal the spacing programmed.
+//   3. analyzer on the UART line: eight 0x55 bytes (an edge on every bit) are sent as an ignored command byte; the spacing of the
+//      edges is the bit time of the host's serial adapter in FPGA ticks (115200 baud is 234.375), and a byte sent every 50 ms by the
+//      host's clock is stamped by the FPGA's.
+
+fn shot(k: int) -> [] int { return (k * 7 + (k / 3) * 5 + (k / 11)) % 16; }
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec);
+    let device = narrow(tty, "/dev");
+    var failures = 0;
+    var status_code = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); release(clock); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status_code = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status_code = 4; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            borrow mut p as &!pw in {
+                                region r {
+                                    let frame = alloc_slice[r](9, byte_of(0));
+                                    let cmd = alloc_slice[r](5, byte_of(0));
+                                    let ans = alloc_slice[r](8, byte_of(0));
+                                    let expect = alloc_slice[r](16, 0);
+                                    // ---- 1. histogram ----
+                                    labio.write_reg(q, pw, frame, ans, 0, 4);          // HIST_CLR high ...
+                                    labio.pause(pw, 5);
+                                    labio.write_reg(q, pw, frame, ans, 0, 0);          // ... and low
+                                    var k = 0;
+                                    var tog = 0;
+                                    while k < 2000 {
+                                        let o = shot(k);
+                                        expect[o] = expect[o] + 1;
+                                        tog = 1 - tog;
+                                        labio.write_reg(q, pw, frame, ans, 44, tog * 4096 + o);
+                                        k = k + 1;
+                                    }
+                                    var bad = 0;
+                                    var b = 0;
+                                    while b < 16 {
+                                        labio.write_reg(q, pw, frame, ans, 48, b);
+                                        labio.pause(pw, 2);
+                                        let got = labio.read_reg(q, pw, cmd, ans, 52);
+                                        if got != expect[b] { bad = bad + 1; }
+                                        b = b + 1;
+                                    }
+                                    let total = labio.read_reg(q, pw, cmd, ans, 56);
+                                    borrow mut heap as &!h in { borrow mut io as &!i in {
+                                        labio.say(h, i, "1. histogram: 2000 shots, bins different from the host's own count (want 0): ", bad, "");
+                                        labio.say(h, i, "   total counted by the board (want 2000): ", total, "");
+                                    } }
+                                    failures = failures + bad;
+                                    if total != 2000 { failures = failures + 1; }
+                                    // ---- 2. sequencer watched by the analyzer ----
+                                    labio.write_reg(q, pw, frame, ans, 20, 0);  labio.write_reg(q, pw, frame, ans, 24, 27000);     labio.write_reg(q, pw, frame, ans, 28, 1);  labio.write_reg(q, pw, frame, ans, 32, 1);
+                                    labio.write_reg(q, pw, frame, ans, 20, 1);  labio.write_reg(q, pw, frame, ans, 24, 162000);    labio.write_reg(q, pw, frame, ans, 28, 3);  labio.write_reg(q, pw, frame, ans, 32, 2);
+                                    labio.write_reg(q, pw, frame, ans, 20, 2);  labio.write_reg(q, pw, frame, ans, 24, 189000);    labio.write_reg(q, pw, frame, ans, 28, 7);  labio.write_reg(q, pw, frame, ans, 32, 3);
+                                    labio.write_reg(q, pw, frame, ans, 20, 3);  labio.write_reg(q, pw, frame, ans, 24, 13689000);  labio.write_reg(q, pw, frame, ans, 28, 0);  labio.write_reg(q, pw, frame, ans, 32, 4);
+                                    labio.write_reg(q, pw, frame, ans, 36, 4);
+                                    labio.write_reg(q, pw, frame, ans, 0, 17);         // PROBE_SEL=1, AN_EN=1
+                                    labio.write_reg(q, pw, frame, ans, 0, 19);         // + SEQ_RUN
+                                    labio.pause(pw, 700);
+                                    let sstat = labio.read_reg(q, pw, cmd, ans, 40);
+                                    labio.write_reg(q, pw, frame, ans, 0, 16);         // AN_EN=0 (stop recording before reading)
+                                    let cnt = labio.read_reg(q, pw, cmd, ans, 8) % 65536;
+                                    var prev = 0;
+                                    var worst = 0;
+                                    var e = 0;
+                                    var seen = 0;
+                                    while e < cnt {
+                                        let ts = labio.read_reg(q, pw, cmd, ans, 12);
+                                        let pins = labio.read_reg(q, pw, cmd, ans, 16);
+                                        if e >= 2 {
+                                            var want = 0;
+                                            if e == 2 { want = 135000; }
+                                            if e == 3 { want = 27000; }
+                                            if e == 4 { want = 13500000; }
+                                            var d = ts - prev - want;
+                                            if d < 0 { d = 0 - d; }
+                                            if d > worst { worst = d; }
+                                            seen = seen + 1;
+                                        }
+                                        prev = ts;
+                                        labio.write_reg(q, pw, frame, ans, 4, e + 1);
+                                        e = e + 1;
+                                    }
+                                    borrow mut heap as &!h in { borrow mut io as &!i in {
+                                        labio.say(h, i, "2. sequencer status (want 1025: done, next event index 4): ", sstat, "");
+                                        labio.say(h, i, "   analyzer entries (want 5: initial level, four edges): ", cnt, "");
+                                        labio.say(h, i, "   spacings checked: ", seen, "");
+                                        labio.say(h, i, "   worst difference between programmed and recorded spacing, in 27 MHz ticks (want 0): ", worst, "");
+                                    } }
+                                    if cnt != 5 || seen != 3 || worst != 0 { failures = failures + 1; }
+                                    // ---- 3. analyzer on the UART line ----
+                                    labio.write_reg(q, pw, frame, ans, 0, 0);
+                                    labio.write_reg(q, pw, frame, ans, 0, 1);          // PROBE_SEL=0, AN_EN=1: the FIFO is cleared and the line level recorded
+                                    let ping = alloc_slice[r](1, byte_of(85));
+                                    var n = 0;
+                                    while n < 6 {
+                                        tty_write(q, ping);
+                                        labio.pause(pw, 50);
+                                        n = n + 1;
+                                    }
+                                    labio.write_reg(q, pw, frame, ans, 0, 0);
+                                    let cnt3 = labio.read_reg(q, pw, cmd, ans, 8) % 65536;
+                                    var sum = 0;
+                                    var nint = 0;
+                                    var prev3 = 0;
+                                    var starts = alloc_slice[r](16, 0);
+                                    var ns = 0;
+                                    var e3 = 0;
+                                    while e3 < cnt3 {
+                                        let ts = labio.read_reg(q, pw, cmd, ans, 12);
+                                        let lv = labio.read_reg(q, pw, cmd, ans, 16);
+                                        if e3 > 0 {
+                                            let d = ts - prev3;
+                                            if d < 400 { sum = sum + d; nint = nint + 1; }
+                                            // a frame starts at a falling edge after an idle line of more than two byte times (or the first edge)
+                                            if lv == 0 && (d > 5000 || e3 == 1) && ns < 16 { starts[ns] = ts; ns = ns + 1; }
+                                        }
+                                        prev3 = ts;
+                                        labio.write_reg(q, pw, frame, ans, 4, 100 + e3);
+                                        e3 = e3 + 1;
+                                    }
+                                    var lo = 100000000;
+                                    var hi = 0;
+                                    var j = 1;
+                                    while j < 6 && j < ns {
+                                        let g = starts[j] - starts[j - 1];
+                                        if g < lo { lo = g; }
+                                        if g > hi { hi = g; }
+                                        j = j + 1;
+                                    }
+                                    borrow mut heap as &!h in { borrow mut io as &!i in {
+                                        labio.say(h, i, "3. UART line: edges recorded: ", cnt3, "");
+                                        if nint > 0 { labio.say(h, i, "   mean one-bit interval, ticks x 100 (115200 baud is 23437): ", sum * 100 / nint, ""); }
+                                        labio.say(h, i, "   frame starts seen (6 pings, then the register write that stopped the capture): ", ns, "");
+                                        labio.say(h, i, "   shortest gap between ping starts, ticks (50 ms is 1,350,000): ", lo, "");
+                                        labio.say(h, i, "   longest gap between ping starts, ticks: ", hi, "");
+                                    } }
+                                    if nint < 20 || ns < 6 { failures = failures + 1; }
+                                    labio.write_reg(q, pw, frame, ans, 0, 0);
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    release(clock);
+    if status_code != 0 { return status_code; }
+    if failures != 0 { return 1; }
+    return 0;
+}

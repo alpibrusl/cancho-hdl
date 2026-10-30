@@ -298,6 +298,11 @@ fn writable[&k](kind: &k [byte]) -> [] bool {
     return bytes.equal(kind, "RW") || bytes.equal(kind, "WO") || bytes.equal(kind, "W1C") || bytes.equal(kind, "W0C") || bytes.equal(kind, "W1S") || bytes.equal(kind, "W0S") || bytes.equal(kind, "RC");
 }
 
+// A read-only register the device writes (the contract marks it `volatile`): the module reads it from an input.
+fn device_written[&s](src: &s [byte], r: model.Reg) -> [] bool {
+    return bytes.equal(src[r.kind_s..r.kind_e], "RO") && r.volatile;
+}
+
 fn put_read_branch[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte], ir: &q model.Ir, r: model.Reg) -> [heap] buffer.Buffer {
     var o = put_block_snake(heap, gc.put(heap, out, "        if (ar_match_"), src, ir);
     o = gc.put(heap, o, " && (s_axi_araddr == BASE_ADDR + ADDR_");
@@ -306,6 +311,10 @@ fn put_read_branch[&h, &s, &q](heap: &!h Heap, out: buffer.Buffer, src: &s [byte
     if bytes.equal(src[r.kind_s..r.kind_e], "WO") {
         o = gc.put(heap, o, "            // WO register: reads return 0 and answer SLVERR (the spec notes this is a write-only register).\n");
         return gc.put(heap, o, "            rdata = 'h0;\n        end\n");
+    }
+    if device_written(src, r) {
+        o = put_snake_register(heap, gc.put(heap, o, "            rdata = reg_"), src, r);
+        return gc.put(heap, o, "_in;\n            rdata_valid = 1'b1;\n        end\n");
     }
     o = put_snake_register(heap, gc.put(heap, o, "            rdata = r_"), src, r);
     return gc.put(heap, o, ";\n            rdata_valid = 1'b1;\n        end\n");
@@ -363,6 +372,17 @@ pub fn generate[&h, &s, &p, &q](heap: &!h Heap, src: &s [byte], path: &p [byte],
         }
         o = gc.put(heap, o, "\n\n");
         var j = 0;
+        while j < nregs {
+            let r = vec.get(ir.regs, contents(pr)[j]);
+            if device_written(src, r) {
+                o = put_snake_register(heap, gc.put(heap, o, "    input  wire [DATA_WIDTH-1:0]      reg_"), src, r);
+                o = gc.put(heap, o, "_in,  // ");
+                o = put_register_id(heap, o, src, ir, r);
+                o = gc.put(heap, o, "\n");
+            }
+            j = j + 1;
+        }
+        j = 0;
         while j < nregs {
             let r = vec.get(ir.regs, contents(pr)[j]);
             o = put_snake_register(heap, gc.put(heap, o, "    output wire [DATA_WIDTH-1:0]      reg_"), src, r);

@@ -2,6 +2,8 @@
 # Build the Tang Nano 20K design with the open-source flow, as far as the tools on this machine go, and say which step ran.
 #
 #   CHW=./chw sh boards/tang-nano-20k/build.sh [OUTDIR] [--flash]      (from the repository root; OUTDIR defaults to boards/tang-nano-20k/build)
+#   DESIGN=stats CHW=./chw sh boards/tang-nano-20k/build.sh boards/tang-nano-20k/build-stats [--flash]
+#       DESIGN is leds (the default), lab, stats, gemv, table, deadman, img or mem; img and mem have no contract (hand-written, no register block).
 #
 #   1  chw check, chw generate --target systemverilog   the register block, from leds.chw           (needs $CHW)
 #   2  yosys synth_gowin                                 the netlist                                 (needs yosys)
@@ -22,13 +24,29 @@ have() { command -v "$1" >/dev/null 2>&1; }
 skipped=0
 step() { printf '== %s\n' "$1"; }
 
+DESIGN=${DESIGN:-leds}
+case $DESIGN in
+    leds)    CONTRACT=$B/leds.chw;          RTL="$B/rtl/top.v" ;;
+    lab)     CONTRACT=$B/lab/lab.chw;       RTL="$B/rtl/top_lab.v $B/rtl/lab.v" ;;
+    stats)   CONTRACT=$B/stats/stats.chw;   RTL="$B/rtl/top_stats.v $B/rtl/stats.v" ;;
+    gemv)    CONTRACT=$B/gemv/gemv.chw;     RTL="$B/rtl/top_gemv.v $B/rtl/gemv.v" ;;
+    table)   CONTRACT=$B/table/table.chw;   RTL="$B/rtl/top_table.v $B/rtl/table_agg.v" ;;
+    deadman) CONTRACT=$B/deadman.chw;       RTL="$B/rtl/top_deadman.v $B/rtl/deadman.v" ;;
+    img)     CONTRACT=;                     RTL="$B/rtl/top_img.v $B/rtl/img_stream.v" ;;
+    mem)     CONTRACT=;                     RTL="$B/rtl/top_mem.v $B/rtl/mem_test.v" ;;
+    *) echo "unknown DESIGN=$DESIGN"; exit 1 ;;
+esac
+GEN=
 step "1 generate the register block"
-"$CHW" check $B/leds.chw
-"$CHW" generate $B/leds.chw --target systemverilog >"$OUT/leds.sv"
+if [ -n "$CONTRACT" ]; then
+    "$CHW" check "$CONTRACT"
+    "$CHW" generate "$CONTRACT" --target systemverilog >"$OUT/leds.sv"
+    GEN="$OUT/leds.sv"
+else echo "no contract for this design"; fi
 
 step "2 yosys synth_gowin"
 if have yosys; then
-    yosys -q -l "$OUT/yosys.log" -p "read_verilog -sv $B/rtl/top.v $B/rtl/uart_axil_bridge.v $B/rtl/uart_rx.v $B/rtl/uart_tx.v $OUT/leds.sv; synth_gowin -top top -json $OUT/top.json"
+    yosys -q -l "$OUT/yosys.log" -p "read_verilog -sv $RTL $B/rtl/uart_axil_bridge.v $B/rtl/uart_rx.v $B/rtl/uart_tx.v $GEN; synth_gowin -top top -json $OUT/top.json"
     if grep -q '^Warning' "$OUT/yosys.log"; then echo "yosys warned:"; grep '^Warning' "$OUT/yosys.log"; exit 1; fi
 else echo "skipped: yosys not found"; skipped=1; fi
 

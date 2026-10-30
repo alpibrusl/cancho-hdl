@@ -1,0 +1,178 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+
+// deadman.cho -- the hardware deadman of rtl/deadman.v (registers of deadman.chw) tested from cancho against the board's clock.
+//   Arm with a 200 ms timeout, keep it alive with kicks, stop and time the trip, re-arm, and check TIMEOUT_MS = 0.
+// Tty capability only; no foreign call.
+
+// send `cmd`, then collect `want` bytes into `out`; answers how many arrived (poller-driven, bounded)
+fn exchange[&a, &b, &c, &d](q: &!a Port, pw: &!b Poller, cmd: &c [byte], out: &!d [byte], want: int) -> [tty_write, tty_read, poll] int {
+    tty_write(q, cmd);
+    var n = 0;
+    var tries = 0;
+    region r {
+        let chunk = alloc_slice[r](16, byte_of(0));
+        let ev = alloc_slice[r](2, 0);
+        while n < want && tries < 400 {
+            poller_wait(pw, ev, 10);
+            let k = tty_read(q, chunk);
+            var i = 0;
+            while i < k && n < want {
+                out[n] = chunk[i];
+                n = n + 1;
+                i = i + 1;
+            }
+            tries = tries + 1;
+        }
+    }
+    return n;
+}
+
+fn say[&h, &i](heap: &!h Heap, io: &!i Io, text: &static [byte], v: int, tail: &static [byte]) -> [heap, io_write] int {
+    var line = buffer.empty(heap, 80);
+    line = buffer.append(heap, line, text);
+    line = buffer.push_nat(heap, line, v);
+    line = buffer.append(heap, line, tail);
+    line = buffer.push(heap, line, byte_of(10));
+    borrow line as &lb in { io.write_all(io, buffer.bytes(lb)); }
+    buffer.drop(heap, line);
+    return 0;
+}
+
+
+// one register write over the bridge: 'W' addr(4) data(4), answers the AXI response byte (0 OKAY), or -1 if none came
+fn reg_write[&a, &b, &c](q: &!a Port, pw: &!b Poller, frame: &!c [byte], ans: &!c [byte], addr: int, data: int) -> [tty_write, tty_read, poll] int {
+    frame[0] = byte_of(87);
+    frame[1] = byte_of(addr / 16777216 % 256);
+    frame[2] = byte_of(addr / 65536 % 256);
+    frame[3] = byte_of(addr / 256 % 256);
+    frame[4] = byte_of(addr % 256);
+    frame[5] = byte_of(data / 16777216 % 256);
+    frame[6] = byte_of(data / 65536 % 256);
+    frame[7] = byte_of(data / 256 % 256);
+    frame[8] = byte_of(data % 256);
+    let n = exchange(q, pw, frame, ans, 1);
+    if n != 1 { return 0 - 1; }
+    return int_of(ans[0]);
+}
+
+// STATUS (0x4000000C, read-only, driven by the device): bit 0 torque ok, bit 1 tripped; -1 if no answer came
+fn status[&a, &b, &c](q: &!a Port, pw: &!b Poller, cmd: &!c [byte], ans: &!c [byte]) -> [tty_write, tty_read, poll] int {
+    cmd[0] = byte_of(82);
+    cmd[1] = byte_of(64);
+    cmd[2] = byte_of(0);
+    cmd[3] = byte_of(0);
+    cmd[4] = byte_of(12);
+    let n = exchange(q, pw, cmd, ans, 5);
+    if n != 5 { return 0 - 1; }
+    if int_of(ans[0]) != 0 { return 0 - 2; }
+    return int_of(ans[4]);
+}
+
+fn pause[&p](pw: &!p Poller, ms: int) -> [poll] int {
+    region r {
+        let ev = alloc_slice[r](2, 0);
+        poller_wait(pw, ev, ms);
+    }
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec);
+    let device = narrow(tty, "/dev");
+    var failures = 0;
+    var status_code = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); release(clock); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status_code = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status_code = 4; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            borrow mut p as &!pw in {
+                                region r {
+                                    let frame = alloc_slice[r](9, byte_of(0));
+                                    let one = alloc_slice[r](5, byte_of(0));
+                                    let ans = alloc_slice[r](8, byte_of(0));
+                                    // 1. disarmed at power-up
+                                    let s0 = status(q, pw, one, ans);
+                                    borrow mut heap as &!h in { borrow mut io as &!i in { say(h, i, "1. status before arming (want 0): ", s0, ""); } }
+                                    if s0 != 0 { failures = failures + 1; }
+                                    // 2. timeout 200 ms, arm
+                                    reg_write(q, pw, frame, ans, 1073741828, 200);
+                                    reg_write(q, pw, frame, ans, 1073741824, 1);
+                                    let s1 = status(q, pw, one, ans);
+                                    borrow mut heap as &!h in { borrow mut io as &!i in { say(h, i, "2. status after arming with a 200 ms timeout (want 1): ", s1, ""); } }
+                                    if s1 != 1 { failures = failures + 1; }
+                                    // 3. kick every ~50 ms for 1.2 s: it must stay alive
+                                    var alive = 0;
+                                    var k = 1;
+                                    while k <= 24 {
+                                        reg_write(q, pw, frame, ans, 1073741832, k);
+                                        pause(pw, 50);
+                                        if status(q, pw, one, ans) == 1 { alive = alive + 1; }
+                                        k = k + 1;
+                                    }
+                                    borrow mut heap as &!h in { borrow mut io as &!i in { say(h, i, "3. 24 kicks 50 ms apart, polls that saw torque ok (want 24): ", alive, ""); } }
+                                    if alive != 24 { failures = failures + 1; }
+                                    // 4. stop kicking; time the trip from the last kick's acknowledgement
+                                    reg_write(q, pw, frame, ans, 1073741832, 100);
+                                    var t0 = 0;
+                                    borrow clock as &c in { t0 = clock_ms(c); }
+                                    var elapsed = 0;
+                                    var seen = 0;
+                                    while seen == 0 && elapsed < 1000 {
+                                        pause(pw, 5);
+                                        if status(q, pw, one, ans) == 2 { seen = 1; }
+                                        borrow clock as &c in { elapsed = clock_ms(c) - t0; }
+                                    }
+                                    borrow mut heap as &!h in { borrow mut io as &!i in { say(h, i, "4. ms from the last kick to the first poll that saw the trip (want 190 to 260; 200 ms timeout, the clock starts a little before the host sees the acknowledgement): ", elapsed, ""); } }
+                                    if seen == 0 || elapsed < 190 || elapsed > 260 { failures = failures + 1; }
+                                    // 5. a kick after the trip changes nothing; ENABLE=0 clears it; ENABLE=1 arms again
+                                    reg_write(q, pw, frame, ans, 1073741832, 101);
+                                    let s5 = status(q, pw, one, ans);
+                                    reg_write(q, pw, frame, ans, 1073741824, 0);
+                                    let s6 = status(q, pw, one, ans);
+                                    reg_write(q, pw, frame, ans, 1073741824, 1);
+                                    let s7 = status(q, pw, one, ans);
+                                    borrow mut heap as &!h in { borrow mut io as &!i in {
+                                        say(h, i, "5. kick after the trip (want 2): ", s5, "");
+                                        say(h, i, "   after ENABLE=0 (want 0): ", s6, "");
+                                        say(h, i, "   after ENABLE=1 again (want 1): ", s7, "");
+                                    } }
+                                    if s5 != 2 || s6 != 0 || s7 != 1 { failures = failures + 1; }
+                                    // 6. TIMEOUT_MS = 0 never trips
+                                    reg_write(q, pw, frame, ans, 1073741824, 0);
+                                    reg_write(q, pw, frame, ans, 1073741828, 0);
+                                    reg_write(q, pw, frame, ans, 1073741824, 1);
+                                    pause(pw, 500);
+                                    let s8 = status(q, pw, one, ans);
+                                    borrow mut heap as &!h in { borrow mut io as &!i in { say(h, i, "6. armed with TIMEOUT_MS = 0 and 500 ms of silence (want 1): ", s8, ""); } }
+                                    if s8 != 1 { failures = failures + 1; }
+                                    reg_write(q, pw, frame, ans, 1073741824, 0);   // leave it disarmed
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    release(clock);
+    if status_code != 0 { return status_code; }
+    if failures != 0 { return 1; }
+    return 0;
+}

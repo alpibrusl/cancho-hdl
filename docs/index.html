@@ -93,13 +93,73 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 .promptbox pre { margin: 0; padding: 1rem; max-height: 26rem; overflow: auto; font: .8rem/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .vid { max-width: 46rem; margin: 1.2rem auto 0; }
 .vid video { width: 100%; height: auto; display: block; border-radius: 12px; border: 1px solid var(--line); background: var(--term-bg); }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1rem; }
+.card ul { margin: .3rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: .93rem; }
+.card li { margin: .25rem 0; }
+.badge { display: inline-block; font: 600 .72rem var(--mono); padding: .1rem .5rem; border-radius: 99px; border: 1px solid var(--line); vertical-align: middle; margin-left: .3rem; }
+.badge.ok { color: var(--good); border-color: var(--good); } .badge.no { color: var(--warn); border-color: var(--warn); } .badge.rev { color: var(--accent); border-color: var(--accent); }
+.state { max-width: 52rem; margin: 0 auto; width: 100%; border-collapse: collapse; font-size: .93rem; }
+.state th, .state td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.state th { color: var(--muted); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+.state td:first-child { white-space: nowrap; font-weight: 600; }
+.chart { max-width: 46rem; margin: 2rem auto 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1rem .6rem; }
+.chart h3 { margin: 0 0 .2rem; font-size: 1rem; }
+.chart p { margin: 0 0 .6rem; color: var(--muted); font-size: .85rem; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart text { fill: var(--muted); font: 11px var(--mono); }
+.chart .lbl { fill: var(--fg); }
+.chart .axis { stroke: var(--line); stroke-width: 1; }
+.chart .ref { stroke: var(--warn); stroke-dasharray: 4 3; stroke-width: 1.2; }
+.chart .bar { fill: var(--accent); transform-origin: left center; transform: scaleX(0); transition: transform .9s cubic-bezier(.2,.7,.2,1); }
+.chart.in .bar, .ex.in .bar { transform: scaleX(1); }
+.chart .bar.alt { fill: var(--good); } .chart .bar.hot { fill: var(--bad); }
+.gal { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1.1rem; }
+.ex { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.ex .stage { background: var(--soft); border-bottom: 1px solid var(--line); min-height: 12rem; padding: .9rem; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: .6rem; position: relative; }
+.ex .body { padding: .9rem 1rem 1rem; }
+.ex h3 { margin: 0 0 .2rem; font-size: 1.05rem; }
+.ex .body p { margin: .2rem 0; color: var(--muted); font-size: .9rem; }
+.ex .res { font: .8rem var(--mono); color: var(--good); margin-top: .4rem; }
+.ex .res.warn { color: var(--warn); }
+.ex .files { font: .75rem var(--mono); color: var(--muted); margin-top: .4rem; overflow-wrap: anywhere; }
+.tilebox { width: 192px; height: 144px; max-width: 100%; border: 1px solid var(--line); image-rendering: pixelated; background: url(img/tang-nano-20k-image-filter.png) 0 0 / 1152px 144px no-repeat; }
+.chips { display: flex; flex-wrap: wrap; gap: .3rem; justify-content: center; }
+.chips button { font: .72rem var(--mono); padding: .15rem .5rem; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); cursor: pointer; }
+.chips button.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.led { display: inline-block; width: 1.1rem; height: 1.1rem; border-radius: 50%; background: #3a4a52; border: 1px solid var(--line); transition: background .15s, box-shadow .15s; }
+.led.ok { background: var(--good); box-shadow: 0 0 10px var(--good); } .led.bad { background: var(--bad); box-shadow: 0 0 10px var(--bad); }
+.tl { width: 100%; height: 3.2rem; position: relative; border-bottom: 2px solid var(--line); }
+.tl i { position: absolute; bottom: 0; width: 2px; height: 1.6rem; background: var(--accent); transform-origin: bottom; animation: pop .3s ease-out; }
+.tl i.trip { background: var(--bad); height: 2.6rem; width: 3px; }
+@keyframes pop { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.hist { display: flex; align-items: flex-end; gap: 6px; height: 7rem; width: 100%; justify-content: center; }
+.hist div { width: 3.2rem; text-align: center; font: .7rem var(--mono); color: var(--muted); }
+.hist div b { display: block; background: var(--accent); height: 0; transition: height 1.2s ease-out; border-radius: 4px 4px 0 0; margin-bottom: 2px; }
+.mini { width: 100%; font: .78rem/1.5 var(--mono); background: var(--term-bg); color: var(--term-fg); border-radius: 8px; padding: .6rem .7rem; min-height: 8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mini .g { color: var(--term-good); } .mini .d { color: var(--term-dim); }
+.big { font: 700 2.2rem var(--mono); color: var(--accent); letter-spacing: -.03em; }
+.tw { font: 1rem/1.5 var(--mono); width: 100%; min-height: 4.5rem; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: .6rem .7rem; overflow-wrap: anywhere; }
+.tw::after { content: "\2588"; animation: blink 1s steps(2) infinite; color: var(--accent); }
+@keyframes blink { 50% { opacity: 0; } }
+.pipe { display: flex; align-items: center; gap: .3rem; flex-wrap: wrap; justify-content: center; font: .72rem var(--mono); }
+.pipe span { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: .25rem .5rem; }
+.pipe span.fpga { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.pipe em { font-style: normal; color: var(--muted); }
+.promptbox + .promptbox { margin-top: 1.2rem; }
+h3.gh { text-align: center; margin: 2.2rem 0 .4rem; font-size: 1.15rem; }
+table.rules { border-collapse: collapse; width: 100%; font-size: .85rem; margin-top: .4rem; }
+table.rules th, table.rules td { text-align: left; padding: .25rem .4rem; border-bottom: 1px solid var(--line); }
+.tabs { display: flex; gap: .4rem; justify-content: center; margin: 0 0 1rem; flex-wrap: wrap; }
+@media (max-width: 40rem) { .state, .state tbody, .state tr, .state td, .state th { display: block; } .state tr:first-child { display: none; } .state td { border: 0; padding: .1rem .2rem; white-space: normal !important; } .state tr { border-bottom: 1px solid var(--line); padding: .5rem 0; } }
+code, .rules td { overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { .chart .bar { transition: none; } .tl i, .tw::after { animation: none; } }
 </style>
 </head>
 <body>
 <header class="top"><div class="wrap">
   <a class="brand" href=".">cancho-hdl</a>
   <nav>
-    <a href="#why">Why</a><a class="opt" href="#how">How it works</a><a class="opt" href="#measured">Measured</a><a class="opt" href="#agent">Ask your agent</a><a href="#try">Try it</a>
+    <a href="#state">State</a><a href="#try">Quick start</a><a href="#gallery">Gallery</a><a class="opt" href="#watch">Watch</a><a class="opt" href="#humans">For humans</a><a class="opt" href="#agents">For agents</a>
     <a href="https://github.com/alpibrusl/cancho-hdl">GitHub</a>
   </nav>
 </div></header>
@@ -107,7 +167,8 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 <div class="wrap hero">
   <h1>Declare the hardware boundary once.</h1>
   <p class="sub">A <code>.chw</code> contract is checked for contradictions and generates the C header, the device tree, the SystemVerilog registers and the rest, so they cannot drift apart.</p>
-  <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn" href="#how">How it works</a><a class="btn" href="#agent">Ask your agent to try it</a></div>
+  <p class="sub" style="margin-top:-.6rem;font-size:1rem">And it now runs on a real chip: a Tang Nano 20K, driven from cancho, with every result compared with the same computation in cancho.</p>
+  <div class="cta"><a class="btn primary" href="#try">Quick start</a><a class="btn" href="#gallery">See the board examples</a><a class="btn" href="#humans">For humans</a><a class="btn" href="#agents">For agents</a></div>
 </div>
 
 <div class="wrap" style="padding-bottom:2.5rem">
@@ -137,7 +198,157 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 
 </div>
 
-<section class="alt" id="why"><div class="wrap">
+<section class="alt" id="state"><div class="wrap">
+  <h2>Where it stands</h2>
+  <p class="lead">What exists, what was measured, what is in review, and what nobody has claimed. Dated 2026-10-30.</p>
+  <table class="state">
+    <tr><th>Part</th><th>State</th><th>What that means</th></tr>
+    <tr><td>Contract check</td><td><span class="badge ok">done</span></td><td>The <code>.chw</code> parser, schema validator, semantic checker and conformance runner are cancho (the <code>chw</code> tool). 12 of 12 refusal fixtures match their expected codes.</td></tr>
+    <tr><td>Generators</td><td><span class="badge ok">done</span> <span class="badge no">part Python</span></td><td>SystemVerilog is generated by cancho and by the Python reference, byte for byte equal on 8 contracts. The C header, device tree, binding and SVD generators are still the Python reference, being replaced.</td></tr>
+    <tr><td>Device-written registers</td><td><span class="badge rev">in review</span></td><td>Read-only volatile registers get an input port (<code>reg_&lt;name&gt;_in</code>), so a counter or a status flag can be a contract register. <a href="https://github.com/alpibrusl/cancho-hdl/pull/22">cancho-hdl#22</a>.</td></tr>
+    <tr><td>A real board</td><td><span class="badge ok">measured</span></td><td>Tang Nano 20K (Gowin GW2AR-18) through the open-source flow (Yosys, nextpnr, gowin_pack, openFPGALoader). The behavioural corpus replayed on the chip: 25 of 25 equal to the reference model. Eight designs ran, host side in cancho.</td></tr>
+    <tr><td>Robot, quantum</td><td><span class="badge rev">in review</span></td><td>A bus recorder for the robot (<a href="https://github.com/alpibrusl/cancho-robot/pull/32">cancho-robot#32</a>) and a sampler and sequencer for the quantum simulator (<a href="https://github.com/alpibrusl/cancho-quantum/pull/33">cancho-quantum#33</a>).</td></tr>
+    <tr><td>Not claimed</td><td><span class="badge no">open</span></td><td>No servo has moved. No speed advantage: the 115200 baud serial line is the limit of every example. Timing figures are the host's view. Designs live in SRAM and vanish at power-off.</td></tr>
+  </table>
+
+  <div class="chart" id="fmax">
+    <h3>Every board design closes timing well above the 27 MHz clock</h3>
+    <p>Clock speed nextpnr reports for each design, in MHz. The dashed line is the board's 27 MHz clock.</p>
+    <svg viewBox="0 0 640 262" role="img" aria-label="Bar chart of the achieved clock for eight designs, all between 78 and 152 megahertz, against the 27 megahertz board clock">
+      <line class="axis" x1="150" y1="6" x2="150" y2="226"/>
+      <line class="ref" x1="229" y1="6" x2="229" y2="226"/><text x="233" y="18">27 MHz clock</text>
+      <g id="fbars"></g>
+      <text x="150" y="246">0</text><text x="385" y="246">80</text><text x="620" y="246" text-anchor="end">160 MHz</text>
+    </svg>
+  </div>
+</div></section>
+
+<section id="try"><div class="wrap">
+  <h2>Quick start</h2>
+  <p class="lead">Two paths. The first needs no hardware; the second needs a Tang Nano 20K.</p>
+  <div class="two">
+    <div class="card"><h3>1. Check a contract <span class="badge">no hardware</span></h3>
+<pre class="code" style="margin:.6rem 0 0"><code>git clone https://github.com/alpibrusl/cancho-hdl.git
+cd cancho-hdl
+export CANCHO=&lt;path-to-the-cancho-binary&gt;
+sh scripts/gate.sh     # about an hour; ends with GATE PASSED
+# then, with the built chw:
+chw check examples/uart-contract/uart.chw
+chw generate examples/uart-contract/uart.chw \
+    --target systemverilog</code></pre>
+      <p style="margin-top:.6rem">Needs the <a href="https://github.com/alpibrusl/cancho">cancho</a> compiler at the pinned revision. Python 3 is only the test oracle.</p></div>
+    <div class="card"><h3>2. Run it on the board <span class="badge">Tang Nano 20K</span></h3>
+<pre class="code" style="margin:.6rem 0 0"><code># OSS CAD Suite on PATH (yosys, nextpnr, openFPGALoader)
+CANCHO=&lt;compiler&gt; sh scripts/build.sh chw
+sh boards/tang-nano-20k/check.sh ./chw   # simulate first
+DESIGN=stats CHW=./chw sh boards/tang-nano-20k/build.sh \
+    boards/tang-nano-20k/build-stats --flash
+cd boards/tang-nano-20k/host
+cancho run labio.cho stats_test.cho --std</code></pre>
+      <p style="margin-top:.6rem">Loading needs raw USB access (<code>sudo</code> or a udev rule). <code>DESIGN</code> is leds, lab, stats, gemv, table, deadman, img or mem. Details: <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/fpga-experiments.md">docs/fpga-experiments.md</a>.</p></div>
+  </div>
+  <p class="fine">The host side is written in cancho: it opens the serial port through the <code>Tty</code> capability and nothing else, and <code>cancho authority</code> lists exactly that. Python appears only in tests and in two small helpers.</p>
+</div></section>
+
+<section class="alt" id="gallery"><div class="wrap">
+  <h2>Gallery: what ran on the board</h2>
+  <p class="lead">Each card is a design that ran on the chip, with a result the host (in cancho) compared with the same computation done in software. Animations replay recorded numbers; none of this is a live session.</p>
+  <div class="gal">
+
+    <div class="ex"><div class="stage"><div id="g-replay" style="display:grid;grid-template-columns:repeat(5,2rem);gap:.3rem"></div><div class="res" id="g-replay-n">0 of 25 equal</div></div>
+      <div class="body"><h3>The behavioural corpus, on the chip</h3><p>25 sequences written for the simulator replayed through the UART bridge and the generated register block.</p><div class="res">25 of 25 equal to the reference model</div><div class="files">tests/hardware/board_replay.py</div></div></div>
+
+    <div class="ex"><div class="stage"><div class="tilebox" id="g-img" role="img" aria-label="A test image after each of the board's filters"></div><div class="chips" id="g-img-chips"></div><div class="res" id="g-img-cap" style="margin:0"></div></div>
+      <div class="body"><h3>An image filter</h3><p>A streaming 3x3 filter (pass, invert, threshold, Sobel, blur). 64x48 greyscale in, filtered image out.</p><div class="res">5 modes x 3,072 pixels, 0 different</div><div class="files">rtl/img_stream.v, host/imgtest.cho</div></div></div>
+
+    <div class="ex"><div class="stage"><div class="pipe"><span>laptop camera</span><em>→</em><span>ffmpeg (helper)</span><em>→</em><span>cancho</span><em>→</em><span class="fpga">FPGA</span><em>→</em><span>cancho compare</span></div><div class="big" id="g-cam">0</div><div class="res" style="color:var(--muted)">pixels compared per mode</div></div>
+      <div class="body"><h3>The webcam, as the robot would see it</h3><p>Four real frames, 96x72, five filter modes. The camera is not a cancho capability yet (<a href="https://github.com/alpibrusl/cancho/pull/648">design</a>), so ffmpeg grabs the frames. No frame is kept in the repository.</p><div class="res">27,648 pixels per mode, 0 different; 0.87 s a frame</div><div class="files">host/camfilter.cho</div></div></div>
+
+    <div class="ex"><div class="stage"><div style="display:flex;align-items:center;gap:.6rem"><span class="led" id="g-led"></span><b id="g-dm" style="font:600 .85rem var(--mono)">ok</b></div><div class="tl" id="g-tl"></div><div class="res" style="color:var(--muted)" id="g-dm-t">slowed 5x</div></div>
+      <div class="body"><h3>A hardware deadman</h3><p>While the host keeps kicking, the output stays on. Stop, and the board drops it after the programmed 200 ms. An LED stands in for the torque line.</p><div class="res">trip seen 197 to 210 ms after the last kick (8 runs)</div><div class="files">deadman.chw, rtl/deadman.v</div></div></div>
+
+    <div class="ex"><div class="stage"><div class="hist" id="g-hist"></div><div class="res" style="color:var(--muted)">GHZ state, 3 qubits, 1000 shots</div></div>
+      <div class="body"><h3>A histogram for the quantum simulator</h3><p>The board counted the shots <code>qsim</code> sampled. It also found a real bug: bin 0 was never cleared, and the simulation now guards it.</p><div class="res">every bin equal to qsim's count (000: 498, 111: 502)</div><div class="files">lab/lab.chw, host/lab_test.cho</div></div></div>
+
+    <div class="ex"><div class="stage"><div class="big" id="g-ticks">...</div><div class="res" style="color:var(--muted)">ticks between programmed and recorded</div><div class="mini" style="min-height:0;font-size:.7rem">programmed  135000 27000 13500000
+recorded    135000 27000 13500000</div></div>
+      <div class="body"><h3>Sequencer and logic analyzer</h3><p>One instrument fires events at programmed ticks, the other timestamps them. On the UART line it measured the bit time at 234.30 ticks (115200 baud is 234.375).</p><div class="res">0 ticks of difference</div><div class="res warn" style="margin-top:.1rem">same clock for both: they agree with each other, not with an outside reference</div><div class="files">lab/lab.chw, host/lab_test.cho</div></div></div>
+
+    <div class="ex"><div class="stage"><svg viewBox="0 0 220 120" width="220" height="120" role="img" aria-label="A fitted straight line through a cloud of points"><g id="g-pts"></g><line id="g-fit" x1="10" y1="92" x2="210" y2="26" stroke="var(--good)" stroke-width="2.5" stroke-dasharray="260" stroke-dashoffset="260"/></svg><div class="res" style="color:var(--muted)">illustration of the fit; the figures are measured</div></div>
+      <div class="body"><h3>Streaming least squares</h3><p>2,048 points streamed in; the board keeps exact 64-bit sums, and cancho divides once. Same line as the Householder solver in <code>std.linalg</code>.</p><div class="res">sums: 0 different; slope 0.429102290, R² 0.947992</div><div class="files">stats/stats.chw, host/stats_test.cho</div></div></div>
+
+    <div class="ex"><div class="stage"><div class="mini" id="g-tbl" style="min-height:9.5rem"></div><div class="chips"><button type="button" id="g-tbl-btn">↻ replay</button></div></div>
+      <div class="body"><h3>A table query: GROUP BY with a filter</h3><p><code>SELECT key, COUNT, SUM, MIN, MAX ... WHERE v &gt;= :min GROUP BY key</code>, on 1,500 streamed rows. The output on the left is a real run of <code>table_test.cho</code> from 2026-10-30.</p><div class="res">12 groups x 4 figures, 2 queries: 0 different</div><div class="files">table/table.chw, rtl/table_agg.v</div></div></div>
+
+    <div class="ex"><div class="stage chart" style="border:0;background:var(--soft);margin:0;border-radius:0;max-width:none" id="g-q">
+      <svg viewBox="0 0 300 118" role="img" aria-label="Bars: worst-case bound 0.252, largest measured difference 0.0143 for the matrix product; mean 0.015 and largest 0.039 for the fitted linear model" style="max-width:20rem">
+        <text x="0" y="12">worst-case bound</text><rect class="bar hot" x="0" y="16" width="252" height="12" rx="3"/><text x="258" y="26">0.252</text>
+        <text x="0" y="50">32x32 product, largest</text><rect class="bar" x="0" y="54" width="14.3" height="12" rx="3"/><text x="20" y="64">0.0143</text>
+        <text x="0" y="88">fitted linear model, largest</text><rect class="bar alt" x="0" y="92" width="39" height="12" rx="3"/><text x="45" y="102">0.039</text>
+      </svg></div>
+      <div class="body"><h3>8-bit inference, and what 8 bits cost</h3><p>A 32x32 matrix-vector product, then a linear model fitted by cancho-ml with its dot product on the board. The difference is the cost of rounding to 8 bits, not an error of the board.</p><div class="res">32 of 32 rows exact; model mean difference 0.015</div><div class="files">gemv/gemv.chw, host/ml_infer.cho</div></div></div>
+
+    <div class="ex"><div class="stage"><div class="tw" id="g-llm"></div><div class="res" style="color:var(--muted)" id="g-llm-n">0 of 1,280 logits different</div></div>
+      <div class="body"><h3>A toy language model (not a transformer)</h3><p>A 4-character context, 3,300 parameters, trained on one paragraph, so it memorises and loops. Its three matrix products run on the board, 1.7 s a character, nearly all of it serial traffic.</p><div class="res">0 of 1,280 logits, 0 of 40 characters differ from the host pipeline</div><div class="files">llm/model.txt, host/llm_gen.cho</div></div></div>
+
+  </div>
+
+  <div class="chart" id="link">
+    <h3>The serial line is the limit, not the FPGA</h3>
+    <p>Wall time of each example over the 115200 baud link, in seconds. The multiply-accumulates take microseconds.</p>
+    <svg viewBox="0 0 640 170" role="img" aria-label="Bar chart of the seconds each example took over the serial link: toy model per character 1.7, camera frame 0.87, weights load 5, table query 10, least-squares points 13">
+      <line class="axis" x1="170" y1="4" x2="170" y2="150"/>
+      <g id="lbars"></g>
+      <text x="170" y="166">0</text><text x="620" y="166" text-anchor="end">14 s</text>
+    </svg>
+  </div>
+</div></section>
+
+<section id="watch"><div class="wrap">
+  <h2>Watch it</h2>
+  <p class="lead">Two recordings of this page. They replay recorded numbers; neither is a live session.</p>
+  <div class="vid">
+    <video controls preload="none" playsinline muted loop poster="demo/board-tour.poster.jpg" aria-label="A recording of the gallery: the corpus lighting up, the image filter changing modes, the deadman tripping, the histogram filling and the toy model typing">
+      <source src="demo/board-tour.mp4" type="video/mp4">
+      <source src="demo/board-tour.webm" type="video/webm">
+      Your browser cannot play this video: <a href="demo/board-tour.mp4">download the recording</a>.
+    </video>
+    <p class="caption">The gallery in motion (about 30 seconds). Re-record it with <code>node scripts/record-board-tour.js</code>. <a href="demo/board-tour.mp4">Download</a>.</p>
+  </div>
+  <p class="caption">The contract replay (refusals, conformance, impact) is the 24-second recording higher on this page.</p>
+</div></section>
+
+<section class="alt" id="humans"><div class="wrap">
+  <h2>For humans</h2>
+  <p class="lead">What this is, what you can do with it today, and how far to trust it.</p>
+  <div class="two">
+    <div class="card"><h3>What you can do</h3>
+      <ul>
+        <li>Describe registers, fields, interrupts and DMA layouts in one <code>.chw</code> file and have contradictions refused with a line, a column and a repair.</li>
+        <li>Generate the SystemVerilog register block, the C header, the device tree, a cancho binding and CMSIS-SVD from it.</li>
+        <li>Ask which generated files a change makes stale before you touch the driver (<code>impact</code>).</li>
+        <li>Put the register block on a Tang Nano 20K behind a serial port and drive it from cancho.</li>
+        <li>Start from a gallery example and change the contract, not the glue.</li>
+      </ul></div>
+    <div class="card"><h3>How far to trust it</h3>
+      <ul>
+        <li>The checker and parser agree with the Python reference on tens of thousands of mutated inputs, with every difference listed.</li>
+        <li>The board results are compared byte for byte with software, and a seeded bug makes the comparison fail.</li>
+        <li>Timing, area and vendor IP are never labelled verified, and a skipped check is never a pass.</li>
+        <li>The board glue (UART bridge, the designs) is hand-written and not part of the product. Nothing has moved a servo.</li>
+      </ul></div>
+  </div>
+  <p class="fine">A contract is plain JSON or the textual form, so it can be diffed and hashed. This is the whole contract for the board's LEDs; the two registers become the register block, a header and the rest.</p>
+<pre class="code">{ "version": "0.1.0",
+  "block": { "name": "TangLeds", "base_address": "0x40000000", "bus_width": 32, "endianness": "little",
+    "registers": [
+      { "name": "LEDS",    "offset": "0x00", "kind": "RW", "reset": "0x00000000",
+        "fields": [ { "name": "ON", "lsb": 0, "msb": 5 } ] },
+      { "name": "SCRATCH", "offset": "0x04", "kind": "RW", "reset": "0x00000000",
+        "fields": [ { "name": "VALUE", "lsb": 0, "msb": 31 } ] } ] } }</pre>
+</div></section>
+
+<section id="why"><div class="wrap">
   <h2>Stop maintaining five copies</h2>
   <p class="lead">When a field widens, the driver is wrong silently. When an interrupt link breaks, the device tree is wrong silently. Here the failure is loud and structured.</p>
   <div class="cards">
@@ -148,7 +359,7 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
   </div>
 </div></section>
 
-<section id="how"><div class="wrap">
+<section class="alt" id="how"><div class="wrap">
   <h2>Five targets from one contract</h2>
   <p class="lead">Consumers never need to know cancho-hdl exists.</p>
   <div class="cards">
@@ -160,7 +371,7 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
   </div>
 </div></section>
 
-<section class="alt" id="measured"><div class="wrap">
+<section id="measured"><div class="wrap">
   <h2>Measured, not promised</h2>
   <p class="lead">Two reference peripherals, a UART and a DMA descriptor ring.</p>
   <div class="nums">
@@ -176,7 +387,7 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
   <p class="fine">The generated C header executes the scenario corpus op-for-op against the reference model under gcc and clang. Seeded drift makes the comparison fail, which shows it can.</p>
 </div></section>
 
-<section id="honest"><div class="wrap">
+<section class="alt" id="honest"><div class="wrap">
   <h2>What is not claimed</h2>
   <p class="lead">Written down so a report cannot imply it.</p>
   <div class="cards">
@@ -186,8 +397,34 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
   </div>
 </div></section>
 
-<section class="alt" id="agent"><div class="wrap">
-  <h2>Ask your coding agent to try it</h2>
+<section id="agents"><div class="wrap">
+  <h2>For agents</h2>
+  <p class="lead">Everything an agent needs is checked, tagged or hashed. No key, no model, no network after the clone.</p>
+  <div class="two">
+    <div class="card"><h3>Read rule codes, not prose</h3><p>Every refusal has a stable <code>code</code> in <code>--output json</code>. The fixtures in <code>examples/refusal/</code> use these:</p>
+      <table class="rules"><tr><th>code</th><th>fixture</th></tr>
+      <tr><td><code>parse-error</code></td><td>parse-error</td></tr>
+      <tr><td><code>schema-invalid</code></td><td>bus-width-invalid, kind-unknown, field-out-of-bounds, dma-owner-unknown</td></tr>
+      <tr><td><code>field-overlap</code></td><td>field-overlap</td></tr>
+      <tr><td><code>register-offset-duplicate</code></td><td>register-overlap</td></tr>
+      <tr><td><code>reset-overflow</code></td><td>reset-overflow</td></tr>
+      <tr><td><code>field-enum-overflow</code></td><td>enum-overflow</td></tr>
+      <tr><td><code>interrupt-source-unresolved</code></td><td>interrupt-unresolved</td></tr>
+      <tr><td><code>dma-overlap</code></td><td>dma-overlap</td></tr>
+      <tr><td><code>dma-align-unsatisfied</code></td><td>dma-bad-align</td></tr>
+      </table></div>
+    <div class="card"><h3>What not to get wrong</h3>
+      <ul>
+        <li>Do not fix a refusal by editing the fixture or the expected sidecar. Fix the contract.</li>
+        <li>Do not hand-edit a generated file. Change the <code>.chw</code> and generate again; the two SystemVerilog generators must stay byte-identical.</li>
+        <li>Python is allowed only under <code>oracle/</code> and <code>tests/</code>. The Python line ceiling only goes down.</li>
+        <li>Board results are SRAM-only and judged against the same computation in cancho. A skipped step is not a pass.</li>
+        <li>Nothing here has moved a servo, and no speed advantage is claimed. Do not add either to a report.</li>
+        <li>Loading a bitstream needs <code>sudo</code> or a udev rule. Do not run it unasked.</li>
+      </ul>
+      <p style="margin-top:.6rem"><a href="llms.txt">llms.txt</a> has the short version.</p></div>
+  </div>
+  <h3 class="gh">Ask your coding agent to try it</h3>
   <p class="lead">Paste this into Claude Code, Codex or any coding agent that can run commands. It installs the pinned compiler, proves the install with both gates (no network, no key, no model), and runs the tool on the examples.</p>
   <div class="promptbox">
     <div class="pbar"><span>prompt</span><span><button type="button" id="copyprompt">Copy</button> <a href="https://raw.githubusercontent.com/alpibrusl/cancho-hdl/main/docs/agent-prompt.md">raw</a></span></div>
@@ -225,14 +462,27 @@ footer { border-top: 1px solid var(--line); padding: 1.5rem 0 2rem; color: var(-
 Not claimed: that generated hardware works, timing, or a SystemVerilog behavioural check. Docs: README.md, docs/cancho-port.md (what is ported and what is still Python), docs/guarantees.md.</pre>
   </div>
   <p class="fine">It needs no key and no model, and takes about an hour (mostly the gate; the compiler build is a few minutes). The same text is in <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/docs/agent-prompt.md">docs/agent-prompt.md</a>, and a Claude Code skill for checking contracts and reading impact reports is in <a href="https://github.com/alpibrusl/cancho-hdl/blob/main/skills/cancho-hdl/SKILL.md">skills/cancho-hdl</a>.</p>
-</div></section>
-<section id="try"><div class="wrap">
-  <h2>Try it</h2>
-  <p class="lead">The cancho parser needs the <a href="https://github.com/alpibrusl/cancho">cancho</a> compiler. The Python oracle (not part of the product) needs Python 3.</p>
-<pre class="code"><code>git clone https://github.com/alpibrusl/cancho-hdl.git
-cd cancho-hdl
-export CANCHO=&lt;path-to-the-cancho-binary&gt;
-sh scripts/gate.sh           # the product held to the Python oracle, then the oracle's own self-checks</code></pre>
+  <div class="promptbox">
+    <div class="pbar"><span>prompt: the board</span><span><button type="button" id="copyprompt2">Copy</button> <a href="https://raw.githubusercontent.com/alpibrusl/cancho-hdl/main/docs/agent-prompt-board.md">raw</a></span></div>
+    <pre id="agentprompt2">Check cancho-hdl on a Tang Nano 20K attached to this machine. Work in a new empty directory, keep every path free of spaces. Do not use sudo: if loading the bitstream needs it, stop and tell me the exact command. Report honestly; do not retry a failing command in a loop and do not edit the repository to make a command pass.
+
+1. Check that `git`, `yosys`, `nextpnr-himbaechel`, `gowin_pack`, `openFPGALoader` and `iverilog` are on PATH (the YosysHQ OSS CAD Suite has all of them) and that `lsusb` lists `0403:6010`. If one is missing, stop and tell me which; do not install system packages on your own.
+
+2. Clone the repositories side by side and use the branch that has the board work:
+   git clone https://github.com/alpibrusl/cancho-hdl.git
+   git clone https://github.com/alpibrusl/cancho.git
+   Build the cancho compiler as cancho/README says, and build `chw` with `sh scripts/build.sh chw`.
+
+3. Prove the designs in simulation first (no board needed): `sh boards/tang-nano-20k/check.sh`. Every line ending in `RESULT:` must say `0 failed`, and Yosys must print no warning.
+
+4. Build and load one design, for example the table query, then run its host test written in cancho (loading is the step that needs raw USB access, so ask me before running it):
+   DESIGN=table CHW=./chw sh boards/tang-nano-20k/build.sh boards/tang-nano-20k/build-table --flash
+   cd boards/tang-nano-20k/host &amp;&amp; cancho run labio.cho table_test.cho --std
+
+5. Tell me, briefly: the last line of `check.sh`; for the board test, the lines `figures different ... : N` (want 0); anything that failed, with the exact error.
+Not claimed: any speed advantage, that a servo moved, or timing against an outside reference. Docs: docs/fpga-experiments.md, docs/tang-nano-20k.md.</pre>
+  </div>
+  <p class="fine">The board prompt needs a Tang Nano 20K on the machine and the OSS CAD Suite. It stops before anything that needs <code>sudo</code> and asks.</p>
 </div></section>
 
 <section><div class="wrap">
@@ -244,6 +494,84 @@ sh scripts/gate.sh           # the product held to the Python oracle, then the o
   </div>
 </div></section>
 <footer><div class="wrap">cancho-hdl · EUPL-1.2 · part of the <a href="https://github.com/alpibrusl/cancho">cancho</a> ecosystem</div></footer>
+<script>
+(function () {
+  var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function $(id) { return document.getElementById(id); }
+  var NS = "http://www.w3.org/2000/svg";
+  function bars(g, rows, x0, scale, y0, step, h, cls) {
+    rows.forEach(function (r, i) {
+      var y = y0 + i * step;
+      var t = document.createElementNS(NS, "text"); t.setAttribute("x", 0); t.setAttribute("y", y + h - 2); t.setAttribute("class", "lbl"); t.textContent = r[0]; g.appendChild(t);
+      var b = document.createElementNS(NS, "rect"); b.setAttribute("class", "bar " + (r[2] || cls || "")); b.setAttribute("x", x0); b.setAttribute("y", y); b.setAttribute("width", r[1] * scale); b.setAttribute("height", h); b.setAttribute("rx", 3); b.style.transitionDelay = (i * 80) + "ms"; g.appendChild(b);
+      var v = document.createElementNS(NS, "text"); v.setAttribute("x", x0 + r[1] * scale + 6); v.setAttribute("y", y + h - 2); v.textContent = r[3] || r[1]; g.appendChild(v);
+    });
+  }
+  bars($("fbars"), [["image filter", 78], ["BRAM test", 148], ["deadman", 152], ["lab (3 instruments)", 98], ["least squares", 80], ["matrix-vector", 91], ["table query", 102], ["toy language model", 91]], 150, 470 / 160, 12, 26, 14);
+  bars($("lbars"), [["camera frame, 96x72", 0.87, "", "0.87 s"], ["toy model, per character", 1.7, "", "1.7 s"], ["1,024 weights loaded", 5, "", "about 5 s"], ["1,500 table rows", 10, "", "about 10 s"], ["2,048 points to fit", 13, "", "13 s"]], 170, 450 / 14, 8, 28, 14, "hot");
+
+  var seen = new Set();
+  function once(el, fn) { if (!el) { return; } if (reduce || !("IntersectionObserver" in window)) { el.classList.add("in"); fn(true); return; }
+    new IntersectionObserver(function (es, o) { es.forEach(function (e) { if (e.isIntersecting) { o.disconnect(); el.classList.add("in"); fn(false); } }); }, { threshold: .35 }).observe(el); }
+  function loop(fn, ms) { fn(); return setInterval(fn, ms); }
+
+  // corpus replay: 25 tiles light up
+  var rg = $("g-replay"), rn = $("g-replay-n"), tiles = [];
+  for (var i = 0; i < 25; i++) { var d = document.createElement("div"); d.style.cssText = "height:2rem;border-radius:5px;background:var(--line);transition:background .2s"; rg.appendChild(d); tiles.push(d); }
+  once(rg.parentNode.parentNode, function (st) {
+    if (st) { tiles.forEach(function (t) { t.style.background = "var(--good)"; }); rn.textContent = "25 of 25 equal"; return; }
+    var k = 0; (function step() { if (k < 25) { tiles[k].style.background = "var(--good)"; k++; rn.textContent = k + " of 25 equal"; setTimeout(step, 110); } else { setTimeout(function () { tiles.forEach(function (t) { t.style.background = "var(--line)"; }); k = 0; rn.textContent = "0 of 25 equal"; setTimeout(step, 600); }, 2200); } })();
+  });
+
+  // image filter: the six panels of the contact sheet
+  var modes = ["original", "pass", "invert", "threshold", "Sobel edges", "box blur"], cur = 0, tb = $("g-img"), chips = $("g-img-chips"), cap = $("g-img-cap"), timer = null;
+  function show(n) { cur = n; tb.style.backgroundPosition = (-192 * n) + "px 0"; cap.textContent = modes[n]; Array.prototype.forEach.call(chips.children, function (b, j) { b.className = j === n ? "on" : ""; }); }
+  modes.forEach(function (m, j) { var b = document.createElement("button"); b.type = "button"; b.textContent = m; b.addEventListener("click", function () { clearInterval(timer); show(j); }); chips.appendChild(b); });
+  show(0); once(tb.parentNode.parentNode, function (st) { if (!st) { timer = setInterval(function () { show((cur + 1) % modes.length); }, 1500); } });
+
+  // webcam count-up
+  once($("g-cam").parentNode.parentNode, function (st) { var el = $("g-cam"), t0 = null; if (st) { el.textContent = "27,648"; return; }
+    (function f(ts) { t0 = t0 || ts; var p = Math.min(1, (ts - t0) / 1800); el.textContent = Math.round(27648 * p).toLocaleString("en-US"); if (p < 1) { requestAnimationFrame(f); } })(performance.now()); });
+
+  // deadman: kicks, then silence, then the trip
+  var tl = $("g-tl"), led = $("g-led"), dm = $("g-dm");
+  function dmRun() { tl.innerHTML = ""; led.className = "led ok"; dm.textContent = "ok"; var k = 0, W = tl.clientWidth || 280;
+    var iv = setInterval(function () { if (k < 6) { var t = document.createElement("i"); t.style.left = (k * 50 / 520 * 100) + "%"; tl.appendChild(t); k++; } else { clearInterval(iv); setTimeout(function () { var t = document.createElement("i"); t.className = "trip"; t.style.left = ((250 + 204) / 520 * 100) + "%"; tl.appendChild(t); led.className = "led bad"; dm.textContent = "tripped"; }, 1000); } }, 250); }
+  once(tl.parentNode.parentNode, function (st) { if (st) { for (var k = 0; k < 6; k++) { var t = document.createElement("i"); t.style.left = (k * 50 / 520 * 100) + "%"; tl.appendChild(t); } var tr = document.createElement("i"); tr.className = "trip"; tr.style.left = (454 / 520 * 100) + "%"; tl.appendChild(tr); led.className = "led bad"; dm.textContent = "tripped"; return; } dmRun(); setInterval(dmRun, 5200); });
+
+  // histogram
+  var hist = $("g-hist"), hb = [], names = ["000", "001", "010", "011", "100", "101", "110", "111"], vals = [498, 0, 0, 0, 0, 0, 0, 502];
+  names.forEach(function (nm, j) { var d = document.createElement("div"); d.innerHTML = "<b></b>" + nm + "<br>" + vals[j]; hist.appendChild(d); hb.push(d.firstChild); });
+  once(hist.parentNode.parentNode, function () { setTimeout(function () { hb.forEach(function (b, j) { b.style.height = (vals[j] / 502 * 5.4) + "rem"; }); }, 50); });
+
+  // sequencer: count-up of the difference (it is 0)
+  once($("g-ticks").parentNode.parentNode, function () { $("g-ticks").textContent = "0"; });
+
+  // least squares illustration
+  var pts = $("g-pts"), seed = 7;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  for (var q = 0; q < 70; q++) { var x = 10 + rnd() * 200, y = 92 - 0.33 * (x - 10) + (rnd() - .5) * 26; var c = document.createElementNS(NS, "circle"); c.setAttribute("cx", x.toFixed(1)); c.setAttribute("cy", Math.max(4, Math.min(116, y)).toFixed(1)); c.setAttribute("r", 2.2); c.setAttribute("fill", "var(--accent)"); c.setAttribute("opacity", reduce ? .7 : 0); c.style.transition = "opacity .3s " + (q * 25) + "ms"; pts.appendChild(c); }
+  once($("g-fit").parentNode.parentNode.parentNode, function (st) { var f = $("g-fit"); if (st) { f.setAttribute("stroke-dashoffset", 0); return; } Array.prototype.forEach.call(pts.children, function (c) { c.setAttribute("opacity", .7); }); f.style.transition = "stroke-dashoffset 1.2s ease-out 1.9s"; setTimeout(function () { f.setAttribute("stroke-dashoffset", 0); }, 30); });
+
+  // table query: a real recorded run
+  var tbl = $("g-tbl"), TXT = [["d", "$ cancho run labio.cho table_test.cho --std"], ["", "query 1: WHERE v >= lower bound, 1500 rows"], ["", "   rows kept by the filter (host's count): 919"], ["g", "   figures different from the host's (12 groups x 4, plus the two row counts; want 0): 0"], ["", "query 2: WHERE v >= lower bound, 1500 rows"], ["", "   rows kept by the filter (host's count): 382"], ["g", "   figures different from the host's (12 groups x 4, plus the two row counts; want 0): 0"]], tt = null;
+  function esc(x) { return x.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function tfull() { tbl.innerHTML = TXT.map(function (l) { return '<span class="' + l[0] + '">' + esc(l[1]) + "</span>"; }).join("\n"); }
+  function tplay() { clearTimeout(tt); var i = 0, html = ""; tbl.innerHTML = ""; (function s() { if (i >= TXT.length) { return; } var l = TXT[i], j = 0; (function ty() { j += 4; tbl.innerHTML = html + '<span class="' + l[0] + '">' + esc(l[1].slice(0, j)) + "</span>"; if (j < l[1].length) { tt = setTimeout(ty, 12); } else { html += '<span class="' + l[0] + '">' + esc(l[1]) + "</span>\n"; i++; tt = setTimeout(s, 450); } })(); })(); }
+  $("g-tbl-btn").addEventListener("click", function () { if (reduce) { tfull(); } else { tplay(); } });
+  tfull(); once(tbl.parentNode.parentNode, function (st) { if (!st) { tplay(); } });
+
+  // 8-bit bars: handled by the .in class on the chart wrapper
+
+  // toy model: typing
+  var llm = $("g-llm"), ln = $("g-llm-n"), P = "the ", G = "safety core it runs. a clear the safety";
+  function lrun() { var k = 0; llm.innerHTML = '<span style="color:var(--muted)">' + P + "</span>"; ln.textContent = "0 of 0 logits different"; var iv = setInterval(function () { k++; llm.innerHTML = '<span style="color:var(--muted)">' + P + "</span>" + G.slice(0, k); ln.textContent = "0 of " + (k * 32).toLocaleString("en-US") + " logits different"; if (k >= G.length) { clearInterval(iv); setTimeout(lrun, 3500); } }, 180); }
+  once(llm.parentNode.parentNode, function (st) { if (st) { llm.textContent = P + G; ln.textContent = "0 of 1,280 logits different"; } else { lrun(); } });
+
+  // charts: reveal bars
+  ["fmax", "link", "g-q"].forEach(function (id) { var el = $(id); once(el, function () {}); });
+})();
+</script>
 <script>
 (function () {
   var screen = document.getElementById("screen");
@@ -303,6 +631,8 @@ sh scripts/gate.sh           # the product held to the Python oracle, then the o
   }
   document.getElementById("replay").addEventListener("click", function () { if (reduce) { full(); } else { play(); } });
   var copyBtn = document.getElementById("copyprompt");
+  var copyBtn2 = document.getElementById("copyprompt2");
+  copyBtn2.addEventListener("click", function () { var t = document.getElementById("agentprompt2").textContent; if (navigator.clipboard) { navigator.clipboard.writeText(t).then(function () { copyBtn2.textContent = "Copied"; setTimeout(function () { copyBtn2.textContent = "Copy"; }, 2000); }); } });
   copyBtn.addEventListener("click", function () {
     var text = document.getElementById("agentprompt").textContent, done = function (ok) { copyBtn.textContent = ok ? "Copied" : "Select and copy"; setTimeout(function () { copyBtn.textContent = "Copy"; }, 2000); };
     if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); }); }

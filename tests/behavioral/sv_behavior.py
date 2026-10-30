@@ -186,11 +186,12 @@ def main() -> int:
                 (td / f"{tag}.sv").write_text(sv.stdout)
                 mod = re.search(r"^module (\w+) #\(", sv.stdout, re.M).group(1)
                 outs = re.findall(r"output wire \[DATA_WIDTH-1:0\]\s+(reg_\w+_out)", sv.stdout)
+                ins = re.findall(r"input  wire \[DATA_WIDTH-1:0\]\s+(reg_\w+_in)", sv.stdout)   # device-written registers: no device here, tied to 0
                 wiring = [f"  wire [31:0] {o}_w;" for o in outs]
                 conns = ["clk", "rst_n"] + [f"s_axi_{p}" for p in (
                     "awaddr", "awvalid", "awready", "wdata", "wstrb", "wvalid", "wready", "bresp", "bvalid", "bready",
                     "araddr", "arvalid", "arready", "rdata", "rresp", "rvalid", "rready")]
-                ports = ",\n    ".join([f".{c}({c.removeprefix('s_axi_')})" if c.startswith("s_axi_") else f".{c}({c})" for c in conns] + [f".{o}({o}_w)" for o in outs])
+                ports = ",\n    ".join([f".{c}({c.removeprefix('s_axi_')})" if c.startswith("s_axi_") else f".{c}({c})" for c in conns] + [f".{i}(32'h0)" for i in ins] + [f".{o}({o}_w)" for o in outs])
                 svh = td / f"{tag}.svh"
                 svh.write_text("\n".join(wiring) + f"\n  {mod} dut (\n    {ports}\n  );\n")
                 built[cpath] = (ir, td / f"{tag}.sv", tag)

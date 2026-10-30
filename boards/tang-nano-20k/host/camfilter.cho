@@ -1,0 +1,116 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+
+// camfilter.cho -- raw greyscale frames from standard input through the image filter on the board (rtl/img_stream.v), raw frames to
+// standard output. The shape of the robot's camera path: something else grabs frames (here ffmpeg, there the robot's camera
+// stack), cancho owns the path to the hardware.
+//
+//   stdin:  MODE W H, three bytes (mode as in rtl/img_stream.v, W and H at most 255), then frames of W*H bytes until end of input
+//   stdout: one W*H frame of filtered bytes per input frame
+//
+// Authority: standard input and output, the Tty capability under /dev, a poll. No filesystem, no network, no foreign call.
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec); release(clock);
+    let device = narrow(tty, "/dev");
+    var status = 0;
+    var frames = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status = 4; }
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            var mode = 0;
+                            var w = 0;
+                            var h = 0;
+                            borrow mut io as &!i in {
+                                mode = getchar(i);
+                                w = getchar(i);
+                                h = getchar(i);
+                            }
+                            if mode < 0 || w < 3 || h < 3 { status = 6; }
+                            let n = w * h;
+                            region r {
+                                let img = alloc_slice[r](n + 1, byte_of(0));
+                                let got = alloc_slice[r](n + 1, byte_of(0));
+                                let chunk = alloc_slice[r](256, byte_of(0));
+                                let head = alloc_slice[r](5, byte_of(0));
+                                let ev = alloc_slice[r](2, 0);
+                                var more = status == 0;
+                                while more {
+                                    // one frame in
+                                    var have = 0;
+                                    borrow mut io as &!i in {
+                                        while have < n {
+                                            let c = getchar(i);
+                                            if c < 0 { have = n + 1; } else { img[have] = byte_of(c); have = have + 1; }
+                                        }
+                                    }
+                                    if have != n {
+                                        more = false;
+                                    } else {
+                                        tty_flush_input(q);
+                                        head[0] = byte_of(73);
+                                        head[1] = byte_of(w);
+                                        head[2] = byte_of(h);
+                                        head[3] = byte_of(mode);
+                                        head[4] = byte_of(100);
+                                        tty_write(q, head);
+                                        var sent = 0;
+                                        var recv = 0;
+                                        var tries = 0;
+                                        while recv < n && tries < 3000 {
+                                            // credit window: at most 48 bytes in flight (sent but not yet answered). The board answers every byte, so
+                                            // the answers are the credit. Measured: the USB serial adapter loses bytes when more than about 64 are
+                                            // in flight (win.py: 96 in flight loses data, 64 and below does not), so 48 leaves margin.
+                                            var room = 48 - (sent - recv);
+                                            if n - sent < room { room = n - sent; }
+                                            if room > 0 {
+                                                region s {
+                                                    let out = alloc_slice[s](room, byte_of(0));
+                                                    var k = 0;
+                                                    while k < room { out[k] = img[sent + k]; k = k + 1; }
+                                                    let wrote = tty_write(q, out);
+                                                    if wrote < 0 { status = 5; } else { sent = sent + wrote; }
+                                                }
+                                            }
+                                            borrow mut p as &!pw in { poller_wait(pw, ev, 5); }
+                                            let k = tty_read(q, chunk);
+                                            var j = 0;
+                                            while j < k && recv < n { got[recv] = chunk[j]; recv = recv + 1; j = j + 1; }
+                                            tries = tries + 1;
+                                        }
+                                        if recv != n { status = 7; more = false; }
+                                        borrow mut heap as &!hp in {
+                                            var o = buffer.empty(hp, n + 16);
+                                            var z = 0;
+                                            while z < n { o = buffer.push(hp, o, got[z]); z = z + 1; }
+                                            borrow mut io as &!i2 in { borrow o as &ob in { io.write_all(i2, buffer.bytes(ob)); } }
+                                            buffer.drop(hp, o);
+                                        }
+                                        frames = frames + 1;
+                                    }
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    return status;
+}

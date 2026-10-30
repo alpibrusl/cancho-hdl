@@ -8,7 +8,7 @@ Reads a contract IR and emits a SystemVerilog module that:
 - Has one `reg [N-1:0]` per register at its offset, applied
   through the AXI4-Lite write path.
 - Has one `reg_<name>_out` output port per register, exposing
-  the live value for the user to wire up behavior.
+  the live value, and `reg_<name>_in` for `RO` volatile ones (device-written).
 - Honors access kinds: RW/RO/WO/RC/W1C/W0C/W1S/W0S.
 - Applies contract reset values on `!rst_n`.
 - Carries stable ID comments on every register and field, so a
@@ -195,8 +195,8 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
     out.write("    input  wire                       s_axi_rready" + ("," if block.get("registers") else "") + "\n")
     out.write("\n")
 
-    # Per-register behavior output ports
     registers = sorted(block.get("registers", []), key=lambda r: int(r["offset"], 16))
+    out.write("".join(f"    input  wire [DATA_WIDTH-1:0]      reg_{_to_lower_snake(r['name'])}_in,  // chw:{block_name}.register.{r['name']}\n" for r in registers if r["kind"] == "RO" and r.get("volatile")))
     for n, reg in enumerate(registers):
         out.write(
             f"    output wire [DATA_WIDTH-1:0]      reg_{_to_lower_snake(reg['name'])}_out{',' if n + 1 < len(registers) else ' '}  "
@@ -261,7 +261,7 @@ def generate(ir: dict[str, Any], source_path: str = "<memory>") -> str:
             out.write("            // WO register: reads return 0 and answer SLVERR (the spec notes this is a write-only register).\n")
             out.write("            rdata = 'h0;\n        end\n")
         else:
-            out.write(f"            rdata = r_{_to_lower_snake(reg['name'])};\n            rdata_valid = 1'b1;\n        end\n")
+            out.write(f"            rdata = {'reg_%s_in' if reg['kind'] == 'RO' and reg.get('volatile') else 'r_%s'};\n            rdata_valid = 1'b1;\n        end\n" % _to_lower_snake(reg["name"]))
     out.write("    end\n\n")
 
     # Reset, handshake and write logic: one clocked block, so every register has one driver

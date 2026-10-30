@@ -1,0 +1,190 @@
+{
+  "version": "0.1.0",
+  "block": {
+    "name": "Stats",
+    "base_address": "0x40000000",
+    "bus_width": 32,
+    "endianness": "little",
+    "registers": [
+      {
+        "name": "CTRL",
+        "offset": "0x00",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "CLR",
+            "lsb": 0,
+            "msb": 0
+          }
+        ]
+      },
+      {
+        "name": "SAMPLE",
+        "offset": "0x04",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "X",
+            "lsb": 0,
+            "msb": 15
+          },
+          {
+            "name": "Y",
+            "lsb": 16,
+            "msb": 30
+          },
+          {
+            "name": "TOG",
+            "lsb": 31,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "N",
+        "offset": "0x08",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "COUNT",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SX_LO",
+        "offset": "0x0C",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SX_HI",
+        "offset": "0x10",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SY_LO",
+        "offset": "0x14",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SY_HI",
+        "offset": "0x18",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SXX_LO",
+        "offset": "0x1C",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SXX_HI",
+        "offset": "0x20",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SXY_LO",
+        "offset": "0x24",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SXY_HI",
+        "offset": "0x28",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SYY_LO",
+        "offset": "0x2C",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SYY_HI",
+        "offset": "0x30",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -307,6 +307,9 @@ module uart_regs_axi #(
     output wire                    s_axi_awready,
     /* ... full AXI4-Lite port list ... */
 
+    // Device-written registers (kind RO and `volatile`): the value a read returns
+    input  wire [31:0]             reg_status_in,
+
     // Decoded register-side outputs
     output wire [31:0]             reg_ctrl_out,
     output wire [31:0]             reg_status_out,
@@ -324,6 +327,10 @@ module uart_regs_axi #(
     // Write decoding, read mux, AXI4-Lite handshake...
 endmodule
 ```
+
+A register of kind `RO` that the contract marks `volatile` is written by the device, not the CPU: the module has an input
+`reg_<name>_in` for it and a bus read returns that input (the stored `r_<name>` is not read). Other registers have no input.
+`reg_<name>_out` is still emitted for every register. (cancho-hdl#21; checked by `tests/behavioral/sv_device_input.py`.)
 
 ### 5.2 Stable guarantees
 

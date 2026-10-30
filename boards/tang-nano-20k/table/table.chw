@@ -1,0 +1,164 @@
+{
+  "version": "0.1.0",
+  "block": {
+    "name": "Table",
+    "base_address": "0x40000000",
+    "bus_width": 32,
+    "endianness": "little",
+    "registers": [
+      {
+        "name": "CTRL",
+        "offset": "0x00",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "CLR",
+            "lsb": 0,
+            "msb": 0
+          }
+        ]
+      },
+      {
+        "name": "FILTER",
+        "offset": "0x04",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "MIN",
+            "lsb": 0,
+            "msb": 15
+          }
+        ]
+      },
+      {
+        "name": "ROW",
+        "offset": "0x08",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "KEY",
+            "lsb": 0,
+            "msb": 7
+          },
+          {
+            "name": "VALUE",
+            "lsb": 8,
+            "msb": 23
+          },
+          {
+            "name": "TOG",
+            "lsb": 31,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "SEL",
+        "offset": "0x0C",
+        "kind": "RW",
+        "reset": "0x00000000",
+        "fields": [
+          {
+            "name": "KEY",
+            "lsb": 0,
+            "msb": 7
+          }
+        ]
+      },
+      {
+        "name": "R_COUNT",
+        "offset": "0x10",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "R_SUM_LO",
+        "offset": "0x14",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "R_SUM_HI",
+        "offset": "0x18",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "R_MIN",
+        "offset": "0x1C",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "R_MAX",
+        "offset": "0x20",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "ROWS",
+        "offset": "0x24",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      },
+      {
+        "name": "KEPT",
+        "offset": "0x28",
+        "kind": "RO",
+        "volatile": true,
+        "fields": [
+          {
+            "name": "W",
+            "lsb": 0,
+            "msb": 31
+          }
+        ]
+      }
+    ]
+  }
+}

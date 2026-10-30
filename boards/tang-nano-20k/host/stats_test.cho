@@ -1,0 +1,142 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+import std.linalg;
+import labio;
+
+// stats_test.cho -- streaming least squares in an FPGA, judged against cancho's own std.linalg.lstsq.
+//   Build: cancho build labio.cho stats_test.cho --std      (the board must hold the statistics design: rtl/stats.v, stats/stats.chw)
+//
+// 2048 pairs (x, y) with y close to 3x/7 + 100 and a deterministic spread are streamed to the board, which accumulates n, Sx, Sy, Sxx, Sxy,
+// Syy in exact integers. The host then (1) compares each sum with the same sums computed here in integers: they must be equal; and
+// (2) solves the line from the board's sums (the normal equations, in floats) and compares slope and intercept with std.linalg.lstsq run on the
+// same 2048 points (Householder, in floats). The second comparison is a difference of two float methods, not zero: the program prints it.
+// Authority: standard output, the Tty capability under /dev, a poll. No filesystem, no network, no foreign call.
+
+fn xs(i: int) -> [] int { return (i * 37) % 4001 - 2000; }
+fn ys(i: int) -> [] int {
+    let x = xs(i);
+    return (x * 3) / 7 + 100 + ((i * 7919 + (i / 3) * 104729) % 401) - 200;
+}
+
+// the two 32-bit halves of a signed 64-bit register pair
+fn wide(lo: int, hi: int) -> [] int {
+    var h = hi;
+    if h >= 2147483648 { h = h - 4294967296; }
+    return h * 4294967296 + lo;
+}
+
+fn absf(v: float) -> [] float {
+    if v < 0.0 { return 0.0 - v; }
+    return v;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec); release(clock);
+    let device = narrow(tty, "/dev");
+    var failures = 0;
+    var status_code = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status_code = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status_code = 4; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            borrow mut p as &!pw in {
+                                region r {
+                                    let frame = alloc_slice[r](9, byte_of(0));
+                                    let cmd = alloc_slice[r](5, byte_of(0));
+                                    let ans = alloc_slice[r](8, byte_of(0));
+                                    let m = 2048;
+                                    labio.write_reg(q, pw, frame, ans, 0, 1);
+                                    labio.pause(pw, 5);
+                                    labio.write_reg(q, pw, frame, ans, 0, 0);
+                                    var n = 0;
+                                    var sx = 0;
+                                    var sy = 0;
+                                    var sxx = 0;
+                                    var sxy = 0;
+                                    var syy = 0;
+                                    var tog = 0;
+                                    while n < m {
+                                        let x = xs(n);
+                                        let y = ys(n);
+                                        sx = sx + x; sy = sy + y; sxx = sxx + x * x; sxy = sxy + x * y; syy = syy + y * y;
+                                        tog = 1 - tog;
+                                        // X in bits 0-15 (two's complement), Y in bits 16-30 (15-bit two's complement), TOG in bit 31
+                                        let xb = (x + 65536) % 65536;
+                                        let yb = (y + 32768) % 32768;
+                                        labio.write_reg(q, pw, frame, ans, 4, tog * 2147483648 + yb * 65536 + xb);
+                                        n = n + 1;
+                                    }
+                                    let bn = labio.read_reg(q, pw, cmd, ans, 8);
+                                    let bsx = wide(labio.read_reg(q, pw, cmd, ans, 12), labio.read_reg(q, pw, cmd, ans, 16));
+                                    let bsy = wide(labio.read_reg(q, pw, cmd, ans, 20), labio.read_reg(q, pw, cmd, ans, 24));
+                                    let bsxx = wide(labio.read_reg(q, pw, cmd, ans, 28), labio.read_reg(q, pw, cmd, ans, 32));
+                                    let bsxy = wide(labio.read_reg(q, pw, cmd, ans, 36), labio.read_reg(q, pw, cmd, ans, 40));
+                                    let bsyy = wide(labio.read_reg(q, pw, cmd, ans, 44), labio.read_reg(q, pw, cmd, ans, 48));
+                                    var bad = 0;
+                                    if bn != n { bad = bad + 1; }
+                                    if bsx != sx { bad = bad + 1; }
+                                    if bsy != sy { bad = bad + 1; }
+                                    if bsxx != sxx { bad = bad + 1; }
+                                    if bsxy != sxy { bad = bad + 1; }
+                                    if bsyy != syy { bad = bad + 1; }
+                                    failures = failures + bad;
+                                    // the line from the board's sums: slope = (n Sxy - Sx Sy) / (n Sxx - Sx^2), intercept = (Sy - slope Sx) / n
+                                    let fn_ = float_of(bn);
+                                    let dxx = float_of(bn * bsxx - bsx * bsx);
+                                    let slope = float_of(bn * bsxy - bsx * bsy) / dxx;
+                                    let icept = (float_of(bsy) - slope * float_of(bsx)) / fn_;
+                                    let r2 = (float_of(bn * bsxy - bsx * bsy) * float_of(bn * bsxy - bsx * bsy)) / (dxx * float_of(bn * bsyy - bsy * bsy));
+                                    // the same line by Householder least squares on the points
+                                    let a = alloc_slice[r](m * 2, 0.0);
+                                    let b = alloc_slice[r](m, 0.0);
+                                    var i = 0;
+                                    while i < m {
+                                        a[i * 2] = float_of(xs(i));
+                                        a[i * 2 + 1] = 1.0;
+                                        b[i] = float_of(ys(i));
+                                        i = i + 1;
+                                    }
+                                    let st = linalg.lstsq(m, 2, a, b);
+                                    let dslope = absf(slope - b[0]);
+                                    let dicept = absf(icept - b[1]);
+                                    borrow mut heap as &!h in { borrow mut io as &!i2 in {
+                                        labio.say(h, i2, "points streamed: ", n, "");
+                                        labio.say(h, i2, "sums read from the board different from the exact integer sums (want 0): ", bad, "");
+                                        labio.say(h, i2, "slope from the board's sums, x 10^9: ", truncate(slope * 1000000000.0), "");
+                                        labio.say(h, i2, "slope from std.linalg.lstsq, x 10^9: ", truncate(b[0] * 1000000000.0), "");
+                                        labio.say(h, i2, "intercept from the board's sums, x 10^6: ", truncate(icept * 1000000.0), "");
+                                        labio.say(h, i2, "intercept from std.linalg.lstsq, x 10^6: ", truncate(b[1] * 1000000.0), "");
+                                        labio.say(h, i2, "|slope difference| x 10^15: ", truncate(dslope * 1000000000000000.0), "");
+                                        labio.say(h, i2, "|intercept difference| x 10^12: ", truncate(dicept * 1000000000000.0), "");
+                                        labio.say(h, i2, "R squared x 10^6: ", truncate(r2 * 1000000.0), "");
+                                        labio.say(h, i2, "lstsq status (0 ok): ", st, "");
+                                    } }
+                                    if st != 0 || dslope > 0.000000001 || dicept > 0.000001 { failures = failures + 1; }
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    if status_code != 0 { return status_code; }
+    if failures != 0 { return 1; }
+    return 0;
+}

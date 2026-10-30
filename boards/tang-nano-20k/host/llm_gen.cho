@@ -1,0 +1,237 @@
+edition 8;
+
+import std.io;
+import std.buffer;
+import labio;
+
+// llm_gen.cho -- a toy character language model, its matrix-vector products done by the FPGA.
+//   python3 ../../../tests/hardware/llm_train.py ../llm/corpus.txt > model.txt            (Python trains the model; numpy, manual gradients)
+//   cancho build labio.cho llm_gen.cho --std -o llm_gen && ./llm_gen < model.txt
+//   The board must hold the matrix-vector design (rtl/gemv.v, gemv/gemv.chw with MAT, W_PACK and X_PACK).
+//
+// The model (tests/hardware/llm_train.py): the last 4 characters, each an 8-number embedding (32 numbers in all), then three bias-free 32 x 32 layers; after
+// the first two, relu and a rescale to 0..127 (x = min(127, (a * M) / 65536)); the last gives one logit per character; greedy decoding. Weights and
+// embeddings are 8-bit integers. About 3,300 parameters. It is not a transformer and not a large model: a toy that memorises one paragraph.
+//
+// The program loads the three matrices into the board once, then for each character the board computes the three products (exact 32-bit sums)
+// and the host does the rest (embedding lookup, relu, rescale, argmax; all integers). The same pipeline runs on the host as well, with the host's
+// own products, and the two must agree on every logit and every character; the characters are also compared with the float model's greedy
+// output that llm_train.py wrote into the file. Input: V (vocabulary size), C (character codes), P (4 prompt codes), E (V x 8 embeddings),
+// A, B, D (the three 32 x 32 matrices, row-major; D is padded with zero rows), M (the two rescale multipliers), F (the float model's greedy codes).
+// Authority: standard input and output, the Tty capability under /dev, a poll. No filesystem, no network, no foreign call.
+
+fn steps() -> [] int { return 40; }
+
+// y = matrix `mat` (held by the board) times x (32 integers between -128 and 127), through the board; `ctr` holds the toggles
+fn mv[&a, &b, &c, &d, &e, &f](q: &!a Port, pw: &!b Poller, frame: &!c [byte], cmd: &!c [byte], ans: &!c [byte], ctr: &!d [int], mat: int, x: &e [int], y: &!f [int]) -> [tty_write, tty_read, poll] int {
+    labio.write_reg(q, pw, frame, ans, 44, mat);
+    var i = 0;
+    while i < 32 {
+        ctr[0] = ctr[0] + 1;
+        labio.write_reg(q, pw, frame, ans, 52, (ctr[0] % 2) * 65536 + ((x[i] + 256) % 256) * 256 + i);
+        i = i + 1;
+    }
+    ctr[1] = ctr[1] + 1;
+    labio.write_reg(q, pw, frame, ans, 28, ctr[1]);
+    var tries = 0;
+    while labio.read_reg(q, pw, cmd, ans, 32) != 1 && tries < 50 { tries = tries + 1; }
+    i = 0;
+    while i < 32 {
+        labio.write_reg(q, pw, frame, ans, 36, i);
+        let v = labio.read_reg(q, pw, cmd, ans, 40);
+        if v >= 2147483648 { y[i] = v - 4294967296; } else { y[i] = v; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn host_mv[&a, &b, &c](w: &a [int], base: int, x: &b [int], y: &!c [int]) -> [] int {
+    var i = 0;
+    while i < 32 {
+        var s = 0;
+        var j = 0;
+        while j < 32 { s = s + w[base + i * 32 + j] * x[j]; j = j + 1; }
+        y[i] = s;
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn rescale[&a, &b](y: &a [int], x: &!b [int], m: int) -> [] int {
+    var i = 0;
+    while i < 32 {
+        var a = y[i];
+        if a < 0 { a = 0; }
+        var v = (a * m) / 65536;
+        if v > 127 { v = 127; }
+        x[i] = v;
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn argmax[&a](y: &a [int], n: int) -> [] int {
+    var best = 0;
+    var i = 1;
+    while i < n { if y[i] > y[best] { best = i; } i = i + 1; }
+    return best;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi); release(fs); release(args); release(net); release(signals); release(exec);
+    let device = narrow(tty, "/dev");
+    var failures = 0;
+    var status_code = 0;
+    match poller_new() {
+        Polling::Failed(e) => { release(device); release(io); release(heap); release(clock); return 1; }
+        Polling::Ok(open) => {
+            var p = open;
+            borrow device as &t in {
+                match tty_open(t, "/dev/ttyUSB1") {
+                    TtyOpened::Failed(errno) => { status_code = 3; }
+                    TtyOpened::Ok(port) => {
+                        borrow mut port as &!q in {
+                            if tty_configure(q, 115200) != 0 { status_code = 4; }
+                            tty_flush_input(q);
+                            borrow mut p as &!pw in { poller_add_tty(pw, q, 1, 1); }
+                            borrow mut p as &!pw in {
+                                region r {
+                                    let frame = alloc_slice[r](9, byte_of(0));
+                                    let cmd = alloc_slice[r](5, byte_of(0));
+                                    let ans = alloc_slice[r](8, byte_of(0));
+                                    let vocab = alloc_slice[r](1, 0);
+                                    let codes = alloc_slice[r](32, 0);
+                                    let prompt = alloc_slice[r](4, 0);
+                                    let emb = alloc_slice[r](256, 0);
+                                    let w = alloc_slice[r](3072, 0);        // A, B, D one after the other: matrix m at m * 1024
+                                    let mult = alloc_slice[r](2, 0);
+                                    let fgreedy = alloc_slice[r](128, 0);
+                                    // ---- read the model: a tag letter, then integers, per line ----
+                                    var tag = 0;
+                                    var n = 0;
+                                    var cur = 0;
+                                    var neg = false;
+                                    var innum = false;
+                                    var going = true;
+                                    while going {
+                                        var c = 0 - 1;
+                                        borrow mut io as &!ioh in { c = getchar(ioh); }
+                                        var is_digit = false;
+                                        if c >= 48 { if c <= 57 { is_digit = true; } }
+                                        if is_digit { cur = cur * 10 + (c - 48); innum = true; }
+                                        else if c == 45 { neg = true; }
+                                        else {
+                                            if innum {
+                                                var num = cur;
+                                                if neg { num = 0 - cur; }
+                                                if tag == 86 && n < 1 { vocab[n] = num; }
+                                                if tag == 67 && n < 32 { codes[n] = num; }
+                                                if tag == 80 && n < 4 { prompt[n] = num; }
+                                                if tag == 69 && n < 256 { emb[n] = num; }
+                                                if tag == 65 && n < 1024 { w[n] = num; }
+                                                if tag == 66 && n < 1024 { w[1024 + n] = num; }
+                                                if tag == 68 && n < 1024 { w[2048 + n] = num; }
+                                                if tag == 77 && n < 2 { mult[n] = num; }
+                                                if tag == 70 && n < 128 { fgreedy[n] = num; }
+                                                n = n + 1;
+                                            }
+                                            cur = 0; neg = false; innum = false;
+                                            if c == 10 { n = 0; tag = 0; }
+                                            else if c >= 65 { if c <= 90 { tag = c; } }
+                                            if c < 0 { going = false; }
+                                        }
+                                    }
+                                    let v = vocab[0];
+                                    if v < 2 || v > 32 || mult[0] == 0 { status_code = 2; }
+                                    if status_code == 0 {
+                                        // ---- load the three matrices into the board (matrix m at 4 x 1024 addresses; one register write per weight) ----
+                                        labio.write_reg(q, pw, frame, ans, 0, 32 * 256 + 32);
+                                        var wt = 0;
+                                        var k = 0;
+                                        while k < 3072 {
+                                            wt = wt + 1;
+                                            labio.write_reg(q, pw, frame, ans, 48, (wt % 2) * 1048576 + ((w[k] + 256) % 256) * 4096 + k);
+                                            k = k + 1;
+                                        }
+                                        // ---- generate ----
+                                        let ctr = alloc_slice[r](2, 0);
+                                        let x0 = alloc_slice[r](32, 0);
+                                        let x1 = alloc_slice[r](32, 0);
+                                        let x2 = alloc_slice[r](32, 0);
+                                        let by1 = alloc_slice[r](32, 0);
+                                        let by2 = alloc_slice[r](32, 0);
+                                        let by3 = alloc_slice[r](32, 0);
+                                        let hy1 = alloc_slice[r](32, 0);
+                                        let hy2 = alloc_slice[r](32, 0);
+                                        let hy3 = alloc_slice[r](32, 0);
+                                        let ctx = alloc_slice[r](4, 0);
+                                        let out = alloc_slice[r](steps(), 0);
+                                        var d = 0;
+                                        while d < 4 { ctx[d] = prompt[d]; d = d + 1; }
+                                        var logit_bad = 0;
+                                        var token_bad = 0;
+                                        var float_same = 0;
+                                        var s = 0;
+                                        while s < steps() {
+                                            d = 0;
+                                            while d < 32 { x0[d] = emb[ctx[d / 8] * 8 + d % 8]; d = d + 1; }
+                                            mv(q, pw, frame, cmd, ans, ctr, 0, x0, by1);
+                                            rescale(by1, x1, mult[0]);
+                                            mv(q, pw, frame, cmd, ans, ctr, 1, x1, by2);
+                                            rescale(by2, x2, mult[1]);
+                                            mv(q, pw, frame, cmd, ans, ctr, 2, x2, by3);
+                                            // the same three products on the host, from the same weights
+                                            host_mv(w, 0, x0, hy1);
+                                            rescale(hy1, x1, mult[0]);
+                                            host_mv(w, 1024, x1, hy2);
+                                            rescale(hy2, x2, mult[1]);
+                                            host_mv(w, 2048, x2, hy3);
+                                            d = 0;
+                                            while d < 32 { if by3[d] != hy3[d] { logit_bad = logit_bad + 1; } d = d + 1; }
+                                            let tb = argmax(by3, v);
+                                            if tb != argmax(hy3, v) { token_bad = token_bad + 1; }
+                                            if tb == fgreedy[s] { float_same = float_same + 1; }
+                                            out[s] = tb;
+                                            ctx[0] = ctx[1]; ctx[1] = ctx[2]; ctx[2] = ctx[3]; ctx[3] = tb;
+                                            s = s + 1;
+                                        }
+                                        borrow mut heap as &!h in {
+                                            var line = buffer.empty(h, 200);
+                                            line = buffer.append(h, line, "prompt:    ");
+                                            d = 0;
+                                            while d < 4 { line = buffer.push(h, line, byte_of(codes[prompt[d]])); d = d + 1; }
+                                            line = buffer.push(h, line, byte_of(10));
+                                            line = buffer.append(h, line, "generated: ");
+                                            d = 0;
+                                            while d < steps() { line = buffer.push(h, line, byte_of(codes[out[d]])); d = d + 1; }
+                                            line = buffer.push(h, line, byte_of(10));
+                                            borrow mut io as &!i2 in { borrow line as &lb in { io.write_all(i2, buffer.bytes(lb)); } }
+                                            buffer.drop(h, line);
+                                            borrow mut io as &!i3 in {
+                                                labio.say(h, i3, "characters generated: ", steps(), "");
+                                                labio.say(h, i3, "logits different between the board and the host pipeline, of 32 per character (want 0): ", logit_bad, "");
+                                                labio.say(h, i3, "characters different between the two (want 0): ", token_bad, "");
+                                                labio.say(h, i3, "positions where the float model's own greedy text has the same character (the two texts diverge after a few characters; see llm_train.py for next-character accuracy): ", float_same, "");
+                                            }
+                                        }
+                                        failures = failures + logit_bad + token_bad;
+                                    }
+                                }
+                            }
+                        }
+                        tty_close(port);
+                    }
+                }
+            }
+            release(device);
+            poller_close(p);
+        }
+    }
+    release(io);
+    release(heap);
+    release(clock);
+    if status_code != 0 { return status_code; }
+    if failures != 0 { return 1; }
+    return 0;
+}

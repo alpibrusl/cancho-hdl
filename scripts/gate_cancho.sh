@@ -185,6 +185,7 @@ python3 tests/behavioral/c_behavior.py "$OUT"
 echo "== 8m the SystemVerilog behavioral roundtrip (iverilog): the module against the reference model, a holding and a strict master"
 python3 tests/behavioral/sv_behavior.py "$OUT" --mode hold
 python3 tests/behavioral/sv_behavior.py "$OUT" --mode strict
+python3 tests/behavioral/sv_device_input.py "$OUT"
 
 echo "== 8n the Tang Nano 20K design: the register block and the UART bridge under iverilog, synthesised with Yosys"
 sh boards/tang-nano-20k/check.sh "$OUT"
