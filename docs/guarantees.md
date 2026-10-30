@@ -93,3 +93,13 @@ A tier that does not appear above is either forbidden
 (`Static -> Trust`) or not yet defined. The report never
 relabels `Trust` as `Static`. The report never relabels
 `Unknown` as anything.
+---
+
+## 5. Board results are evidence, not a tier
+
+The Tang Nano 20K experiments (`docs/fpga-experiments.md`) add no row to the §2 table and promote nothing. What they
+show, on one board, in SRAM, through a hand-written UART bridge: the behavioural corpus replays 25 of 25 equal to the
+reference model, and each design's host test (in cancho) finds 0 differing figures against the same computation in
+software. They do not show timing against an outside reference, a speed advantage, or anything about other boards, and
+nothing here has moved a servo. A board line may become a `Tested` guarantee only through §4: a roundtrip suite in the
+gate that runs without the board, or a recorded board run named as such.
