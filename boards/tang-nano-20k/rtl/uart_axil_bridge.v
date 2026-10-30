@@ -7,6 +7,13 @@
 //   host -> 'R' a3 a2 a1 a0                  one read                              device -> resp d3 d2 d1 d0
 // resp is the AXI response: 0x00 OKAY, 0x02 SLVERR (no register at the address, a write to a read-only register, a read of a
 // write-only one). Any other command byte is ignored. A request that is never completed by the host leaves the bridge waiting.
+//
+// Block commands (one frame, many words; a word is 4 bytes, big-endian, n is one byte, 1..255, 0 is 256 words is NOT supported: 0 does nothing):
+//   host -> 'B' a3 a2 a1 a0 n  w0 w1 ... w(n-1)   n writes to the same address         device -> resp (one byte: 0x02 if any word was an error)
+//   host -> 'I' a3 a2 a1 a0 n  w0 w1 ... w(n-1)   n writes to a, a+4, a+8, ...         device -> resp
+//   host -> 'E' a3 a2 a1 a0 n                     n reads of the same address          device -> n words, then resp
+//   host -> 'D' a3 a2 a1 a0 n                     n reads of a, a+4, a+8, ...          device -> n words, then resp
+// No byte is answered before the frame is complete, so the host must not rely on one answer per byte as flow control.
 `timescale 1ns/1ps
 `default_nettype none
 module uart_axil_bridge #(
@@ -47,8 +54,14 @@ module uart_axil_bridge #(
     wire       tx_busy;
     uart_tx #(.CLKS_PER_BIT(CLKS_PER_BIT)) u_tx (.clk(clk), .rst_n(rst_n), .start(tx_start), .data(tx_data), .tx(tx), .busy(tx_busy));
 
-    localparam S_CMD = 4'd0, S_ARG = 4'd1, S_GO = 4'd2, S_WA = 4'd3, S_WB = 4'd4, S_RA = 4'd5, S_RR = 4'd6, S_TX = 4'd7;
+    localparam S_CMD = 4'd0, S_ARG = 4'd1, S_GO = 4'd2, S_WA = 4'd3, S_WB = 4'd4, S_RA = 4'd5, S_RR = 4'd6, S_TX = 4'd7,
+               S_BW = 4'd8, S_BWA = 4'd9, S_BWB = 4'd10, S_BR = 4'd11, S_BRA = 4'd12, S_BRR = 4'd13, S_BEND = 4'd14;
     reg [3:0]  state;
+    reg        is_blk, blk_inc, blk_err;
+    reg [31:0] blk_addr, blk_word;
+    reg [7:0]  blk_n;
+    reg [2:0]  blk_b;
+    reg [3:0]  ret;       // the state after S_TX has sent its bytes (S_CMD for the single commands)
     reg        is_write;
     reg [3:0]  need, nb;
     reg [63:0] acc;
@@ -62,11 +75,14 @@ module uart_axil_bridge #(
             state <= S_CMD; awvalid <= 1'b0; wvalid <= 1'b0; arvalid <= 1'b0;
             awaddr <= 32'h0; wdata <= 32'h0; araddr <= 32'h0; acc <= 64'h0; nb <= 4'd0; need <= 4'd0;
             is_write <= 1'b0; txbuf <= 40'h0; txn <= 3'd0; tx_wait <= 1'b0; tx_data <= 8'h0;
+            is_blk <= 1'b0; blk_inc <= 1'b0; blk_err <= 1'b0; blk_addr <= 32'h0; blk_word <= 32'h0; blk_n <= 8'd0; blk_b <= 3'd0; ret <= S_CMD;
         end else begin
             case (state)
                 S_CMD: if (rx_valid) begin
                     if (rx_data == 8'h57) begin is_write <= 1'b1; need <= 4'd8; nb <= 4'd0; state <= S_ARG; end
                     else if (rx_data == 8'h52) begin is_write <= 1'b0; need <= 4'd4; nb <= 4'd0; state <= S_ARG; end
+                    else if (rx_data == 8'h42 || rx_data == 8'h49) begin is_blk <= 1'b1; is_write <= 1'b1; blk_inc <= (rx_data == 8'h49); need <= 4'd5; nb <= 4'd0; state <= S_ARG; end
+                    else if (rx_data == 8'h45 || rx_data == 8'h44) begin is_blk <= 1'b1; is_write <= 1'b0; blk_inc <= (rx_data == 8'h44); need <= 4'd5; nb <= 4'd0; state <= S_ARG; end
                 end
                 S_ARG: if (rx_valid) begin
                     acc <= {acc[55:0], rx_data};
@@ -74,7 +90,11 @@ module uart_axil_bridge #(
                     if (nb + 4'd1 == need) state <= S_GO;
                 end
                 S_GO: begin
-                    if (is_write) begin
+                    if (is_blk) begin
+                        is_blk <= 1'b0; blk_addr <= acc[39:8]; blk_n <= acc[7:0]; blk_err <= 1'b0; blk_b <= 3'd0;
+                        if (acc[7:0] == 8'd0) state <= S_CMD;
+                        else state <= is_write ? S_BW : S_BR;
+                    end else if (is_write) begin
                         awaddr <= acc[63:32]; wdata <= acc[31:0]; awvalid <= 1'b1; wvalid <= 1'b1; state <= S_WA;
                     end else begin
                         araddr <= acc[31:0]; arvalid <= 1'b1; state <= S_RA;
@@ -84,8 +104,34 @@ module uart_axil_bridge #(
                 S_WB: if (bvalid) begin txbuf <= {6'b0, bresp, 32'h0}; txn <= 3'd1; tx_wait <= 1'b0; state <= S_TX; end
                 S_RA: if (arready) begin arvalid <= 1'b0; state <= S_RR; end
                 S_RR: if (rvalid) begin txbuf <= {6'b0, rresp, rdata}; txn <= 3'd5; tx_wait <= 1'b0; state <= S_TX; end
+                S_BW: if (rx_valid) begin
+                    blk_word <= {blk_word[23:0], rx_data};
+                    if (blk_b == 3'd3) begin
+                        blk_b <= 3'd0;
+                        awaddr <= blk_addr; wdata <= {blk_word[23:0], rx_data}; awvalid <= 1'b1; wvalid <= 1'b1; state <= S_BWA;
+                    end else blk_b <= blk_b + 3'd1;
+                end
+                S_BWA: if (awready && wready) begin awvalid <= 1'b0; wvalid <= 1'b0; state <= S_BWB; end
+                S_BWB: if (bvalid) begin
+                    if (bresp != 2'b00) blk_err <= 1'b1;
+                    if (blk_inc) blk_addr <= blk_addr + 32'd4;
+                    blk_n <= blk_n - 8'd1;
+                    if (blk_n == 8'd1) state <= S_BEND; else state <= S_BW;
+                end
+                S_BR: begin araddr <= blk_addr; arvalid <= 1'b1; state <= S_BRA; end
+                S_BRA: if (arready) begin arvalid <= 1'b0; state <= S_BRR; end
+                S_BRR: if (rvalid) begin
+                    if (rresp != 2'b00) blk_err <= 1'b1;
+                    if (blk_inc) blk_addr <= blk_addr + 32'd4;
+                    blk_n <= blk_n - 8'd1;
+                    txbuf <= {rdata, 8'h0}; txn <= 3'd4; tx_wait <= 1'b0; ret <= (blk_n == 8'd1) ? S_BEND : S_BR; state <= S_TX;
+                end
+                S_BEND: begin
+                    // the one answer byte: 0x00 if every word was OKAY, 0x02 if any was not
+                    txbuf <= {blk_err ? 8'h02 : 8'h00, 32'h0}; txn <= 3'd1; tx_wait <= 1'b0; ret <= S_CMD; state <= S_TX;
+                end
                 S_TX: begin
-                    if (txn == 3'd0) state <= S_CMD;
+                    if (txn == 3'd0) begin state <= ret; if (ret != S_BEND) ret <= S_CMD; end
                     else if (!tx_wait && !tx_busy) begin
                         tx_data <= txbuf[39:32]; tx_start <= 1'b1; tx_wait <= 1'b1;
                         txbuf <= {txbuf[31:0], 8'h0}; txn <= txn - 3'd1;

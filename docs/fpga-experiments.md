@@ -138,6 +138,36 @@ Written 2026-10-29 on branch `hardware-test-tang-nano-20k`. What is measured is 
   all of it register traffic over the 115200 baud link (about 300 register accesses a character); the multiply-accumulates take
   microseconds. This is as small as a "language model" gets, and it shows the pipeline, not a capability.
 
+* **Faster serial, and block commands** (measured, on the board, 2026-10-30; `rtl/uart_axil_bridge.v`, `host/labio.cho`, `host/blocktest.cho`,
+  `host/llm_gen.cho`; `build.sh` takes `CLKS=` for the UART speed). The bridge gained four commands that carry many words in one frame:
+  `B`/`I` write n words to one address or to consecutive registers, `E`/`D` read them; one response byte at the end (0x02 if any word failed).
+  The simulation checks 9 cases (21 of 21 in `top_tb.v`). Table query (1500 rows, WHERE v >= -200, the group-by design), wall time of the
+  built program, every run **0 figures different** from the same query in cancho:
+
+  | serial | row writes and result reads | wall time |
+  |---|---|---|
+  | 115,200 | one `W` per row, one `R` per result register | 10.8 s |
+  | 115,200 | `B` frames of 60 rows, one `D` for the five results | 1.5 to 1.8 s |
+  | 1,000,000 | one `W` / `R` each | 10.2 s |
+  | 1,000,000 | `B` frames of 255 rows | 0.25 s |
+  | 1,500,000 | `B` frames of 255 rows | 0.25 s |
+  | 3,000,000 | `B` frames of 255 rows | **53 figures different** (the run also timed out after 126 s) |
+  | 3,000,000 | `B` frames of 4 rows | 0 different, 2.4 s |
+  | 3,000,000 | one `W` / `R` each | 0 different, 9.5 s |
+
+  What this says: the single-write protocol is bound by one USB round trip per register (about 7 ms), so a faster baud rate alone
+  changes almost nothing (10.8 s to 10.2 s); the block commands remove the round trips, and then the baud rate matters. At 1 and 1.5
+  Mbaud a 1,020-byte frame arrived whole, so the loss seen earlier (about 64 bytes in flight, with the board answering every byte) did not
+  recur for a long host-to-board write at these speeds; why it happened then is still not known. At 3 Mbaud long frames lose data and short ones do not; **the cause was not established** (the
+  adapter, the host's serial driver, and the bridge or the register block at 9 clocks a bit are all possible). The toy language model
+  (the gemv design built for 1,000,000 baud), 40 characters, 0 of 1,280 logits and 0 of 40 characters different from the host pipeline in
+  both runs: 89.7 s with single writes, **49.3 s** with the weights in 64-word frames and each input vector in one frame. What is left
+  is the result readout, 64 single register accesses per layer (select a row, read it), because that design has no auto-increment read;
+  fixing that is a design change, not a protocol one. Hazard, stated: a block frame that the host does not finish leaves the bridge
+  waiting for it and the following commands go unanswered until the board is reloaded (a first toy-model run hung that way after the
+  wrong bitstream was loaded). `build.sh` also gained `ALLOW_WARN=1`, because Yosys' block-RAM mapping of the gemv and mem designs
+  prints harmless "select out of bounds" warnings that the script otherwise treats as a failure.
+
 ## Where it meets cancho-robot
 
 cancho-robot exists to answer one question: can the compiler prove the *only* thing able to move the arms is the safety core.

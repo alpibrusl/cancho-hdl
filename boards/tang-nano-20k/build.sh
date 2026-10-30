@@ -3,6 +3,7 @@
 #
 #   CHW=./chw sh boards/tang-nano-20k/build.sh [OUTDIR] [--flash]      (from the repository root; OUTDIR defaults to boards/tang-nano-20k/build)
 #   DESIGN=stats CHW=./chw sh boards/tang-nano-20k/build.sh boards/tang-nano-20k/build-stats [--flash]
+#       CLKS=27 (clocks per UART bit; 27 MHz / CLKS is the baud rate, 234 = 115200) changes the serial speed of any design.
 #       DESIGN is leds (the default), lab, stats, gemv, table, deadman, img or mem; img and mem have no contract (hand-written, no register block).
 #
 #   1  chw check, chw generate --target systemverilog   the register block, from leds.chw           (needs $CHW)
@@ -37,6 +38,8 @@ case $DESIGN in
     *) echo "unknown DESIGN=$DESIGN"; exit 1 ;;
 esac
 GEN=
+# CLKS=27 sets the UART to 1,000,000 baud (27 MHz / 27); the default is 234, 115200 baud
+CHP=; [ -n "${CLKS:-}" ] && CHP="chparam -set CLKS_PER_BIT $CLKS top;"
 step "1 generate the register block"
 if [ -n "$CONTRACT" ]; then
     "$CHW" check "$CONTRACT"
@@ -46,8 +49,12 @@ else echo "no contract for this design"; fi
 
 step "2 yosys synth_gowin"
 if have yosys; then
-    yosys -q -l "$OUT/yosys.log" -p "read_verilog -sv $RTL $B/rtl/uart_axil_bridge.v $B/rtl/uart_rx.v $B/rtl/uart_tx.v $GEN; synth_gowin -top top -json $OUT/top.json"
-    if grep -q '^Warning' "$OUT/yosys.log"; then echo "yosys warned:"; grep '^Warning' "$OUT/yosys.log"; exit 1; fi
+    yosys -q -l "$OUT/yosys.log" -p "read_verilog -sv $RTL $B/rtl/uart_axil_bridge.v $B/rtl/uart_rx.v $B/rtl/uart_tx.v $GEN; $CHP synth_gowin -top top -json $OUT/top.json"
+    if grep -q '^Warning' "$OUT/yosys.log"; then
+        echo "yosys warned:"; grep -i 'warning' "$OUT/yosys.log" | head -20
+        # ALLOW_WARN=1 goes on anyway: the block-RAM mapping of gemv and mem prints "select out of bounds ... undef" for the unused data bits
+        [ "${ALLOW_WARN:-}" = 1 ] || exit 1
+    fi
 else echo "skipped: yosys not found"; skipped=1; fi
 
 step "3 nextpnr-himbaechel"
