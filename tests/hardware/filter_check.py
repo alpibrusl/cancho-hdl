@@ -2,7 +2,8 @@
 Run on the board's host (the robot Pi, 2026-11-01); needs pyserial. The board is at /dev/ttyUSB1.
 """
 import json, random, subprocess
-exec(open("/tmp/filtertest.py").read().split("res=[]")[0])
+import os
+exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"filter_check_camera.py")).read().split("res=[]")[0])   # its helpers; run filter_check_camera.py first for the /tmp/frame_*.raw camera frames
 random.seed(20261101)
 noise=bytes(random.randrange(256) for _ in range(W*H))
 def synth(x,y):
