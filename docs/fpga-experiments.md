@@ -198,6 +198,31 @@ hardware the contract describes:
 
 Rules carried over from the robot repo: read before write, an operator at the e-stop for anything that moves.
 
+## Bring-up on the robot's Pi 5 (2026-11-01)
+
+Measured on the Pi with the Tang Nano 20K on `/dev/ttyUSB0` (JTAG) and `/dev/ttyUSB1` (UART), cancho built from `camera-aarch64`; scripts in
+`tests/hardware/`. Nothing here moved a servo (both servo buses were silent: no servo answered a ping at 1 Mbaud or 115200).
+
+* **HDMI output** (`rtl/top_hdmi.v`, `tmds_encoder.v`, `hdmi.cst`, `DESIGN=hdmi`). The encoder decodes 200,000 random pixels back with 0 errors
+  in simulation. On a 7-inch 1024x600 IPS panel the colour cycle (red, green, blue, white, black, yellow, cyan, magenta) was right, but
+  the picture was speckled: pins 33-40 are true-LVDS pins, so only `TLVDS_OBUF` works (`ELVDS_OBUF` is refused), apycula forces the LVDS drive to
+  zero, and the panel's receiver sampled badly; rotating the TMDS clock word by 2 places (`CLKPHASE`) was the best of the phases tried, by eye.
+  Not clean. A 320x240 grey frame (webcam, via cancho's `Camera` and `Tty`: `cancho-robot/fpga/camdisplay.cho`) was shown at 2x.
+  nextpnr checks every clock against 27 MHz: the pixel clock's real limit (51.3 MHz) has to be read off its report (the first read path was 49 MHz).
+* **Frame path throughput.** 60 of 60 frames of random bytes (76,804 bytes at 1 Mbaud) arrived with no pacing, written whole or in 512- or
+  4096-byte chunks: 0.77 s a frame, 99 KB/s, the line rate. The board drops a frame that stalls for more than about 78 ms. (An earlier note,
+  here and in `camdisplay.cho`, said the USB bridge loses unpaced writes; that was a pause in the test, not the bridge.)
+* **Image filter** (`DESIGN=img`, `camfilter`, both compilers' worth: built by the compiler written in cancho). Bit-exact against an independent
+  Python reference in all five modes on noise, a structured image, a 0/255 checkerboard and the three webcams' frames (18 runs, 0 mismatches
+  of 19,200 pixels each; the negative controls differ in 18,644 and 19,200). 3.2 s per 160x120 frame at 115200 baud.
+  The room was dark, so the camera frames were flat (value 16): they prove the path, not the arithmetic.
+* **Deadman** (`DESIGN=deadman`, `host/deadman.cho` built by the compiler written in cancho; `chw` built with it too). The E4 test passes as
+  before: trip seen 204 ms after the last kick (200 ms timeout). Kick-rate sweep (`tests/hardware/deadman_sweep.py`, 100 Hz, 20 s a run, about
+  2,000 kicks): a 10 ms timeout trips 75 times; 15, 20, 30, 50 and 100 ms trip **never**, idle and under load (4 busy processes and
+  three cameras at 1080p), where the largest gap between acknowledgements was 18 ms. One register write takes 6.0 ms to be acknowledged through
+  the USB bridge (always exactly 6.0 in 200 tries), but kicks written back to back cost 0.9 ms each, so a host that does not wait for the
+  acknowledgement can kick at about 1 kHz. Limits: the host's view of the timing only; the "output" is still an LED.
+
 ## What this does not claim
 
 Nothing here has moved a servo. The designs are in SRAM, so a power cycle erases them. The UART bridge is hand-written and not
