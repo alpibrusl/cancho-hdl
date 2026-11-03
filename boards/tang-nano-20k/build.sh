@@ -4,7 +4,7 @@
 #   CHW=./chw sh boards/tang-nano-20k/build.sh [OUTDIR] [--flash]      (from the repository root; OUTDIR defaults to boards/tang-nano-20k/build)
 #   DESIGN=stats CHW=./chw sh boards/tang-nano-20k/build.sh boards/tang-nano-20k/build-stats [--flash]
 #       CLKS=27 (clocks per UART bit; 27 MHz / CLKS is the baud rate, 234 = 115200) changes the serial speed of any design.
-#       DESIGN is leds (the default), lab, stats, gemv, table, deadman, img or mem; img and mem have no contract (hand-written, no register block).
+#       DESIGN is leds (the default), lab, tap (lab with a separate analyzer input on pin 76), stats, gemv, table, deadman, img or mem; img and mem have no contract (hand-written, no register block).
 #
 #   1  chw check, chw generate --target systemverilog   the register block, from leds.chw           (needs $CHW)
 #   2  yosys synth_gowin                                 the netlist                                 (needs yosys)
@@ -26,9 +26,11 @@ skipped=0
 step() { printf '== %s\n' "$1"; }
 
 DESIGN=${DESIGN:-leds}
+CST=$B/tang_nano_20k.cst
 case $DESIGN in
     leds)    CONTRACT=$B/leds.chw;          RTL="$B/rtl/top.v" ;;
     lab)     CONTRACT=$B/lab/lab.chw;       RTL="$B/rtl/top_lab.v $B/rtl/lab.v" ;;
+    tap)     CONTRACT=$B/lab/lab.chw;       RTL="$B/rtl/top_tap.v $B/rtl/lab.v"; CST=$B/tang_nano_20k_tap.cst ;;
     stats)   CONTRACT=$B/stats/stats.chw;   RTL="$B/rtl/top_stats.v $B/rtl/stats.v" ;;
     gemv)    CONTRACT=$B/gemv/gemv.chw;     RTL="$B/rtl/top_gemv.v $B/rtl/gemv.v" ;;
     table)   CONTRACT=$B/table/table.chw;   RTL="$B/rtl/top_table.v $B/rtl/table_agg.v" ;;
@@ -60,7 +62,7 @@ else echo "skipped: yosys not found"; skipped=1; fi
 step "3 nextpnr-himbaechel"
 if have nextpnr-himbaechel && [ -f "$OUT/top.json" ]; then
     nextpnr-himbaechel --json "$OUT/top.json" --write "$OUT/top_pnr.json" --device GW2AR-LV18QN88C8/I7 \
-        --vopt family=GW2A-18C --vopt cst=$B/tang_nano_20k.cst --freq 27
+        --vopt family=GW2A-18C --vopt cst=$CST --freq 27
 else echo "skipped: nextpnr-himbaechel not found (or no netlist)"; skipped=1; fi
 
 step "4 gowin_pack"

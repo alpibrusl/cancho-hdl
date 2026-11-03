@@ -203,3 +203,17 @@ Rules carried over from the robot repo: read before write, an operator at the e-
 Nothing here has moved a servo. The designs are in SRAM, so a power cycle erases them. The UART bridge is hand-written and not
 part of the product. Reset on the board is emulated by writing reset values back. A guarantee for the board needs a line in
 `docs/guarantees.md`, written only after the experiment behind it has run.
+
+## Bus tap: listening to a servo bus (DESIGN=tap)
+
+`DESIGN=tap` is the lab design (analyzer, sequencer, histogram: `lab/lab.chw`) with the analyzer's probe moved off the UART's RX pin to a
+separate input, `tap`, **header pin 76** (IOT30B, bank 1, 3.3 V; third pin of the right-hand header, next to GND; the 5 V pin is the
+first one of that row). Two flops synchronise it, so every edge is recorded two ticks late, the same for all of them. The FPGA only
+listens: `tap` is an input with a weak pull-up, so an unconnected tap reads idle high, like the bus.
+
+* **3.3 V only.** A 5 V bus goes through a level shifter (or a divider) first; the voltage of the bus is measured, not assumed.
+* Build: `DESIGN=tap CHW=./chw sh boards/tang-nano-20k/build.sh /tmp/tap-build`; load with `openFPGALoader -b tangnano20k top.fs`.
+* Bench without hardware: `tb/tap_tb.v` (run by `check.sh`) drives a ping and its reply at 1 Mbaud on `tap`, drains the analyzer over the UART,
+  decodes the bytes from the recorded edges and checks the turn-around in ticks. Pointing the probe back at the UART pin fails it.
+* Board, nothing wired: `tests/hardware/tap_idle.py` arms the analyzer and expects one entry, high (measured 2026-11-03: 1 entry, level 1, 3 s).
+* The FIFO holds 512 edges (about 25 short packets); drain it while disabled. Because the probe is no longer the UART, draining is not recorded.
